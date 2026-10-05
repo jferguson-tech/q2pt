@@ -59,9 +59,9 @@ Measured on an RTX 4090 beside a 16 core Ryzen 7950X, on the first map at
 where the CPU renderer manages 9. Offline frames at 64 paths per pixel take
 about a quarter of a second each, some twenty times faster than on the CPU.
 
-Not yet on the GPU: the light patterns water throws on what is near it
-(`pt_water_caustics`), adaptive sampling, and the separate history the CPU
-renderer keeps for mirror reflections. Its denoiser decides how far to smooth
+Not yet on the GPU: the separate history the CPU renderer keeps for mirror
+reflections. Adaptive sampling there goes by how long a point has been in
+view, not also by how noisy it is. Its denoiser decides how far to smooth
 from how long a pixel has been in view rather than from measured noise, and
 at a lower internal resolution the picture is stretched rather than rebuilt
 at full size.

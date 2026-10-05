@@ -246,7 +246,38 @@ void main()
 		: min(1.0, max(0.1, Luminance(SpecularAlbedo(surf)) * 10.0) * fr.settings_f.y);
 
 	const int bounces = fr.settings.x;
-	const int paths = max(1, fr.settings2.z);
+	int paths = max(1, fr.settings2.z);
+
+	// Paths are best spent where the picture has little to go on: on what
+	// has just come into view. What last frame knew of this point says so.
+	const int adaptive = fr.bases.x;
+	if (adaptive > 1)
+	{
+		float known = 0.0;
+		if (fr.output_i.w != 0)
+		{
+			const vec3 v = seen - fr.prev_origin.xyz;
+			const float z = dot(v, fr.prev_forward.xyz);
+			if (z > 0.01)
+			{
+				const ivec2 q = ivec2(floor(vec2(
+					(dot(v, fr.prev_right.xyz) / (z * fr.prev_origin.w) * 0.5 + 0.5) * size.x,
+					(0.5 - dot(v, fr.prev_up.xyz) / (z * fr.prev_forward.w) * 0.5) * size.y)));
+				if (q.x >= 0 && q.y >= 0 && q.x < size.x && q.y < size.y)
+				{
+					const float was = imageLoad(img_surface[1 - now], q).a;
+					const float expected = length(v);
+					if (was > 0.0 && abs(was - expected) < 0.1 * expected)
+						known = imageLoad(img_kept[(1 - now) * 3], q).a;
+				}
+			}
+		}
+		if (known < 2.0)
+			paths *= adaptive;
+		else if (known < 8.0)
+			paths *= max(1, adaptive / 2);
+		paths = min(paths, 64);
+	}
 	vec3 sum_d = vec3(0.0), sum_s = vec3(0.0);
 	for (int k = 0; k < paths; k++)
 	{

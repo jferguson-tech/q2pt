@@ -86,7 +86,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	vec4	sky_turn;		// xyz: the axis the sky turns about; w: sine of the angle
 	vec4	sky_misc;		// cosine, brightness of a white texel, integral of its luminance, time
 	ivec4	counts;			// lights of the map, lights of the frame, frame number, animation step
-	ivec4	bases;			// first triangle of: the map's glass, the frame's glass; x and z unused
+	ivec4	bases;			// y, w: first triangle of the map's glass and of the frame's; x: adaptive sampling; z unused
 	ivec4	grid_dims;		// xyz; w: there is a grid
 	vec4	grid_origin;	// xyz; w: one over the cell size
 	ivec4	table_at;		// in tables: map wide light cdf, grid pdf, grid cdf, sky chance
@@ -98,7 +98,9 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	ivec4	output_i;		// tone curve, filter passes, frames kept while moving, there is history
 	vec4	output_f;		// saturation, contrast, bloom, nothing has changed since last frame
 	ivec4	frame_has;		// smooth normals, where things were last frame, which of each pair of images is this frame's, anti-aliasing
-	ivec4	size;			// of the picture being traced; zw unused
+	ivec4	size;			// xy: of the picture being traced; z: simulated bodies of liquid
+	vec4	water_rect[8];	// each body's extent: min x, min y, max x, max y
+	vec4	water_at[8];	// x: the height of its surface; y: the material that carries its maps
 } fr;
 
 // the map and what moves, each as three corners per triangle, what goes with
@@ -329,21 +331,39 @@ bool Closest(vec3 origin, vec3 dir, inout float tmin, bool camera, bool cross_th
 	}
 }
 
+// how much the waves of a simulated liquid brighten light passing through
+// its surface at p
+float Caustic(Material mat, vec3 p)
+{
+	if (mat.caustic_map < 0)
+		return 1.0;
+	const vec2 at = (p.xy - mat.wave_rect.xy) * mat.wave_rect.zw;
+	if (at.x < 0.0 || at.y < 0.0 || at.x > 1.0 || at.y > 1.0)
+		return 1.0;
+	return Texel(mat.caustic_map, at, true).r * 4.0;
+}
+
 // How much of the light from target reaches a point: 0 if something is in
-// the way, otherwise 1.
+// the way, otherwise 1 times whatever rippling liquid on the way does to
+// it, which gathers the light in some places and thins it in others.
 float Visible(vec3 p, vec3 target)
 {
 	const vec3 d = target - p;
 	float tmin = 0.0;
+	float through = 1.0;
 	for (int skips = 0; skips < 16; skips++)
 	{
 		Hit hit;
 		if (!Nearest(p, d, tmin, 0.999, hit))
-			return 1.0;
+			return through;
 		const Tri tri = TriOf(hit);
 		const Material mat = MaterialOf(hit.moving, tri.material);
-		if (!IsHole(mat, tri, hit.bary) && (mat.alpha >= 1.0 || Rand() < mat.alpha))
-			return 0.0;
+		if (!IsHole(mat, tri, hit.bary))
+		{
+			if (mat.alpha >= 1.0 || Rand() < mat.alpha)
+				return 0.0;
+			through *= Caustic(mat, p + d * hit.t);
+		}
 		tmin = hit.t + 1.0e-4;
 	}
 	return 0.0;
@@ -609,6 +629,52 @@ int GridCell(vec3 p)
 	return (c.z * fr.grid_dims.y + c.y) * fr.grid_dims.x + c.x;
 }
 
+// Light thrown back up by a simulated liquid surface: the dancing patches on
+// walls and ceilings near water. The surface is treated as a mirror for the
+// light just sampled, so its image lies as far below the surface as the
+// light is above, and the gathering of light by the waves shapes what comes
+// back. y is the point on the light, e what it would send straight here.
+void WaterBounce(Surface s, vec3 y, vec3 e, inout Lit lit)
+{
+	if (s.medium)
+		return;
+	for (int i = 0; i < fr.size.z; i++)
+	{
+		const vec4 rect = fr.water_rect[i];
+		const float z = fr.water_at[i].x;
+		if (s.p.z <= z + 1.0 || y.z <= z + 1.0 || s.p.z - z > 512.0)
+			continue;
+		const vec3 image = vec3(y.xy, 2.0 * z - y.z);
+		const vec3 d = image - s.p;
+		const vec3 q = s.p + d * ((z - s.p.z) / d.z);		// where the path meets the surface
+		if (q.x < rect.x || q.x > rect.z || q.y < rect.y || q.y > rect.w)
+			continue;
+
+		const float len2 = dot(d, d);
+		const vec3 wi = d * inversesqrt(len2);
+		const float m = 1.0 + wi.z;	// 1 - cosine of the angle at the water
+		const float fresnel = 0.02 + 0.98 * m * m * m * m * m;
+		const float gain = fresnel * Caustic(world_materials.m[int(fr.water_at[i].y)], q);
+		if (gain <= 0.001)
+			continue;
+
+		// e was for the straight path; this one is as long as the way to the image
+		const vec3 straight = y - s.p;
+		const Lit add = Reflect(s, wi, e * (gain * dot(straight, straight) / len2));
+		if (Importance(s, add) <= 0.0)
+			continue;
+
+		// both legs must be clear
+		const vec3 above = q + vec3(0.0, 0.0, 0.1);
+		if (Visible(Leave(s), above) <= 0.0 || Visible(above, y) <= 0.0)
+			continue;
+
+		lit.diffuse += add.diffuse;
+		lit.specular += add.specular;
+		return;		// one body will do
+	}
+}
+
 // The map's lights. A handful of candidates are weighed by the light they
 // would put on the surface, which is cheap; one is drawn in proportion, and
 // only for that one is it found out whether anything is in the way.
@@ -721,9 +787,13 @@ Lit DirectLights(Surface s, bool first_hit)
 		return none;
 	chosen_e *= wsum / (float(candidates) * chosen_phat);
 
-	if (Visible(Leave(s), chosen_y) <= 0.0)
-		return none;
-	return Reflect(s, chosen_wi, chosen_e);
+	Lit lit = none;
+	const float clear = Visible(Leave(s), chosen_y);
+	if (clear > 0.0)
+		lit = Reflect(s, chosen_wi, chosen_e * clear);
+	if (fr.size.z > 0)
+		WaterBounce(s, chosen_y, chosen_e, lit);
+	return lit;
 }
 
 // a direction drawn where the sky is bright, in the sky's own frame, and the

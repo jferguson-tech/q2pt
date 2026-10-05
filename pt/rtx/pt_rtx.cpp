@@ -95,6 +95,7 @@ struct FrameBlock
 	int32_t	output_i[4];
 	float	output_f[4];
 	int32_t	frame_has[4], size[4];
+	float	water_rect[8][4], water_at[8][4];
 };
 
 // one triangle, one material and one light as the shaders read them (std430)
@@ -292,6 +293,9 @@ struct RtxBackend
 	int						index_grid_light = 0, index_grid_count = 0;
 	int						sky_res = 0;
 	float					sky_total = 0.0f, sky_scale = 1.0f;
+	// simulated bodies of liquid: extent, height of the surface, material
+	int						num_waters = 0;
+	float					water_rect[8][4] = {}, water_at[8][4] = {};
 
 	// textures the host has changed, until the next frame takes them
 	Buffer					updates;
@@ -1860,6 +1864,21 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 		s->grid_dims[a] = grid.dims[a];
 	}
 	s->grid_inv_cell = grid.inv_cell;
+	s->num_waters = 0;
+	for (const pt::World::Water &body : w->waters)
+	{
+		if (s->num_waters == 8)
+			break;
+		float *rect = s->water_rect[s->num_waters], *at = s->water_at[s->num_waters];
+		rect[0] = body.min_x;
+		rect[1] = body.min_y;
+		rect[2] = body.max_x;
+		rect[3] = body.max_y;
+		at[0] = body.z;
+		at[1] = (float)(body.mat - w->materials.data());
+		at[2] = at[3] = 0.0f;
+		s->num_waters++;
+	}
 	s->sky_res = sky_cells ? w->sky_res : 0;
 	s->sky_total = w->sky_total;
 	s->sky_scale = w->sky_scale;
@@ -2135,6 +2154,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.counts[1] = (int32_t)num_lights;
 	f.counts[2] = (int32_t)s->frame_index;
 	f.counts[3] = view->anim_frame;
+	f.bases[0] = std::min(std::max(view->adaptive, 1), 16);
 	f.bases[1] = (int32_t)s->world.num_solid;
 	f.bases[3] = (int32_t)s->frame.num_solid;
 	f.grid_dims[3] = s->has_grid ? 1 : 0;
@@ -2200,6 +2220,9 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	s->bloom_on = view->bloom > 0.0f && !view->debug;
 	f.size[0] = rw;
 	f.size[1] = rh;
+	f.size[2] = s->num_waters;
+	memcpy(f.water_rect, s->water_rect, sizeof(f.water_rect));
+	memcpy(f.water_at, s->water_at, sizeof(f.water_at));
 
 	memcpy(s->frame_block.ptr, &f, sizeof(f));
 	s->prev_time = view->time;
