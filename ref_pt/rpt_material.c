@@ -249,32 +249,82 @@ void R_InitMaterials (void)
 
 /*
 ===============
-R_ImageNormalMap
+Mat_FindMap
 
-Builds, once, the image's detail map: RGB is a tangent space normal made by
-treating brightness as height, alpha is roughness, a little lower where the
-picture is bright and higher where it is dark.
+A map made for an image by hand: the image's name with its extension
+replaced by the suffix. NULL if there is none.
 ===============
 */
-uint32_t *R_ImageNormalMap (image_t *image, const matinfo_t *info)
+static image_t *Mat_FindMap (image_t *image, const char *suffix)
 {
-	float		*height, strength, dx, dy, len, rough;
-	uint32_t	c, *out;
-	int			x, y, w, h, xm, xp, ym, yp, nx, ny, nz, a;
+	char	name[MAX_QPATH + 8];
+	char	*dot;
+
+	strcpy (name, image->name);
+	dot = strrchr (name, '.');
+	if (!dot || (dot - name) + strlen (suffix) >= MAX_QPATH)
+		return NULL;
+	strcpy (dot, suffix);
+	return R_FindImage (name, image->type);
+}
+
+/*
+===============
+R_ImageGlowMap
+
+<name>_e.tga beside the image: what glows, and in what colour
+===============
+*/
+image_t *R_ImageGlowMap (image_t *image)
+{
+	return Mat_FindMap (image, "_e.tga");
+}
+
+/*
+===============
+R_ImageNormalMap
+
+Builds, once, the image's detail map: RGB is a tangent space normal, alpha
+is roughness. Returns NULL where the material is flat.
+
+<name>_n.tga beside the image is used as the normals if it is there (red
+to the right, green down the picture, as the generated ones are; set
+pt_normal_flip for maps with green up), and the red of <name>_r.tga as the
+roughness. Whatever is missing is made from the picture: brightness is
+taken as height, and roughness is a little lower where the picture is
+bright and higher where it is dark.
+===============
+*/
+uint32_t *R_ImageNormalMap (image_t *image, const matinfo_t *info, int *width, int *height)
+{
+	float		*bright, strength, dx, dy, len, rough;
+	uint32_t	c, *made, *out;
+	image_t		*normals, *roughs;
+	int			x, y, w, h, xm, xp, ym, yp, nx, ny, nz, a, sx, sy;
 
 	if (image->normalmap)
+	{
+		*width = image->normal_width;
+		*height = image->normal_height;
 		return image->normalmap;
+	}
 
+	normals = Mat_FindMap (image, "_n.tga");
+	roughs = Mat_FindMap (image, "_r.tga");
+	if (!normals && !roughs && info->bump <= 0)
+		return NULL;
+
+	// what can be told from the picture itself
 	w = image->width;
 	h = image->height;
-	height = malloc (w * h * sizeof(float));
+	bright = malloc (w * h * sizeof(float));
 	for (y=0 ; y<w*h ; y++)
 	{
 		c = image->pixels[y];
-		height[y] = ((c & 0xff) * 0.299f + ((c >> 8) & 0xff) * 0.587f + ((c >> 16) & 0xff) * 0.114f) * (1.0f / 255.0f);
+		bright[y] = ((c & 0xff) * 0.299f + ((c >> 8) & 0xff) * 0.587f + ((c >> 16) & 0xff) * 0.114f) * (1.0f / 255.0f);
 	}
 
-	out = malloc (w * h * sizeof(uint32_t));
+	made = malloc (w * h * sizeof(uint32_t));
 	strength = info->bump * 2.0f;
 
 	for (y=0 ; y<h ; y++)
@@ -287,16 +337,16 @@ uint32_t *R_ImageNormalMap (image_t *image, const matinfo_t *info)
 			xp = (x + 1) % w;
 
 			// Sobel
-			dx = (height[ym*w+xp] + 2 * height[y*w+xp] + height[yp*w+xp]
-				- height[ym*w+xm] - 2 * height[y*w+xm] - height[yp*w+xm]) * 0.25f;
-			dy = (height[yp*w+xm] + 2 * height[yp*w+x] + height[yp*w+xp]
-				- height[ym*w+xm] - 2 * height[ym*w+x] - height[ym*w+xp]) * 0.25f;
+			dx = (bright[ym*w+xp] + 2 * bright[y*w+xp] + bright[yp*w+xp]
+				- bright[ym*w+xm] - 2 * bright[y*w+xm] - bright[yp*w+xm]) * 0.25f;
+			dy = (bright[yp*w+xm] + 2 * bright[yp*w+x] + bright[yp*w+xp]
+				- bright[ym*w+xm] - 2 * bright[ym*w+x] - bright[ym*w+xp]) * 0.25f;
 
 			dx *= -strength;
 			dy *= -strength;
 			len = 1.0f / sqrt (dx * dx + dy * dy + 1.0f);
 
-			rough = info->roughness + (0.5f - height[y*w+x]) * 0.3f;
+			rough = info->roughness + (0.5f - bright[y*w+x]) * 0.3f;
 			if (rough < 0.04f)
 				rough = 0.04f;
 			if (rough > 1.0f)
@@ -306,11 +356,63 @@ uint32_t *R_ImageNormalMap (image_t *image, const matinfo_t *info)
 			ny = (dy * len * 0.5f + 0.5f) * 255.0f + 0.5f;
 			nz = (len * 0.5f + 0.5f) * 255.0f + 0.5f;
 			a = rough * 255.0f + 0.5f;
-			out[y*w+x] = (uint32_t)nx | ((uint32_t)ny << 8) | ((uint32_t)nz << 16) | ((uint32_t)a << 24);
+			made[y*w+x] = (uint32_t)nx | ((uint32_t)ny << 8) | ((uint32_t)nz << 16) | ((uint32_t)a << 24);
 		}
 	}
+	free (bright);
 
-	free (height);
+	out = made;
+	if (normals || roughs)
+	{
+		// as fine as the finest of the maps given
+		int		ow = w, oh = h;
+
+		if (normals)
+		{
+			ow = normals->width;
+			oh = normals->height;
+		}
+		if (roughs && roughs->width > ow)
+		{
+			ow = roughs->width;
+			oh = roughs->height;
+		}
+
+		out = malloc (ow * oh * sizeof(uint32_t));
+		for (y=0 ; y<oh ; y++)
+		{
+			for (x=0 ; x<ow ; x++)
+			{
+				c = made[(y * h / oh) * w + (x * w / ow)];
+				if (normals)
+				{
+					sx = x * normals->width / ow;
+					sy = y * normals->height / oh;
+					c = (c & 0xff000000) | (normals->pixels[sy * normals->width + sx] & 0x00ffffff);
+					if (r_normalflip)
+						c = (c & 0xffff00ff) | ((255 - ((c >> 8) & 0xff)) << 8);
+				}
+				if (roughs)
+				{
+					sx = x * roughs->width / ow;
+					sy = y * roughs->height / oh;
+					rough = (roughs->pixels[sy * roughs->width + sx] & 0xff) * (1.0f / 255.0f) * r_roughscale;
+					if (rough < 0.04f)
+						rough = 0.04f;
+					if (rough > 1.0f)
+						rough = 1.0f;
+					c = (c & 0x00ffffff) | ((uint32_t)(rough * 255.0f + 0.5f) << 24);
+				}
+				out[y * ow + x] = c;
+			}
+		}
+		free (made);
+		w = ow;
+		h = oh;
+	}
+
 	image->normalmap = out;
+	image->normal_width = *width = w;
+	image->normal_height = *height = h;
 	return out;
 }

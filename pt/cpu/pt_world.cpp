@@ -35,8 +35,9 @@ void Texture::Set(const pt_texture_t &src)
 		average = Max(sum / (float)count, Vec3(1e-4f));
 }
 
-void Material::Set(const pt_material_t &src, const Texture *tex, const Texture *normal_tex)
+void Material::Set(const pt_material_t &src, const Texture *tex, const Texture *normal_tex, const Texture *emission_tex)
 {
+	emission_map = (emission_tex && emission_tex->width > 0 && emission_tex->height > 0) ? emission_tex : nullptr;
 	texture = (tex && tex->width > 0 && tex->height > 0) ? tex : nullptr;
 	normal_texture = (normal_tex && normal_tex->width > 0 && normal_tex->height > 0) ? normal_tex : nullptr;
 	emission = Vec3(src.emission);
@@ -322,9 +323,10 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 	for (int i = 0; i < in->num_materials; i++)
 	{
 		Material &m = w->materials[i];
-		m.Set(in->materials[i], texture(in->materials[i].texture), texture(in->materials[i].normal_texture));
+		m.Set(in->materials[i], texture(in->materials[i].texture), texture(in->materials[i].normal_texture),
+			texture(in->materials[i].emission_texture - 1));
 		// glowing detail is too dim and too patchy to be worth sampling as a light
-		m.sampled = m.emissive && !(m.flags & PT_MAT_EMIT_BRIGHT);
+		m.sampled = m.emissive && !(m.flags & PT_MAT_EMIT_BRIGHT) && !m.emission_map;
 		if (m.flags & PT_MAT_WAVES)
 			w->has_waves = true;
 	}
@@ -468,7 +470,8 @@ void BuildFrame(Frame &f, const pt_scene_t *in, const std::vector<std::unique_pt
 
 		f.materials.resize(std::max(1, in->num_materials));
 		for (int i = 0; i < in->num_materials; i++)
-			f.materials[i].Set(in->materials[i], texture(in->materials[i].texture), texture(in->materials[i].normal_texture));
+			f.materials[i].Set(in->materials[i], texture(in->materials[i].texture), texture(in->materials[i].normal_texture),
+				texture(in->materials[i].emission_texture - 1));
 
 		f.tris.resize(in->num_triangles);
 		soup.resize((size_t)in->num_triangles * 3);

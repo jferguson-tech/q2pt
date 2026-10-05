@@ -59,6 +59,10 @@ typedef struct pt_material_s
 	float		alpha;			/* 1 = opaque; less lets light through */
 	float		roughness;		/* 0 = mirror, 1 = fully rough */
 	float		metallic;		/* 0 = dielectric, 1 = metal */
+	int			emission_texture;	/* 0 for none, else 1 + a texture, numbered as
+								   texture is, that says what glows and in what
+								   colour: emitted light is it times emission.
+								   Found by paths only, not sampled as a light. */
 	int			normal_texture;	/* -1 for none; same numbering as texture. RGB is a
 								   tangent space normal (x along u, y along v),
 								   alpha replaces roughness */

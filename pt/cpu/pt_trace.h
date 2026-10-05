@@ -25,6 +25,7 @@ struct Surface
 	Vec3			wo;			// unit, towards where the ray came from
 	bool			front;		// seen from the triangle's counter clockwise side
 	Vec3			colour;		// the texture's colour here
+	Vec3			glow;		// the emission map's, where the material has one
 	Vec3			kd;			// diffuse reflectance
 	Vec3			f0;			// specular reflectance head on
 	float			roughness;

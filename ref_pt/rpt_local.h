@@ -49,6 +49,7 @@ typedef struct image_s
 	uint32_t	*pixels;					// R,G,B,A bytes, premultiplied
 	int			pt_texture;					// backend handle + 1, 0 = not created
 	uint32_t	*normalmap;					// made on demand, see rpt_material.c
+	int			normal_width, normal_height;
 	int			pt_normal_texture;			// backend handle + 1 for normalmap
 } image_t;
 
@@ -134,7 +135,8 @@ void	R_MaterialsChanged (void);
 //
 void	R_InitMaterials (void);
 void	R_MaterialInfo (const char *name, matinfo_t *info);
-uint32_t *R_ImageNormalMap (image_t *image, const matinfo_t *info);
+uint32_t *R_ImageNormalMap (image_t *image, const matinfo_t *info, int *width, int *height);
+image_t	*R_ImageGlowMap (image_t *image);
 
 //
 // rpt_world.c
@@ -155,6 +157,7 @@ extern	cvar_t	*pt_debug;
 extern	float	r_skyscale, r_lampglow;
 extern	float	r_surfacelight, r_pointlight, r_liquidglow;
 extern	float	r_detailglow;
+extern	int		r_normalflip;
 extern	int		r_watermode;		// 0 classic, 1 realistic, 2 simulated
 extern	float	r_watercell, r_waterwaves, r_watercaustics, r_waterdamping;
 extern	float	r_bumpscale, r_roughscale, r_metalscale;

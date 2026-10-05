@@ -203,9 +203,25 @@ static int W_AddMaterial (texinfo_t *tex, int body)
 		mat->emission[0] = mat->emission[1] = mat->emission[2] = info.glow * r_detailglow;
 	}
 	mat->metallic = info.metallic;
-	if (image && info.bump > 0 && !(flags & SURF_SKY))
-		mat->normal_texture = W_AddTexture (image->width, image->height,
-			R_ImageNormalMap (image, &info), &image->normalmap);
+	if (image && !(flags & SURF_SKY))
+	{
+		uint32_t	*detail;
+		int			detail_width, detail_height;
+		image_t		*glowmap;
+
+		detail = R_ImageNormalMap (image, &info, &detail_width, &detail_height);
+		if (detail)
+			mat->normal_texture = W_AddTexture (detail_width, detail_height, detail, &image->normalmap);
+
+		// a picture of what glows beats guessing it from what is bright
+		glowmap = R_ImageGlowMap (image);
+		if (glowmap && value <= 0 && !(flags & SURF_WARP))
+		{
+			mat->flags &= ~PT_MAT_EMIT_BRIGHT;
+			mat->emission_texture = W_AddTexture (glowmap->width, glowmap->height, glowmap->pixels, glowmap) + 1;
+			mat->emission[0] = mat->emission[1] = mat->emission[2] = (info.glow > 0 ? info.glow : 1) * r_detailglow;
+		}
+	}
 
 	if (flags & SURF_SKY)
 		mat->flags |= PT_MAT_SKY;

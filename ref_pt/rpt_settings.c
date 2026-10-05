@@ -64,6 +64,7 @@ static cvar_t	*pt_reflections;		// 0 none, 1 glass and water, 2 everything shiny
 static cvar_t	*pt_reflection_bounces;	// 0 = as many as pt_bounces
 static cvar_t	*pt_reflection_rate;	// how often rough surfaces get a reflection path
 static cvar_t	*pt_refraction;			// water bends the view
+static cvar_t	*pt_normal_flip;			// 1 = hand made normal maps have green pointing up
 static cvar_t	*pt_water;				// 0 classic, 1 realistic, 2 simulated
 static cvar_t	*pt_water_cell;			// size of a simulation cell, in map units
 static cvar_t	*pt_water_caustics;		// strength of the light patterns under and beside water
@@ -81,6 +82,7 @@ float	r_lampglow = 1.5f;
 float	r_surfacelight = 1, r_pointlight = 1, r_liquidglow = 0.25f;
 float	r_detailglow = 1;
 int		r_watermode = 2;
+int		r_normalflip;
 float	r_watercell = 8, r_waterwaves = 1, r_watercaustics = 1, r_waterdamping = 1;
 float	r_bumpscale = 1, r_roughscale = 1, r_metalscale = 1;
 
@@ -153,6 +155,7 @@ void R_InitSettings (void)
 	pt_refraction = ri.Cvar_Get ("pt_refraction", "1", CVAR_ARCHIVE);
 	pt_waves = ri.Cvar_Get ("pt_waves", "1", CVAR_ARCHIVE);
 	pt_water = ri.Cvar_Get ("pt_water", "2", CVAR_ARCHIVE);
+	pt_normal_flip = ri.Cvar_Get ("pt_normal_flip", "0", CVAR_ARCHIVE);
 	pt_water_cell = ri.Cvar_Get ("pt_water_cell", "8", CVAR_ARCHIVE);
 	pt_water_caustics = ri.Cvar_Get ("pt_water_caustics", "1", CVAR_ARCHIVE);
 	pt_water_damping = ri.Cvar_Get ("pt_water_damping", "1", CVAR_ARCHIVE);
@@ -237,6 +240,7 @@ qboolean R_UpdateSettings (void)
 
 	// these act on the running simulations
 	r_waterwaves = pt_water_height->value;
+	r_normalflip = pt_normal_flip->value != 0;	// takes effect when the materials are next made
 	r_watercaustics = pt_water_caustics->value;
 	r_waterdamping = pt_water_damping->value;
 

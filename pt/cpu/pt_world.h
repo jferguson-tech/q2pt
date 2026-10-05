@@ -83,6 +83,7 @@ struct Material
 {
 	const Texture	*texture = nullptr;
 	const Texture	*normal_texture = nullptr;
+	const Texture	*emission_map = nullptr;	// what glows, in place of the rules below
 	const Material	*anim_next = nullptr;
 	int				anim_length = 1;	// materials in the animation this one starts
 	Vec3			emission;			// average
@@ -99,7 +100,7 @@ struct Material
 	bool			emissive = false;
 	bool			sampled = false;	// reached through the light lists, so not counted when hit by chance
 
-	void Set(const pt_material_t &src, const Texture *tex, const Texture *normal_tex);
+	void Set(const pt_material_t &src, const Texture *tex, const Texture *normal_tex, const Texture *emission_tex);
 
 	// the material showing at this step of its animation
 	const Material &At(int frame) const

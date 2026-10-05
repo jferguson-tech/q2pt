@@ -242,6 +242,8 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	}
 
 	s.colour = !mat.texture ? Vec3(1, 1, 1) : (smooth ? mat.texture->Smooth(u, v) : Decode(mat.texture->Texel(u, v)));
+	if (mat.emission_map)
+		s.glow = smooth ? mat.emission_map->Smooth(u, v) : Decode(mat.emission_map->Texel(u, v));
 	s.roughness = mat.roughness;
 
 	Vec3 n = s.ng;
@@ -317,6 +319,8 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 Vec3 Emitted(const Surface &s, bool seen)
 {
 	const Material &m = *s.mat;
+	if (m.emission_map)
+		return m.emission * s.glow;
 	if (m.flags & PT_MAT_EMIT_BRIGHT)
 	{
 		// the lit parts of a screen or a button: bright texels glow, dark ones do not

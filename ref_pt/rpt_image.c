@@ -376,11 +376,9 @@ int R_ImageNormalTexture (image_t *image)
 	if (!image->pt_normal_texture)
 	{
 		R_MaterialInfo (image->name, &info);
-		if (info.bump <= 0)
+		tex.pixels = R_ImageNormalMap (image, &info, &tex.width, &tex.height);
+		if (!tex.pixels)
 			return -1;
-		tex.width = image->width;
-		tex.height = image->height;
-		tex.pixels = R_ImageNormalMap (image, &info);
 		image->pt_normal_texture = rpt.backend->texture_create (rpt.backend, &tex) + 1;
 	}
 	return image->pt_normal_texture - 1;
