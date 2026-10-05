@@ -32,7 +32,16 @@ public:
 	bool Empty() const { return tris_.empty(); }
 
 	// closest hit in (tmin, tmax)
-	bool Intersect(const Ray &ray, Hit &hit) const;
+	bool Intersect(const Ray &ray, Hit &hit) const
+	{
+		return IntersectIf(ray, hit, [](uint32_t, float, float) { return true; });
+	}
+
+	// closest hit among the triangles for which accept(tri, u, v) says yes.
+	// Unlike restarting the ray past a rejected triangle, this cannot step
+	// over another triangle lying in the same plane.
+	template <class F>
+	bool IntersectIf(const Ray &ray, Hit &hit, F accept) const;
 
 	// true if blocks(tri, u, v) says yes for any triangle in (tmin, tmax)
 	template <class F>
@@ -111,6 +120,76 @@ inline bool Bvh::HitTri(const Tri &tri, const Ray &ray, float tmax, float &t, fl
 		return false;
 	t = Dot(tri.e2, q) * inv;
 	return t > ray.tmin && t < tmax;
+}
+
+template <class F>
+bool Bvh::IntersectIf(const Ray &ray, Hit &hit, F accept) const
+{
+	if (nodes_.empty())
+		return false;
+
+	const RayPack pack(ray);
+	struct Entry { uint32_t node; float tnear; };
+	Entry stack[64];
+	int sp = 0;
+	uint32_t ni = 0;
+	float tmax = ray.tmax;
+	bool found = false;
+
+	for (;;)
+	{
+		const Node &n = nodes_[ni];
+		float tnear[2];
+		const int mask = HitChildren(n, pack, tmax, tnear);
+
+		// nearer child first, so a hit in it can rule the other out
+		const int first = (mask == 3 && tnear[1] < tnear[0]) ? 1 : 0;
+		uint32_t next = ~0u;
+		for (int k = 0; k < 2; k++)
+		{
+			const int c = first ^ k;
+			if (!(mask & (1 << c)) || tnear[c] >= tmax)
+				continue;
+			if (n.count[c])
+			{
+				for (uint32_t i = 0; i < n.count[c]; i++)
+				{
+					const Tri &tri = tris_[n.child[c] + i];
+					float t, u, v;
+					if (HitTri(tri, ray, tmax, t, u, v) && accept(tri.index, u, v))
+					{
+						tmax = t;
+						hit.t = t;
+						hit.u = u;
+						hit.v = v;
+						hit.tri = tri.index;
+						found = true;
+					}
+				}
+			}
+			else if (next == ~0u)
+				next = n.child[c];
+			else
+				stack[sp++] = {n.child[c], tnear[c]};
+		}
+
+		if (next != ~0u)
+		{
+			ni = next;
+			continue;
+		}
+		for (;;)
+		{
+			if (!sp)
+				return found;
+			const Entry e = stack[--sp];
+			if (e.tnear < tmax)
+			{
+				ni = e.node;
+				break;
+			}
+		}
+	}
 }
 
 template <class F>

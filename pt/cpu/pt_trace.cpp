@@ -43,7 +43,7 @@ bool Visible(const Scene &sc, const Surface &s, Vec3 target, Rng &rng)
 
 	const auto blocks = [&](const Tri &t, float u, float v)
 	{
-		if (IsHole(t, u, v))
+		if (IsHole(t, u, v) || BackOfGlass(t, shadow.d))
 			return false;
 		return t.mat->alpha >= 1.0f || rng.Float() < t.mat->alpha;
 	};
@@ -112,6 +112,13 @@ Lit PointLight(const Surface &s, const Light &l, float scale)
 
 } // namespace
 
+bool BackOfGlass(const Tri &tri, Vec3 dir)
+{
+	// sprites, beams and particles are flat things meant to be seen from both sides
+	return tri.mat->alpha < 1.0f && !(tri.mat->flags & (PT_MAT_BLACK | PT_MAT_EMIT_TEXTURE))
+		&& Dot(tri.n, dir) > 0.0f;
+}
+
 bool Finite(float f)
 {
 	uint32_t bits;
@@ -131,12 +138,14 @@ bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &
 {
 	for (int skips = 0; ; skips++)
 	{
-		bool found = sc.world->bvh.Intersect(ray, hit);
+		bool found = sc.world->bvh.IntersectIf(ray, hit,
+			[&](uint32_t t, float, float) { return !BackOfGlass(sc.world->tris[t], ray.d); });
 		Ray r = ray;
 		if (found)
 			r.tmax = hit.t;
 		Hit h;
-		if (sc.frame->bvh.Intersect(r, h))
+		if (sc.frame->bvh.IntersectIf(r, h,
+			[&](uint32_t t, float, float) { return !BackOfGlass(sc.frame->tris[t], ray.d); }))
 		{
 			hit = h;
 			hit.tri |= kDynamic;
@@ -458,9 +467,12 @@ bool SampleSpecular(const Surface &s, Rng &rng, Vec3 &wi, Vec3 &weight)
 	return true;
 }
 
-Vec3 Radiance(const Scene &sc, Ray ray, Rng &rng, bool camera, bool count_emitters, int depth, int max_bounces)
+Vec3 Radiance(const Scene &sc, Ray ray, Rng &rng, bool camera, bool count_emitters, int depth, int max_bounces,
+	float *reached)
 {
 	Vec3 radiance, throughput(1, 1, 1);
+	if (reached)
+		*reached = FLT_MAX;
 
 	for (;; depth++, camera = false)
 	{
@@ -468,6 +480,11 @@ Vec3 Radiance(const Scene &sc, Ray ray, Rng &rng, bool camera, bool count_emitte
 		const Tri *tri;
 		if (!Closest(sc, ray, rng, camera, true, hit, tri))
 			return radiance;
+		if (reached)
+		{
+			*reached = hit.t;
+			reached = nullptr;
+		}
 		if (tri->mat->flags & PT_MAT_SKY)
 			return radiance + throughput * sc.world->Sky(ray.d);
 

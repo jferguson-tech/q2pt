@@ -473,7 +473,8 @@ static void S_AddParticles (refdef_t *fd, vec3_t forward, vec3_t right, vec3_t u
 		scale = (p->origin[0] - fd->vieworg[0]) * forward[0]
 			+ (p->origin[1] - fd->vieworg[1]) * forward[1]
 			+ (p->origin[2] - fd->vieworg[2]) * forward[2];
-		scale = scale < 20 ? 1.5 : 1.5 + scale * 0.006;
+		// ref_gl draws a soft dot that fills only the middle of its triangle
+		scale = scale < 20 ? 0.6 : 0.6 + scale * 0.0025;
 
 		for (j=0 ; j<3 ; j++)
 		{

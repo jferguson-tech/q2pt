@@ -54,6 +54,7 @@ static cvar_t	*pt_bounces;
 static cvar_t	*pt_exposure;
 static cvar_t	*pt_stats;
 static cvar_t	*pt_taa;
+static cvar_t	*pt_debug;
 
 //=============================================================================
 
@@ -232,6 +233,9 @@ qboolean R_Init (void *hInstance, void *wndProc)
 	pt_exposure = ri.Cvar_Get ("pt_exposure", "2", CVAR_ARCHIVE);
 	pt_stats = ri.Cvar_Get ("pt_stats", "0", 0);
 	pt_taa = ri.Cvar_Get ("pt_taa", "1", CVAR_ARCHIVE);
+	// 1 surface colour, 2 diffuse light, 3 specular, 4 glass and water layers,
+	// 5 unfiltered extras, 6 normals, 7 history length, 8 layer history length
+	pt_debug = ri.Cvar_Get ("pt_debug", "0", 0);
 
 #ifdef RPT_RTX
 	pt_rtx_disable = ri.Cvar_Get ("pt_rtx_disable", "0", CVAR_ARCHIVE);
@@ -397,6 +401,7 @@ void R_RenderFrame (refdef_t *fd)
 	view.bounces = pt_bounces->value;
 	view.exposure = pt_exposure->value;
 	view.antialias = pt_taa->value != 0;
+	view.debug = pt_debug->value;
 	R_BuildScene (fd, &scene);
 	view.scene = &scene;
 

@@ -46,6 +46,11 @@ struct Lit
 bool Finite(float f);
 Vec3 ClampSample(Vec3 c);
 
+// See-through surfaces are one sided, as the game draws them: from behind
+// they are not there. A pane of glass modelled as a slab would otherwise tint
+// and reflect twice.
+bool BackOfGlass(const Tri &tri, Vec3 dir);
+
 // Nearest surface along the ray, in the world or the frame. Holes are stepped
 // through, and so are surfaces the camera must not see when the ray comes
 // from it. With cross set, surfaces that let light through are crossed at
@@ -73,6 +78,8 @@ bool SampleSpecular(const Surface &s, Rng &rng, Vec3 &wi, Vec3 &weight);
 // Radiance arriving back along the ray. camera: the ray left the eye.
 // count_emitters: emitters in the light lists count if hit (the bounce that
 // made this ray could not have sampled them). depth: bounces already taken.
-Vec3 Radiance(const Scene &sc, Ray ray, Rng &rng, bool camera, bool count_emitters, int depth, int max_bounces);
+// reached, if given, gets how far the ray went before it met anything.
+Vec3 Radiance(const Scene &sc, Ray ray, Rng &rng, bool camera, bool count_emitters, int depth, int max_bounces,
+	float *reached = nullptr);
 
 } // namespace pt

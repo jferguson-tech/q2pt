@@ -142,6 +142,7 @@ typedef struct pt_view_s
 	int		bounces;		/* maximum path length after the first hit */
 	float	exposure;
 	int		antialias;	/* blend frames over time to smooth edges */
+	int		debug;			/* 0 = the picture; otherwise one part of it, see pt_debug */
 } pt_view_t;
 
 /*
