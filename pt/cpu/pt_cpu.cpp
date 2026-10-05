@@ -140,6 +140,7 @@ struct CpuBackend
 	std::vector<FilterLight> filter_a, filter_b;
 	std::vector<Vec3>		hdr;			// this frame's picture before it is steadied
 	std::vector<Vec3>		steady, steady_prev;	// the picture blended over time
+	std::vector<float>		steady_count, steady_count_prev;	// frames in each pixel's blend
 	std::vector<uint32_t>	ldr;			// tone mapped, render sized
 	int						rw = 0, rh = 0;
 	bool					have_history = false;
@@ -426,6 +427,8 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 
 		Vec3 hist[kChannels];
 		float hm1[kChannels] = {}, hm2[kChannels] = {}, hlen = 0.0f, wsum = 0.0f;
+		bool have_spot = false;
+		int spot_x = 0, spot_y = 0;	// the pixel this point was nearest to last frame
 
 		if (s->have_history)
 		{
@@ -440,6 +443,9 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 				const float fx = (Dot(v, prev_cam.right) / (z * prev_cam.tx) * 0.5f + 0.5f) * rw - 0.5f - s->jitter_x;
 				const float fy = (0.5f - Dot(v, prev_cam.up) / (z * prev_cam.ty) * 0.5f) * rh - 0.5f - s->jitter_y;
 				const int ix = (int)std::floor(fx + 0.001f), iy = (int)std::floor(fy + 0.001f);
+				have_spot = true;
+				spot_x = (int)std::floor(fx + 0.5f);
+				spot_y = (int)std::floor(fy + 0.5f);
 				const float ax = fx - ix, ay = fy - iy;
 				const float limit = 1.0f + cur.depth[i] * 0.01f;
 
@@ -466,6 +472,37 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 					}
 					hlen += prev.length[q] * w;
 					wsum += w;
+				}
+			}
+		}
+
+		if (wsum <= 0.01f && s->have_history && have_spot)
+		{
+			// Nothing usable right where this point was. Along an edge a
+			// pixel shows one surface on some frames and its neighbour on
+			// others, so the same surface is usually one pixel away.
+			const float limit = 1.0f + cur.depth[i] * 0.01f;
+			for (int dy = -1; dy <= 1; dy++)
+			{
+				for (int dx = -1; dx <= 1; dx++)
+				{
+					const int qx = spot_x + dx, qy = spot_y + dy;
+					if (qx < 0 || qy < 0 || qx >= rw || qy >= rh)
+						continue;
+					const size_t q = (size_t)qy * rw + qx;
+					if (prev.depth[q] < 0.0f || prev.length[q] <= 0.0f)
+						continue;
+					if (std::fabs(Dot(cur.plane[i], prev.pos[q] - cur.pos[i])) > limit ||
+						Dot(cur.plane[i], prev.plane[q]) < 0.9f)
+						continue;
+					for (int c = 0; c < kChannels; c++)
+					{
+						hist[c] += prev.light[c][q];
+						hm1[c] += prev.m1[c][q];
+						hm2[c] += prev.m2[c][q];
+					}
+					hlen += prev.length[q];
+					wsum += 1.0f;
 				}
 			}
 		}
@@ -631,68 +668,90 @@ float Halton(uint32_t index, uint32_t base)
 	return r;
 }
 
-// Temporal anti-aliasing. The finished picture is blended with last frame's,
-// found by following each point back to where it was on screen; history that
-// no longer looks like anything nearby is pulled back to what does.
-void Steady(CpuBackend *s, const Camera &cam, const Camera &prev_cam, bool have_history, int y)
+// Temporal anti-aliasing. Each frame looks through a different point of
+// every pixel; averaged over frames that gives smooth edges, but any single
+// frame must count for very little or the picture visibly jumps about with
+// the offsets. So every pixel keeps count of how many frames are in its
+// average, and a new one counts for one over that.
+//
+// History is found by following the point back to where it was on screen.
+// It is not thrown away for being a different surface: along an edge a pixel
+// sees one side on some frames and the other side on others, and the blend
+// of the two is exactly the smooth edge wanted. What keeps stale history out
+// is that it may not stray outside what the pixel and its neighbours show
+// now.
+void Steady(CpuBackend *s, const Camera &cam, const Camera &prev_cam, bool have_history, float max_count, int y)
 {
 	const int rw = s->rw, rh = s->rh;
+	const Vec3 *prev = s->steady_prev.data();
+	const float *prev_count = s->steady_count_prev.data();
+	const Pixels &was = s->prev;
 
 	for (int x = 0; x < rw; x++)
 	{
 		const size_t i = (size_t)y * rw + x;
 		const Vec3 c = s->hdr[i];
+		const bool sky = s->cur.depth[i] < 0.0f;
 		Vec3 out = c;
+		float count = 1.0f;
 
 		if (have_history)
 		{
 			// the sky has no position: use a point far along its ray
 			Vec3 p = s->cur.pos[i];
-			if (s->cur.depth[i] < 0.0f)
+			if (sky)
 				p = cam.origin + Normalize(cam.forward
 					+ cam.right * ((2.0f * (x + 0.5f) / rw - 1.0f) * cam.tx)
 					+ cam.up * ((1.0f - 2.0f * (y + 0.5f) / rh) * cam.ty)) * 100000.0f;
 
+			// where it was, less this frame's offset within the pixel (which
+			// the sky point was not seen through)
 			const Vec3 v = p - prev_cam.origin;
 			const float z = Dot(v, prev_cam.forward);
-			// surfaces were seen through this frame's offset; the sky point was not
-			const float ox = s->cur.depth[i] < 0.0f ? 0.0f : s->jitter_x, oy = s->cur.depth[i] < 0.0f ? 0.0f : s->jitter_y;
+			const float ox = sky ? 0.0f : s->jitter_x, oy = sky ? 0.0f : s->jitter_y;
 			const float fx = z > 0.01f ? (Dot(v, prev_cam.right) / (z * prev_cam.tx) * 0.5f + 0.5f) * rw - 0.5f - ox + 0.001f : -10.0f;
 			const float fy = z > 0.01f ? (0.5f - Dot(v, prev_cam.up) / (z * prev_cam.ty) * 0.5f) * rh - 0.5f - oy + 0.001f : -10.0f;
 
-			const Vec3 *prev = s->steady_prev.data();
-			const Pixels &was = s->prev;
 			bool found = false;
 			Vec3 h;
+			float hcount = 0.0f;
 
 			if (fx >= 0.0f && fy >= 0.0f && fx <= rw - 1.0f && fy <= rh - 1.0f)
 			{
 				const int ix = std::min((int)fx, rw - 2 < 0 ? 0 : rw - 2), iy = std::min((int)fy, rh - 2 < 0 ? 0 : rh - 2);
 				const int ix1 = std::min(ix + 1, rw - 1), iy1 = std::min(iy + 1, rh - 1);
 				const float ax = fx - ix, ay = fy - iy;
+				const size_t q00 = (size_t)iy * rw + ix, q01 = (size_t)iy * rw + ix1;
+				const size_t q10 = (size_t)iy1 * rw + ix, q11 = (size_t)iy1 * rw + ix1;
 
-				// is what was there last frame the same surface?
-				const size_t q = (size_t)(ay < 0.5f ? iy : iy1) * rw + (ax < 0.5f ? ix : ix1);
-				if (s->cur.depth[i] < 0.0f)
-					found = was.depth[q] < 0.0f;
-				else
-					found = was.depth[q] >= 0.0f
+				h = (prev[q00] * (1.0f - ax) + prev[q01] * ax) * (1.0f - ay)
+					+ (prev[q10] * (1.0f - ax) + prev[q11] * ax) * ay;
+				hcount = (prev_count[q00] * (1.0f - ax) + prev_count[q01] * ax) * (1.0f - ay)
+					+ (prev_count[q10] * (1.0f - ax) + prev_count[q11] * ax) * ay;
+				found = true;
+
+				// Something that moves with the eye, like the weapon in hand,
+				// was not where the world says: it was on this same pixel. Take
+				// that when the place it should have come from held something
+				// else and this pixel held much the same thing.
+				if (!sky && (ax > 0.01f || ay > 0.01f || ix != x || iy != y))
+				{
+					const size_t q = (ay < 0.5f ? (ax < 0.5f ? q00 : q01) : (ax < 0.5f ? q10 : q11));
+					const bool same_there = was.depth[q] >= 0.0f
 						&& std::fabs(Dot(s->cur.plane[i], was.pos[q] - s->cur.pos[i])) <= 1.0f + s->cur.depth[i] * 0.01f
 						&& Dot(s->cur.plane[i], was.plane[q]) > 0.9f;
-				if (found)
-					h = (prev[(size_t)iy * rw + ix] * (1.0f - ax) + prev[(size_t)iy * rw + ix1] * ax) * (1.0f - ay)
-						+ (prev[(size_t)iy1 * rw + ix] * (1.0f - ax) + prev[(size_t)iy1 * rw + ix1] * ax) * ay;
-			}
-			// something that moves with the eye stays on the same pixel instead
-			if (!found && s->cur.depth[i] >= 0.0f && was.depth[i] > 0.0f
-				&& std::fabs(was.depth[i] - s->cur.depth[i]) < 0.1f * s->cur.depth[i]
-				&& Dot(s->cur.plane[i], was.plane[i]) > 0.8f)
-			{
-				h = prev[i];
-				found = true;
+					const bool same_here = was.depth[i] > 0.0f
+						&& std::fabs(was.depth[i] - s->cur.depth[i]) < 0.1f * s->cur.depth[i]
+						&& Dot(s->cur.plane[i], was.plane[i]) > 0.8f;
+					if (!same_there && same_here)
+					{
+						h = prev[i];
+						hcount = prev_count[i];
+					}
+				}
 			}
 
-			if (found)
+			if (found && hcount >= 1.0f)
 			{
 				// what this pixel and its neighbours show now bounds what history may say
 				Vec3 lo = c, hi = c;
@@ -711,18 +770,21 @@ void Steady(CpuBackend *s, const Camera &cam, const Camera &prev_cam, bool have_
 						hi = Max(hi, q);
 					}
 				}
-				h = Max(lo, Min(hi, h));
+				const Vec3 clamped = Max(lo, Min(hi, h));
 
-				// Each frame looks through a different point of the pixel, so a
-				// new frame must count for little or the picture would visibly
-				// jump about with it: the longer this surface has been in
-				// view, the less.
-				const float frames = std::min(std::max(s->cur.length[i], 4.0f), 64.0f);
-				out = h + (c - h) * (1.0f / frames);
+				// history that had to be pulled back a long way was about
+				// something else; let the picture catch up quickly
+				const float pulled = Luminance(Max(clamped - h, h - clamped));
+				if (pulled > 0.1f * (Luminance(clamped) + 0.02f))
+					hcount = std::min(hcount, 4.0f);
+
+				count = std::min(hcount + 1.0f, max_count);
+				out = clamped + (c - clamped) * (1.0f / count);
 			}
 		}
 
 		s->steady[i] = out;
+		s->steady_count[i] = count;
 		s->ldr[i] = ToneMap(out);
 	}
 }
@@ -767,6 +829,8 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		s->hdr.assign(count, Vec3());
 		s->steady.assign(count, Vec3());
 		s->steady_prev.assign(count, Vec3());
+		s->steady_count.assign(count, 0.0f);
+		s->steady_count_prev.assign(count, 0.0f);
 		s->ldr.assign(count, 0);
 		s->have_history = false;
 	}
@@ -869,7 +933,8 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 
 	const bool have_history = s->have_history && antialias && s->antialiased;
 	s->antialiased = antialias;
-	s->pool.Run(rh, [&](int y) { Steady(s, cam, prev_cam, have_history, y); });
+	const float max_count = cam == prev_cam ? 1024.0f : 16.0f;
+	s->pool.Run(rh, [&](int y) { Steady(s, cam, prev_cam, have_history, max_count, y); });
 
 	// stretch to the view with bilinear filtering
 	const int vw = view->width, vh = view->height;
@@ -904,6 +969,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	// this frame becomes the history the next one looks back at
 	std::swap(s->cur, s->prev);
 	std::swap(s->steady, s->steady_prev);
+	std::swap(s->steady_count, s->steady_count_prev);
 	s->prev_camera = cam;
 	s->prev_hash = hash;
 	s->have_history = true;
