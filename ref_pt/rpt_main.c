@@ -356,6 +356,8 @@ void R_BeginFrame (float camera_separation)
 	memset (rpt.overlay, 0, rpt.width * rpt.height * sizeof(uint32_t));
 }
 
+static void R_DrawStats (refdef_t *fd);
+
 /*
 @@@@@@@@@@@@@@@@@@@@@
 R_RenderFrame
@@ -365,7 +367,6 @@ void R_RenderFrame (refdef_t *fd)
 {
 	pt_view_t	view;
 	pt_scene_t	scene;
-	const char	*stats;
 	static float	styles[MAX_LIGHTSTYLES];
 	int			i;
 
@@ -434,14 +435,96 @@ void R_RenderFrame (refdef_t *fd)
 #endif
 
 	if (pt_stats->value)
-	{
-		static int	count;
+		R_DrawStats (fd);
+}
 
-		stats = rpt.backend->stats (rpt.backend);
-		Draw_String (fd->x + 8, fd->y + 8, stats);
-		if (pt_stats->value >= 2 && !(++count % 20))
-			ri.Con_Printf (PRINT_ALL, "pt: %s\n", (char *)stats);	// 2: also to the console now and then
+/*
+===============
+R_DrawStats
+
+pt_stats 1: how fast the game is running and where the time goes, in the
+corner of the view. 2: also in the console now and then.
+
+The rates are of whole frames, from one being shown to the next, so they
+include the game itself; the backend's lines are about the picture alone.
+===============
+*/
+static int		perf_last;				// when the last frame was shown
+static int		perf_since, perf_frames, perf_worst;
+static float	perf_fps, perf_ms, perf_worst_ms;
+
+static void R_CountFrame (void)
+{
+	int		now, took;
+
+	now = Sys_Milliseconds ();
+	took = now - perf_last;
+	perf_last = now;
+	if (took < 0 || took > 2000)
+	{	// the first frame, or a pause: start counting again
+		perf_since = now;
+		perf_frames = perf_worst = 0;
+		return;
 	}
+
+	perf_frames++;
+	if (took > perf_worst)
+		perf_worst = took;
+	if (now - perf_since >= 500)
+	{
+		perf_ms = (float)(now - perf_since) / perf_frames;
+		perf_fps = 1000.0f / perf_ms;
+		perf_worst_ms = perf_worst;
+		perf_since = now;
+		perf_frames = perf_worst = 0;
+	}
+}
+
+static void R_DrawStats (refdef_t *fd)
+{
+	static int	count;
+	char		lines[6][80];
+	char		text[400];
+	char		*s, *bar;
+	int			i, num, width, x, y;
+
+	num = 0;
+	Com_sprintf (lines[num++], sizeof(lines[0]), "%3.0f fps  %.1f ms  worst %.0f ms", perf_fps, perf_ms, perf_worst_ms);
+	Com_sprintf (lines[num++], sizeof(lines[0]), "%s  %dx%d", rpt.backend->name, rpt.width, rpt.height);
+
+	strncpy (text, rpt.backend->stats (rpt.backend), sizeof(text) - 1);
+	text[sizeof(text) - 1] = 0;
+	if (pt_stats->value >= 2 && !(++count % 20))
+	{
+		char	flat[400];
+
+		strcpy (flat, text);
+		for (s=flat ; *s ; s++)
+			if (*s == '|')
+				*s = ' ';
+		ri.Con_Printf (PRINT_ALL, "pt: %.0f fps %s\n", perf_fps, flat);
+	}
+	for (s=text ; s && *s && num<6 ; s=bar)
+	{
+		bar = strchr (s, '|');
+		if (bar)
+			*bar++ = 0;
+		Com_sprintf (lines[num++], sizeof(lines[0]), "%.78s", s);
+	}
+
+	width = 0;
+	for (i=0 ; i<num ; i++)
+		if ((int)strlen (lines[i]) > width)
+			width = strlen (lines[i]);
+
+	// top right, clear of the console's notify lines, on a dark plate
+	x = fd->x + fd->width - width * 8 - 12;
+	y = fd->y + 4;
+	if (x < fd->x)
+		x = fd->x;
+	Draw_FadeBox (x, y, width * 8 + 8, num * 10 + 6);
+	for (i=0 ; i<num ; i++)
+		Draw_String (x + 4, y + 4 + i * 10, lines[i]);
 }
 
 /*
@@ -452,6 +535,7 @@ R_EndFrame
 void R_EndFrame (void)
 {
 	rpt.backend->present (rpt.backend, rpt.overlay);
+	R_CountFrame ();
 	R_ShotFinish ();
 }
 

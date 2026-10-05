@@ -1409,6 +1409,7 @@ static menulist_s		s_pt_tonemap_list;
 static menulist_s		s_pt_bloom_box;
 static menulist_s		s_pt_fog_box;
 static menulist_s		s_pt_water_list;
+static menulist_s		s_pt_stats_box;
 
 #define	PT_QUALITY_CUSTOM	4
 
@@ -1468,6 +1469,11 @@ static void PT_WaterFunc( void *unused )
 	Cvar_SetValue( "pt_water", s_pt_water_list.curvalue );
 }
 
+static void PT_StatsFunc( void *unused )
+{
+	Cvar_SetValue( "pt_stats", s_pt_stats_box.curvalue );
+}
+
 /*
 ** PT_SetMenuValues
 **
@@ -1490,6 +1496,7 @@ static void PT_SetMenuValues( void )
 	s_pt_bloom_box.curvalue = Cvar_VariableValue( "pt_bloom" ) > 0;
 	s_pt_fog_box.curvalue = Cvar_VariableValue( "pt_fog" ) != 0;
 	s_pt_water_list.curvalue = (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_water" ) );
+	s_pt_stats_box.curvalue = Cvar_VariableValue( "pt_stats" ) != 0;
 }
 
 void PathTrace_MenuInit( void )
@@ -1543,6 +1550,7 @@ void PathTrace_MenuInit( void )
 	Cvar_Get( "pt_bloom", "0.3", CVAR_ARCHIVE );
 	Cvar_Get( "pt_fog", "1", CVAR_ARCHIVE );
 	Cvar_Get( "pt_water", "2", CVAR_ARCHIVE );
+	Cvar_Get( "pt_stats", "0", CVAR_ARCHIVE );
 
 	s_pt_menu.x = viddef.width / 2;
 	s_pt_menu.y = viddef.height / 2 - 58;
@@ -1621,6 +1629,13 @@ void PathTrace_MenuInit( void )
 	s_pt_water_list.generic.callback	= PT_WaterFunc;
 	s_pt_water_list.itemnames			= water_names;
 
+	s_pt_stats_box.generic.type			= MTYPE_SPINCONTROL;
+	s_pt_stats_box.generic.x			= 0;
+	s_pt_stats_box.generic.y			= 110;
+	s_pt_stats_box.generic.name			= "performance info";
+	s_pt_stats_box.generic.callback		= PT_StatsFunc;
+	s_pt_stats_box.itemnames			= yesno_names;
+
 	PT_SetMenuValues();
 
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_quality_list );
@@ -1633,6 +1648,7 @@ void PathTrace_MenuInit( void )
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_bloom_box );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_fog_box );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_water_list );
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_stats_box );
 }
 
 void PathTrace_MenuDraw (void)
@@ -1643,7 +1659,7 @@ void PathTrace_MenuDraw (void)
 	PT_SetMenuValues();
 	Menu_AdjustCursor( &s_pt_menu, 1 );
 	Menu_Draw( &s_pt_menu );
-	Menu_DrawStringDark( viddef.width / 2 - (int)strlen( note ) * 4, s_pt_menu.y + 124, note );
+	Menu_DrawStringDark( viddef.width / 2 - (int)strlen( note ) * 4, s_pt_menu.y + 134, note );
 }
 
 const char *PathTrace_MenuKey( int key )

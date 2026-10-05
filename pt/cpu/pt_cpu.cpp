@@ -1639,7 +1639,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	{
 		return std::chrono::duration<double, std::milli>(c - a).count();
 	};
-	snprintf(s->stats, sizeof(s->stats), "%dx%d %dspp %db: %.1f ms (build %.1f trace %.1f history %.1f filter %.1f out %.1f) %zu dyn tris typ %.4f exp %.2f%s",
+	snprintf(s->stats, sizeof(s->stats), "%dx%d %dspp %db: %.1f ms|build %.1f trace %.1f history %.1f filter %.1f out %.1f|%zu dyn tris typ %.4f exp %.2f%s",
 		rw, rh, samples, bounces, ms(start, end), ms(start, built), ms(built, traced), ms(traced, accumulated),
 		ms(accumulated, filtered), ms(filtered, end),
 		s->frame.tris.size(), typical, exposure, still ? " still" : "");

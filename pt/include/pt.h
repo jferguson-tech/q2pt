@@ -230,7 +230,8 @@ struct pt_backend_s
 	void	(*render_view)(pt_backend_t *self, const pt_view_t *view);
 	void	(*present)(pt_backend_t *self, const uint32_t *overlay);
 
-	/* one line about the last frame, valid until the next call */
+	/* about the last view rendered, valid until the next call: a few short
+	   lines of text separated by '|' */
 	const char *(*stats)(pt_backend_t *self);
 
 	/* the picture last presented: width*height pixels, bytes R,G,B,A, top row

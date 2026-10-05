@@ -25,7 +25,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "rpt_local.h"
 
-cvar_t	*pt_stats;				// 1: timings on screen, 2: and in the console
+cvar_t	*pt_stats;				// 1: frame rate and timings on screen, 2: and in the console
 cvar_t	*pt_debug;				// one component of the picture, see below
 
 static cvar_t	*pt_quality;			// 0 low, 1 medium, 2 high, 3 ultra, -1 custom
@@ -116,7 +116,7 @@ R_InitSettings
 */
 void R_InitSettings (void)
 {
-	pt_stats = ri.Cvar_Get ("pt_stats", "0", 0);
+	pt_stats = ri.Cvar_Get ("pt_stats", "0", CVAR_ARCHIVE);
 	// 1 surface colour, 2 diffuse light, 3 specular, 4 glass and water layers,
 	// 5 unfiltered extras, 6 normals, 7 history length, 8 layer history length,
 	// 9 seen through water, 10 depth

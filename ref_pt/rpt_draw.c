@@ -310,6 +310,30 @@ void Draw_FadeScreen (void)
 		rpt.overlay[i] = Blend (black, rpt.overlay[i]);
 }
 
+/*
+================
+Draw_FadeBox
+
+Darkens a box, as black at 60%, for text to be read against
+================
+*/
+void Draw_FadeBox (int x, int y, int w, int h)
+{
+	const uint32_t	black = 153u << 24;
+	int				x1, y1, dx, dy;
+
+	x1 = x + w > rpt.width ? rpt.width : x + w;
+	y1 = y + h > rpt.height ? rpt.height : y + h;
+	if (x < 0)
+		x = 0;
+	if (y < 0)
+		y = 0;
+
+	for (dy=y ; dy<y1 ; dy++)
+		for (dx=x ; dx<x1 ; dx++)
+			rpt.overlay[dy * rpt.width + dx] = Blend (black, rpt.overlay[dy * rpt.width + dx]);
+}
+
 //====================================================================
 
 /*
