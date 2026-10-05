@@ -48,6 +48,14 @@ static cvar_t	*pt_rtx_disable;
 static model_t	r_models[MAX_RPT_MODELS];
 static int		numr_models;
 static char		r_skyname[MAX_QPATH];
+static char		r_worldname[MAX_QPATH];
+static qboolean	r_worlddirty;
+
+static cvar_t	*pt_scale;
+static cvar_t	*pt_samples;
+static cvar_t	*pt_bounces;
+static cvar_t	*pt_exposure;
+static cvar_t	*pt_stats;
 
 //=============================================================================
 
@@ -220,6 +228,12 @@ qboolean R_Init (void *hInstance, void *wndProc)
 	vid_fullscreen = ri.Cvar_Get ("vid_fullscreen", "0", CVAR_ARCHIVE);
 	gl_mode = ri.Cvar_Get ("gl_mode", "3", CVAR_ARCHIVE);
 
+	pt_scale = ri.Cvar_Get ("pt_scale", "0.5", CVAR_ARCHIVE);
+	pt_samples = ri.Cvar_Get ("pt_samples", "1", CVAR_ARCHIVE);
+	pt_bounces = ri.Cvar_Get ("pt_bounces", "3", CVAR_ARCHIVE);
+	pt_exposure = ri.Cvar_Get ("pt_exposure", "3", CVAR_ARCHIVE);
+	pt_stats = ri.Cvar_Get ("pt_stats", "0", 0);
+
 #ifdef RPT_RTX
 	pt_rtx_disable = ri.Cvar_Get ("pt_rtx_disable", "0", CVAR_ARCHIVE);
 	if (pt_rtx_disable->value)
@@ -273,6 +287,9 @@ void R_Shutdown (void)
 	R_ShutdownImages ();
 	memset (r_models, 0, sizeof(r_models));
 	numr_models = 0;
+	r_worldname[0] = 0;
+	r_skyname[0] = 0;
+	r_worlddirty = false;
 	R_DestroyWindow ();
 }
 
@@ -333,6 +350,9 @@ void R_BeginRegistration (char *model)
 
 	Com_sprintf (fullname, sizeof(fullname), "maps/%s.bsp", model);
 	R_RegisterModel (fullname);
+
+	strcpy (r_worldname, fullname);
+	r_worlddirty = true;
 }
 
 /*
@@ -358,6 +378,8 @@ R_SetSky
 */
 void R_SetSky (char *name, float rotate, vec3_t axis)
 {
+	if (strcmp (r_skyname, name))
+		r_worlddirty = true;
 	strncpy (r_skyname, name, sizeof(r_skyname)-1);
 	r_skyname[sizeof(r_skyname)-1] = 0;
 }
@@ -392,23 +414,44 @@ R_RenderFrame
 */
 void R_RenderFrame (refdef_t *fd)
 {
-	static const char	*lines[2] = { RPT_LABEL, "no scene yet" };
-	pt_view_t			view;
-	int					i;
+	pt_view_t	view;
+	const char	*stats;
 
 	if (fd->rdflags & RDF_NOWORLDMODEL)
 		return;		// menu model previews
 
+	if (r_worlddirty)
+	{
+		r_worlddirty = false;
+		R_LoadWorld (r_worldname, r_skyname);
+	}
+
+	memset (&view, 0, sizeof(view));
 	view.x = fd->x;
 	view.y = fd->y;
 	view.width = fd->width;
 	view.height = fd->height;
 	view.time = fd->time;
+	VectorCopy (fd->vieworg, view.origin);
+	AngleVectors (fd->viewangles, view.forward, view.right, view.up);
+	view.fov_x = fd->fov_x;
+	view.fov_y = fd->fov_y;
+	view.scale = pt_scale->value;
+	view.samples = pt_samples->value;
+	view.bounces = pt_bounces->value;
+	view.exposure = pt_exposure->value;
 	rpt.backend->render_view (rpt.backend, &view);
 
-	for (i=0 ; i<2 ; i++)
-		Draw_String (fd->x + (fd->width - (int)strlen (lines[i]) * 8) / 2,
-			fd->y + fd->height / 3 + i * 12, lines[i]);
+#ifdef RPT_RTX
+	Draw_String (fd->x + (fd->width - (int)strlen (RPT_LABEL) * 8) / 2, fd->y + fd->height / 3, RPT_LABEL);
+	Draw_String (fd->x + (fd->width - 12 * 8) / 2, fd->y + fd->height / 3 + 12, "no scene yet");
+#endif
+
+	if (pt_stats->value)
+	{
+		stats = rpt.backend->stats (rpt.backend);
+		Draw_String (fd->x + 8, fd->y + 8, stats);
+	}
 }
 
 /*

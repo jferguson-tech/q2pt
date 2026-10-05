@@ -602,6 +602,16 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	s->has_view = true;
 }
 
+// no tracer yet, so there is nothing to do with a world
+void LoadWorld(pt_backend_t *, const pt_world_t *)
+{
+}
+
+const char *Stats(pt_backend_t *)
+{
+	return "";
+}
+
 void Record(RtxBackend *s, uint32_t image_index)
 {
 	VkCommandBuffer cmd = s->cmd;
@@ -775,8 +785,10 @@ extern "C" pt_backend_t *pt_rtx_create(const pt_create_t *ci, char *err, int err
 	RtxBackend *s = new RtxBackend;
 	s->base.name = "RTX path tracer";
 	s->base.destroy = Destroy;
+	s->base.load_world = LoadWorld;
 	s->base.render_view = RenderView;
 	s->base.present = Present;
+	s->base.stats = Stats;
 	s->log = ci->log;
 	s->hwnd = (HWND)ci->hwnd;
 	s->width = ci->width;
