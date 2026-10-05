@@ -1733,7 +1733,7 @@ static void Render_StartFunc( void *unused )
 	Cvar_SetValue( "pt_render_fps", s_render_fps[s_render_fps_list.curvalue] );
 	Cvar_SetValue( "pt_render_paths", s_render_paths[s_render_paths_list.curvalue] );
 	CL_RenderStart( s_render_names[s_render_demo_list.curvalue],
-		s_render_fps[s_render_fps_list.curvalue], s_render_paths[s_render_paths_list.curvalue] );
+		s_render_fps[s_render_fps_list.curvalue], s_render_paths[s_render_paths_list.curvalue], 0, 0 );
 }
 
 void RenderDemo_MenuInit( void )

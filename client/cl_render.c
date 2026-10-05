@@ -20,13 +20,15 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 // cl_render.c -- rendering a recorded demo offline, as pictures for a film
 //
-//	pt_render <demo> [frames a second] [paths a pixel]
+//	pt_render <demo> [frames a second] [paths a pixel] [start] [length]
 //
 // plays the demo with the game's clock stepped by exactly one film frame
 // per frame drawn, however long the drawing takes. The path traced renderer
 // is told (pt_offline) to spend that many paths on every pixel of every
 // frame and to save each as a PNG; the sound that belongs to each frame is
-// mixed into a WAV beside them. What comes out, in <game>/render/<demo>/:
+// mixed into a WAV beside them. With a start and a length, in seconds, only
+// that part of the demo is rendered: what comes before is played through
+// at the same step but not kept. What comes out, in <game>/render/<demo>/:
 //
 //	frame00000.png ...	the pictures
 //	sound.wav			the sound
@@ -42,7 +44,11 @@ static int		render_state;
 static char		render_name[MAX_QPATH];
 static char		render_dir[MAX_OSPATH];
 static int		render_fps, render_paths;
-static int		render_frame;			// frames begun so far
+static int		render_frame;			// frames of the demo begun so far
+static int		render_first;			// the first one to keep
+static int		render_count;			// how many to keep; 0 = to the end
+static qboolean	render_keeping;			// frames are being rendered and saved
+static int		render_kept_since;		// when that began, for the time left
 static int		render_expected;		// roughly how many there will be
 static int		render_started;			// when, by the clock on the wall
 static qboolean	render_loading;			// the demo has begun to load
@@ -73,7 +79,8 @@ static void CL_RenderEnd (qboolean complete)
 		seconds = (Sys_Milliseconds () - render_started) / 1000;
 		Com_Printf ("\n%s %s: %i frames (%.1f seconds at %i a second) in %i:%02i:%02i\n",
 			complete ? "Rendered" : "Stopped rendering", render_name,
-			render_frame, (float)render_frame / render_fps, render_fps,
+			render_frame > render_first ? render_frame - render_first : 0,
+			(float)(render_frame > render_first ? render_frame - render_first : 0) / render_fps, render_fps,
 			seconds / 3600, seconds / 60 % 60, seconds % 60);
 		Com_Printf ("They are in %s\n", render_dir);
 		Com_Printf ("Run render.bat there to make a video of them (needs ffmpeg).\n");
@@ -121,11 +128,8 @@ void CL_RenderFrame (void)
 			M_ForceMenuOff ();
 			cls.key_dest = key_game;
 			Con_ClearNotify ();
-
-			Cvar_Set ("pt_offline_dir", render_dir);
-			Cvar_SetValue ("pt_offline", render_paths);
-			render_sound = S_CaptureStart (va("%s/sound.wav", render_dir));
 			render_frame = 0;
+			render_keeping = false;
 			render_started = Sys_Milliseconds ();
 			render_state = RENDER_RUNNING;
 		}
@@ -146,6 +150,20 @@ void CL_RenderFrame (void)
 		return;
 	}
 
+	if (render_count && render_frame >= render_first + render_count)
+	{	// that was the part asked for
+		CL_RenderEnd (true);
+		Cbuf_AddText ("disconnect\n");
+		return;
+	}
+	if (!render_keeping && render_frame >= render_first)
+	{	// from here on the frames are made properly and saved
+		Cvar_Set ("pt_offline_dir", render_dir);
+		Cvar_SetValue ("pt_offline", render_paths);
+		render_sound = S_CaptureStart (va("%s/sound.wav", render_dir));
+		render_keeping = true;
+	}
+
 	// The game's clock counts whole milliseconds, which do not divide into
 	// most frame rates: each frame is given however many take the total to
 	// where it should be by then, so that the error never adds up.
@@ -153,19 +171,27 @@ void CL_RenderFrame (void)
 	if (msec < 1)
 		msec = 1;
 	Cvar_SetValue ("fixedtime", msec);
-	S_CaptureStep (render_frame, render_fps);
+	if (render_keeping)
+		S_CaptureStep (render_frame - render_first, render_fps);
 	render_frame++;
 
 	// progress goes in the title bar, where it is not in the picture
 	elapsed = (Sys_Milliseconds () - render_started) / 1000;
-	if (render_frame > 4 && render_expected > render_frame)
+	if (!render_keeping)
+		Com_sprintf (title, sizeof(title), "Rendering %s: playing up to the start, %i of %i - Esc stops",
+			render_name, render_frame, render_first);
+	else if (render_frame - render_first > 4 && render_expected > render_frame)
 	{
-		left = (int)((double)elapsed * (render_expected - render_frame) / render_frame);
+		// only the frames kept take any time to speak of
+		if (!render_kept_since)
+			render_kept_since = Sys_Milliseconds ();
+		left = (int)((double)(Sys_Milliseconds () - render_kept_since) / 1000 * (render_expected - render_frame)
+			/ (render_frame - render_first));
 		Com_sprintf (title, sizeof(title), "Rendering %s: frame %i of about %i, about %i:%02i:%02i left - Esc stops",
-			render_name, render_frame, render_expected, left / 3600, left / 60 % 60, left % 60);
+			render_name, render_frame - render_first, render_expected - render_first, left / 3600, left / 60 % 60, left % 60);
 	}
 	else
-		Com_sprintf (title, sizeof(title), "Rendering %s: frame %i - Esc stops", render_name, render_frame);
+		Com_sprintf (title, sizeof(title), "Rendering %s: frame %i - Esc stops", render_name, render_frame - render_first);
 	VID_SetTitle (title);
 }
 
@@ -212,7 +238,7 @@ CL_RenderStart
 Returns false, having said why, if it cannot begin
 ===============
 */
-qboolean CL_RenderStart (char *demo, int fps, int paths)
+qboolean CL_RenderStart (char *demo, int fps, int paths, float start, float duration)
 {
 	char	name[MAX_OSPATH];
 	char	*s;
@@ -267,6 +293,17 @@ qboolean CL_RenderStart (char *demo, int fps, int paths)
 	render_fps = fps < 1 ? 1 : (fps > 240 ? 240 : fps);
 	render_paths = paths < 4 ? 4 : (paths > 4096 ? 4096 : paths);
 	render_expected = blocks * render_fps / 10;
+	render_first = start > 0 ? (int)(start * render_fps) : 0;
+	render_count = duration > 0 ? (int)(duration * render_fps + 0.5f) : 0;
+	if (render_first >= render_expected)
+	{
+		Com_Printf ("%s is only about %.1f seconds long\n", render_name, blocks / 10.0f);
+		return false;
+	}
+	if (render_count && render_first + render_count < render_expected)
+		render_expected = render_first + render_count;
+	render_keeping = false;
+	render_kept_since = 0;
 
 	Com_sprintf (render_dir, sizeof(render_dir), "%s/render/%s", FS_Gamedir (), render_name);
 	FS_CreatePath (va("%s/x", render_dir));
@@ -281,7 +318,7 @@ qboolean CL_RenderStart (char *demo, int fps, int paths)
 	CL_RenderBatch ();
 
 	Com_Printf ("Rendering %s at %i frames a second, %i paths a pixel: about %i frames\n",
-		render_name, render_fps, render_paths, render_expected);
+		render_name, render_fps, render_paths, render_expected - render_first);
 
 	render_fixedtime = Cvar_VariableValue ("fixedtime");
 	render_loading = false;
@@ -297,13 +334,15 @@ static void CL_Render_f (void)
 {
 	if (Cmd_Argc () < 2)
 	{
-		Com_Printf ("pt_render <demo> [frames a second] [paths a pixel]\n"
+		Com_Printf ("pt_render <demo> [frames a second] [paths a pixel] [start] [length]\n"
 			"Renders a demo recorded with \"record\" as pictures and sound for a video.\n"
-			"60 frames a second and 64 paths a pixel unless given.\n");
+			"60 frames a second and 64 paths a pixel unless given. start and length,\n"
+			"in seconds, pick a part of the demo; without them all of it is rendered.\n");
 		return;
 	}
 	CL_RenderStart (Cmd_Argv (1), Cmd_Argc () > 2 ? atoi (Cmd_Argv (2)) : 60,
-		Cmd_Argc () > 3 ? atoi (Cmd_Argv (3)) : 64);
+		Cmd_Argc () > 3 ? atoi (Cmd_Argv (3)) : 64,
+		Cmd_Argc () > 4 ? atof (Cmd_Argv (4)) : 0, Cmd_Argc () > 5 ? atof (Cmd_Argv (5)) : 0);
 }
 
 void CL_InitRender (void)
