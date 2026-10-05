@@ -8,6 +8,7 @@ Quake 2's renderer interface to that header lives in `../ref_pt`.
 
 - `include/pt.h` - the C API
 - `cpu/` - CPU backend
-- `rtx/` - Vulkan ray tracing backend (Nvidia only for now)
+- `rtx/` - Vulkan backend (Nvidia only for now): the same tracer as compute
+  shaders using ray queries; it builds its light lists with `cpu/pt_world.cpp`
 - `water/` - height field wave simulation for bodies of liquid
 - `png/` - PNG writer

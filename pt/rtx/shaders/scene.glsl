@@ -97,7 +97,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	vec4	medium;			// xyz: what the liquid the eye is in soaks up; w: exposure
 	ivec4	output_i;		// tone curve, filter passes, frames kept while moving, there is history
 	vec4	output_f;		// saturation, contrast, bloom, nothing has changed since last frame
-	ivec4	frame_has;		// smooth normals, where things were last frame, which of each pair of images is this frame's, unused
+	ivec4	frame_has;		// smooth normals, where things were last frame, which of each pair of images is this frame's, anti-aliasing
 	ivec4	size;			// of the picture being traced; zw unused
 } fr;
 
@@ -133,6 +133,9 @@ layout(set = 0, binding = 22, rgba16f) uniform image2D img_kept[6];		// the thre
 layout(set = 0, binding = 23, rgba16f) uniform image2D img_filter[6];	// the three being filtered
 layout(set = 0, binding = 24, rgba8) uniform image2D img_picture;
 layout(std430, set = 0, binding = 25) buffer Meter { uint v[]; } meter;	// sums for the exposure
+layout(set = 0, binding = 26, rgba16f) uniform image2D img_hdr;			// the picture put together, exposed, before grading
+layout(set = 0, binding = 27, rgba16f) uniform image2D img_bloom[2];	// its glow, at half size in the corner of each
+layout(set = 0, binding = 28, rgba16f) uniform image2D img_steady[2];	// the graded picture gathered over frames; a: frames
 
 float Luminance(vec3 c)
 {

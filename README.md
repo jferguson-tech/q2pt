@@ -4,17 +4,16 @@
 
 A path traced renderer for the original Quake 2 source release (3.21), ported
 to 64-bit Windows. The game can be switched while it runs between the original
-OpenGL renderer and a CPU path tracer that lights every frame by tracing
-paths through the map: no lightmaps and no rasterized geometry. A Vulkan ray
-tracing renderer for Nvidia RTX cards is in progress: it traces the scene but
-does not light it yet. The path tracing core is
+OpenGL renderer and a path tracer that lights every frame by tracing paths
+through the map: no lightmaps and no rasterized geometry. The path tracer
+runs on the CPU, or on the GPU with an Nvidia RTX card. The path tracing core is
 a separate, engine-independent library under the MIT license.
 
 <!-- screenshot -->
 
 ## Features
 
-**CPU path tracer** (`ref_ptcpu.dll`)
+**Path tracer** (on the CPU: `ref_ptcpu.dll`)
 
 * Every light in the map lights the scene directly: surface lights, point
   lights and spotlights from the map's entities, the sky, and dynamic lights.
@@ -44,15 +43,28 @@ Each frame is built from nothing at full resolution and saved as a PNG, with
 optional motion blur. The sound is mixed in step into a WAV, and a script is
 written that turns both into a video with ffmpeg.
 
-**RTX renderer** (`ref_ptrtx.dll`), in progress
+**RTX renderer** (`ref_ptrtx.dll`)
 
-It traces the scene on the GPU with Vulkan ray queries: the map and everything
-that moves are held in acceleration structures (the moving part rebuilt every
-frame) and a compute shader sends a ray per pixel through them. So far it
-shows what the eye sees, textured and simply shaded, with the sky and
-see-through surfaces. The lighting, the denoiser and the other features of the
-CPU renderer are not there yet. Every setting goes through the same interface
-as the CPU renderer, so it will take them over as it is written.
+The same path tracer on the GPU, for Nvidia RTX cards, written as Vulkan
+compute shaders that trace with ray queries. The map and everything that moves
+are held in acceleration structures, the moving part rebuilt every frame. The
+shaders follow the CPU tracer function for function, and the lights and the
+tables for finding them are built by the CPU tracer's own code, so the two
+light a map the same way. It has the lighting, materials, glass and liquids,
+fog, the three water modes, the denoiser, anti-aliasing, auto exposure, bloom,
+tone mapping, screenshots and offline rendering.
+
+Measured on an RTX 4090 beside a 16 core Ryzen 7950X, on the first map at
+800x600 with one path per pixel and three bounces: about 190 frames a second,
+where the CPU renderer manages 9. Offline frames at 64 paths per pixel take
+about a quarter of a second each, some twenty times faster than on the CPU.
+
+Not yet on the GPU: the light patterns water throws on what is near it
+(`pt_water_caustics`), adaptive sampling, and the separate history the CPU
+renderer keeps for mirror reflections. Its denoiser decides how far to smooth
+from how long a pixel has been in view rather than from measured noise, and
+at a lower internal resolution the picture is stretched rather than rebuilt
+at full size.
 
 ## Requirements
 
@@ -92,7 +104,8 @@ The 32-bit build is started from `run\x86` with `quake2.exe +set basedir ..`.
 
 **F8** steps through the renderers: OpenGL, CPU path tracer, RTX. They are
 also in the video menu, which has a *path tracing options* page. Without an
-Nvidia RTX card the RTX renderer is skipped.
+Nvidia RTX card the RTX renderer is skipped. Setting `PT_VK_VALIDATE` in the
+environment turns on the Vulkan validation layer for it.
 
 Some console commands and variables:
 
@@ -118,7 +131,7 @@ Some console commands and variables:
 pt/         the path tracing core (MIT): knows nothing about Quake 2
   include/pt.h    the C interface a host program uses
   cpu/            CPU backend: BVH, path tracer, denoiser, output
-  rtx/            Vulkan backend
+  rtx/            Vulkan backend: the same tracer as compute shaders
   water/          height field wave simulation
   png/            PNG writer
 ref_pt/     the renderer DLLs (GPL): turns Quake 2's maps, models and

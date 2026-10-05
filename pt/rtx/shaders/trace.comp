@@ -188,7 +188,8 @@ void main()
 		// crossed it stands in as the surface, so that its light is still
 		// gathered over time.
 		imageStore(img_surface[now], pixel, vec4(layer_n, have_layer ? layer_depth : -1.0));
-		imageStore(img_seen, pixel, vec4(layer_p, layer_roughness));
+		// the sky is as good as infinitely far off
+		imageStore(img_seen, pixel, vec4(have_layer ? layer_p : eye + eye_dir * 100000.0, layer_roughness));
 		imageStore(img_albedo[0], pixel, vec4(0.0));
 		imageStore(img_albedo[1], pixel, vec4(0.0));
 		imageStore(img_noisy[0], pixel, vec4(0.0));

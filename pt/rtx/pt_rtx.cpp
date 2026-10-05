@@ -48,6 +48,12 @@ const uint32_t atrous_comp_spv[] =
 const uint32_t compose_comp_spv[] =
 #include "compose.comp.inc"
 ;
+const uint32_t bloom_comp_spv[] =
+#include "bloom.comp.inc"
+;
+const uint32_t resolve_comp_spv[] =
+#include "resolve.comp.inc"
+;
 
 const uint32_t VENDOR_NVIDIA = 0x10DE;
 
@@ -130,7 +136,7 @@ struct GpuLight
 
 const uint32_t kBitEmissive = 1, kBitSampled = 2;	// GpuMaterial::bits
 const int kNumStyles = 256;							// light styles, at the start of the tables
-const uint32_t kNumBindings = 26;
+const uint32_t kNumBindings = 29;
 
 // The pictures kept per pixel between the passes, in the order the shaders'
 // bindings take them; see scene.glsl.
@@ -144,7 +150,10 @@ enum
 	kKept = 9,		// 6
 	kFilter = 15,	// 6
 	kPicture = 21,
-	kNumTargets
+	kHdr = 22,
+	kBloom = 23,	// 2
+	kSteady = 25,	// 2
+	kNumTargets = 27
 };
 
 const uint32_t kMaxTextures = 4096;
@@ -299,6 +308,10 @@ struct RtxBackend
 	VkPipelineLayout		trace_playout = VK_NULL_HANDLE;
 	VkPipeline				trace_pipeline = VK_NULL_HANDLE, temporal_pipeline = VK_NULL_HANDLE;
 	VkPipeline				atrous_pipeline = VK_NULL_HANDLE, compose_pipeline = VK_NULL_HANDLE;
+	VkPipeline				bloom_pipeline = VK_NULL_HANDLE, resolve_pipeline = VK_NULL_HANDLE;
+	bool					bloom_on = false;
+	float					camera[16] = {};		// the last view, to tell whether it has moved
+	FrameBlock				block{};				// what the shaders were last told
 	int						filter_passes = 0;
 	bool					trace_ready = false;	// there is a picture of this frame's view to show
 	bool					trace_pending = false;	// but it has yet to be traced
@@ -312,6 +325,7 @@ struct RtxBackend
 
 	// for reading a frame back
 	Buffer					readback;
+	std::vector<uint32_t>	last_overlay;
 	int						view_rect[4] = {0, 0, 0, 0};	// x, y, width, height of this frame's view
 	int						shown[4] = {0, 0, 0, 0};		// and of the one last presented
 	bool					shown_traced = false;
@@ -951,8 +965,9 @@ void FreeBuffer(RtxBackend *s, Buffer &b)
 
 // A buffer the shaders and the acceleration structure builds can address.
 // `mapped` ones are written from here, and sit in the card's own memory
-// where it can be reached from here at all.
-Buffer MakeBuffer(RtxBackend *s, VkDeviceSize size, VkBufferUsageFlags usage, bool mapped)
+// where it can be reached from here at all. That memory is very slow to
+// read back from, so what is `read_here` is kept in ordinary memory.
+Buffer MakeBuffer(RtxBackend *s, VkDeviceSize size, VkBufferUsageFlags usage, bool mapped, bool read_here = false)
 {
 	Buffer b;
 	try
@@ -968,7 +983,13 @@ Buffer MakeBuffer(RtxBackend *s, VkDeviceSize size, VkBufferUsageFlags usage, bo
 		vkGetBufferMemoryRequirements(s->device, b.buffer, &mr);
 		const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 		uint32_t type = 0;
-		if (mapped)
+		if (read_here)
+		{
+			if (!TryMemoryType(s, mr.memoryTypeBits, host | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, type)
+				&& !TryMemoryType(s, mr.memoryTypeBits, host, type))
+				Throw("no memory the host can read");
+		}
+		else if (mapped)
 		{
 			if (!TryMemoryType(s, mr.memoryTypeBits, host | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, type)
 				&& !TryMemoryType(s, mr.memoryTypeBits, host, type))
@@ -1310,10 +1331,12 @@ float Clamp01(float v)
 // A material as the shaders read it. slot() turns the numbers the host
 // gave its textures into slots; handles are slots already.
 template <class F>
-void SetMaterial(const RtxBackend *s, GpuMaterial &out, const pt_material_t &in, F slot)
+void SetMaterial(const RtxBackend *s, GpuMaterial &dest, const pt_material_t &in, F slot)
 {
 	const auto used = [&](int t) { return (t >= 0 && t < (int)kMaxTextures && s->textures[t].view) ? t : -1; };
 
+	// put together here: where it is going is slow to read back from
+	GpuMaterial out;
 	memset(&out, 0, sizeof(out));
 	out.texture = used(slot(in.texture));
 	out.normal_texture = used(slot(in.normal_texture));
@@ -1348,6 +1371,7 @@ void SetMaterial(const RtxBackend *s, GpuMaterial &out, const pt_material_t &in,
 	// glowing detail is too dim and too patchy to be worth sampling as a light
 	if (emissive && !(in.flags & PT_MAT_EMIT_BRIGHT) && out.emission_map < 0)
 		out.bits |= kBitSampled;
+	dest = out;
 }
 
 // ------------------------------------------------------------ descriptors
@@ -1469,6 +1493,7 @@ void MakeTargets(RtxBackend *s, int width, int height)
 	const struct { uint32_t binding, first, count; } groups[] = {
 		{17, kSurface, 2}, {18, kSeen, 1}, {19, kAlbedo, 2}, {20, kNoisy, 3},
 		{21, kExtra, 1}, {22, kKept, 6}, {23, kFilter, 6}, {24, kPicture, 1},
+		{26, kHdr, 1}, {27, kBloom, 2}, {28, kSteady, 2},
 	};
 	VkDescriptorImageInfo info[kNumTargets];
 	for (const auto &g : groups)
@@ -1544,6 +1569,8 @@ void CreateScene(RtxBackend *s)
 	bind[22].descriptorCount = 6;
 	bind[23].descriptorCount = 6;
 	bind[25].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	bind[27].descriptorCount = 2;
+	bind[28].descriptorCount = 2;
 
 	VkDescriptorSetLayoutCreateInfo dlci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
 	dlci.bindingCount = kNumBindings;
@@ -1583,6 +1610,8 @@ void CreateScene(RtxBackend *s)
 	s->temporal_pipeline = MakeComputePipeline(s, temporal_comp_spv, sizeof(temporal_comp_spv));
 	s->atrous_pipeline = MakeComputePipeline(s, atrous_comp_spv, sizeof(atrous_comp_spv));
 	s->compose_pipeline = MakeComputePipeline(s, compose_comp_spv, sizeof(compose_comp_spv));
+	s->bloom_pipeline = MakeComputePipeline(s, bloom_comp_spv, sizeof(bloom_comp_spv));
+	s->resolve_pipeline = MakeComputePipeline(s, resolve_comp_spv, sizeof(resolve_comp_spv));
 
 	// every texture slot shows something from the start
 	const uint32_t white = 0xffffffffu;
@@ -1638,7 +1667,7 @@ void CreateScene(RtxBackend *s)
 	s->frame_lights = MakeBuffer(s, 64 * sizeof(GpuLight), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
 	s->tables = MakeBuffer(s, kNumStyles * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
 	s->indices = MakeBuffer(s, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
-	s->meter = MakeBuffer(s, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+	s->meter = MakeBuffer(s, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, true);
 	memset(s->meter.ptr, 0, 64);
 	Reserve(s, s->world, 1, 1, kWorldBuild, false);
 	Reserve(s, s->frame, 1, 1, kFrameBuild, true);
@@ -1664,7 +1693,8 @@ void DestroyScene(RtxBackend *s)
 		FreeTexture(s, t);
 	FreeTexture(s, s->blank);
 	FreeTargets(s);
-	for (VkPipeline p : {s->trace_pipeline, s->temporal_pipeline, s->atrous_pipeline, s->compose_pipeline})
+	for (VkPipeline p : {s->trace_pipeline, s->temporal_pipeline, s->atrous_pipeline, s->compose_pipeline,
+		s->bloom_pipeline, s->resolve_pipeline})
 		if (p)
 			vkDestroyPipeline(s->device, p, nullptr);
 	if (s->trace_playout) vkDestroyPipelineLayout(s->device, s->trace_playout, nullptr);
@@ -2019,17 +2049,19 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 		out.transform.matrix[0][0] = out.transform.matrix[1][1] = out.transform.matrix[2][2] = 1.0f;
 		out.instanceCustomIndex = i;		// the shaders tell them apart by this
 		out.mask = 0xff;
-		// rays are told to pass through the backs of triangles; only glass heeds that
-		out.flags = (i & 1) ? VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR
-			: VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+		// rays are told to pass through the backs of triangles; only glass
+		// heeds that. Its front is the side its corners run counter clockwise
+		// seen from, which is how the card takes them unless told otherwise.
+		out.flags = (i & 1) ? 0 : VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
 		out.accelerationStructureReference = parts[i].blas->address;
 	}
 
 	// ---- the view
 	AdaptExposure(s, view);
 
-	FrameBlock &f = *static_cast<FrameBlock *>(s->frame_block.ptr);
-	FrameBlock was = f;
+	// filled in here and copied to the card at the end
+	FrameBlock &f = s->block;
+	const FrameBlock was = f;
 	memset(&f, 0, sizeof(f));
 	for (int i = 0; i < 3; i++)
 	{
@@ -2044,8 +2076,27 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	}
 	f.origin[3] = std::tan(view->fov_x * 0.5f * 3.14159265f / 180.0f);
 	f.forward[3] = std::tan(view->fov_y * 0.5f * 3.14159265f / 180.0f);
-	const bool same_camera = s->has_history && !memcmp(f.origin, was.origin, 16 * sizeof(float));
-	memcpy(f.prev_origin, was.origin, 16 * sizeof(float));		// origin, forward, right, up
+	const bool same_camera = s->has_history && !memcmp(f.origin, s->camera, sizeof(s->camera));
+	memcpy(s->camera, f.origin, sizeof(s->camera));			// origin, forward, right, up
+	memcpy(f.prev_origin, was.origin, sizeof(s->camera));
+
+	// each frame looks through a slightly different point of every pixel, so
+	// that over time edges are seen from all across it
+	if (view->antialias && !view->debug)
+	{
+		const auto halton = [](uint32_t index, uint32_t base)
+		{
+			float fr = 1.0f, r = 0.0f;
+			for (; index; index /= base)
+			{
+				fr /= base;
+				r += fr * (index % base);
+			}
+			return r;
+		};
+		f.right[3] = halton((s->frame_index + 1) % 16 + 1, 2) - 0.5f;
+		f.up[3] = halton((s->frame_index + 1) % 16 + 1, 3) - 0.5f;
+	}
 
 	for (int i = 0; i < 4; i++)
 	{
@@ -2124,10 +2175,11 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.output_f[2] = view->bloom;
 
 	// the light styles, which flicker
-	float *tables = static_cast<float *>(s->tables.ptr);
+	float styles[kNumStyles];
 	for (int i = 0; i < kNumStyles; i++)
-		tables[i] = (view->light_styles && i < view->num_light_styles) ? view->light_styles[i] : 1.0f;
-	hash = HashBytes(tables, kNumStyles * sizeof(float), hash);
+		styles[i] = (view->light_styles && i < view->num_light_styles) ? view->light_styles[i] : 1.0f;
+	memcpy(s->tables.ptr, styles, sizeof(styles));
+	hash = HashBytes(styles, sizeof(styles), hash);
 
 	// everything outside the camera that changes the picture
 	hash = HashBytes(&view->anim_frame, sizeof(view->anim_frame), hash);
@@ -2144,9 +2196,12 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.frame_has[0] = (scene && scene->normals) ? 1 : 0;
 	f.frame_has[1] = (scene && scene->prev_positions) ? 1 : 0;
 	f.frame_has[2] = s->parity;
+	f.frame_has[3] = (view->antialias && !view->debug) ? 1 : 0;
+	s->bloom_on = view->bloom > 0.0f && !view->debug;
 	f.size[0] = rw;
 	f.size[1] = rh;
 
+	memcpy(s->frame_block.ptr, &f, sizeof(f));
 	s->prev_time = view->time;
 	s->trace_ready = true;
 	s->trace_pending = true;
@@ -2245,8 +2300,27 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 		source = 1 + (i & 1);
 	}
 
-	// and put together for the screen
+	// put together
 	run(s->compose_pipeline, source, 0, 0);
+	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
+
+	// the glow of what is too bright for the screen: taken out at half size,
+	// then blurred across and down three times, which comes close to a gaussian
+	if (s->bloom_on)
+	{
+		run(s->bloom_pipeline, 0, 0, 0);
+		BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
+		for (int i = 0; i < 3; i++)
+		{
+			run(s->bloom_pipeline, 1, 0, 0);
+			BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
+			run(s->bloom_pipeline, 2, 0, 0);
+			BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
+		}
+	}
+
+	// and graded for the screen, edges smoothed over frames
+	run(s->resolve_pipeline, s->bloom_on ? 1 : 0, 0, 0);
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
 	s->has_history = true;
@@ -2357,7 +2431,7 @@ int ReadPixels(pt_backend_t *b, uint32_t *pixels, int with_overlay)
 		if (!s->readback.buffer || s->readback.size < bytes)
 		{
 			FreeBuffer(s, s->readback);
-			s->readback = MakeBuffer(s, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+			s->readback = MakeBuffer(s, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, true);
 		}
 		VkCommandBuffer cmd = BeginOnce(s);
 		VkBufferImageCopy region{};
@@ -2367,7 +2441,9 @@ int ReadPixels(pt_backend_t *b, uint32_t *pixels, int with_overlay)
 		EndOnce(s);
 
 		const uint32_t *traced = static_cast<const uint32_t *>(s->readback.ptr);
-		const uint32_t *overlay = static_cast<const uint32_t *>(s->staging_ptr);
+		const uint32_t *overlay = s->last_overlay.data();
+		if (s->last_overlay.size() != (size_t)s->width * s->height)
+			with_overlay = 0;
 		// a view made since the last frame was shown can be read already
 		const int *rect = s->has_view ? s->view_rect : s->shown;
 		const bool traced_now = s->has_view ? s->trace_ready : s->shown_traced;
@@ -2515,6 +2591,7 @@ void PresentFrame(RtxBackend *s, const uint32_t *overlay)
 		Check(r, "vkAcquireNextImageKHR");
 
 	memcpy(s->staging_ptr, overlay, (size_t)s->width * s->height * 4);
+	s->last_overlay.assign(overlay, overlay + (size_t)s->width * s->height);	// for reading the frame back
 	vkResetFences(s->device, 1, &s->fence);
 	vkResetCommandBuffer(s->cmd, 0);
 	Record(s, index);
