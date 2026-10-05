@@ -265,6 +265,7 @@ qboolean R_Init (void *hInstance, void *wndProc)
 	ri.Vid_NewWindow (rpt.width, rpt.height);
 
 	R_InitImages ();
+	R_InitMaterials ();
 	Draw_InitLocal ();
 
 	ri.Vid_MenuInit ();
@@ -367,6 +368,8 @@ void R_RenderFrame (refdef_t *fd)
 	pt_view_t	view;
 	pt_scene_t	scene;
 	const char	*stats;
+	static float	styles[MAX_LIGHTSTYLES];
+	int			i;
 
 	if (fd->rdflags & RDF_NOWORLDMODEL)
 		return;		// menu model previews
@@ -393,6 +396,12 @@ void R_RenderFrame (refdef_t *fd)
 	view.exposure = pt_exposure->value;
 	R_BuildScene (fd, &scene);
 	view.scene = &scene;
+
+	for (i=0 ; i<MAX_LIGHTSTYLES ; i++)
+		styles[i] = fd->lightstyles ? fd->lightstyles[i].white : 1;
+	view.light_styles = styles;
+	view.num_light_styles = MAX_LIGHTSTYLES;
+	view.anim_frame = (int)(fd->time * 2);
 	rpt.backend->render_view (rpt.backend, &view);
 
 	// damage flashes, underwater tint and the like
@@ -405,8 +414,12 @@ void R_RenderFrame (refdef_t *fd)
 
 	if (pt_stats->value)
 	{
+		static int	count;
+
 		stats = rpt.backend->stats (rpt.backend);
 		Draw_String (fd->x + 8, fd->y + 8, stats);
+		if (pt_stats->value >= 2 && !(++count % 20))
+			ri.Con_Printf (PRINT_ALL, "pt: %s\n", (char *)stats);	// 2: also to the console now and then
 	}
 }
 

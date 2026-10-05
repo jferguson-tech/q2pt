@@ -4,6 +4,7 @@
 
 #include "pt_math.h"
 
+#include <immintrin.h>
 #include <vector>
 
 namespace pt {
@@ -20,7 +21,8 @@ struct Hit
 	uint32_t	tri;		// index as given to Build
 };
 
-// Bounding volume hierarchy over a triangle soup
+// Bounding volume hierarchy over a triangle soup. Each node holds the boxes
+// of both its children, so one SSE test decides which of them a ray enters.
 class Bvh
 {
 public:
@@ -39,10 +41,10 @@ public:
 private:
 	struct Node
 	{
-		float		bmin[3];
-		uint32_t	left;		// inner: children are left and left+1. leaf: first triangle
-		float		bmax[3];
-		uint32_t	count;		// 0 for inner nodes
+		// per axis: child 0 min, child 1 min, child 0 max, child 1 max
+		float		bx[4], by[4], bz[4];
+		uint32_t	child[2];	// inner: node index. leaf: first triangle
+		uint32_t	count[2];	// triangles in a leaf, 0 for an inner node
 	};
 	struct Tri
 	{
@@ -50,29 +52,45 @@ private:
 		uint32_t	index;
 	};
 	struct BuildPrim;
+	struct Ref
+	{
+		uint32_t	index, count;
+	};
 
-	void BuildNode(uint32_t node, BuildPrim *prims, uint32_t first, uint32_t count);
+	Ref BuildNode(BuildPrim *prims, uint32_t first, uint32_t count, float *lo, float *hi);
 
-	static bool HitBox(const Node &n, const Ray &ray, Vec3 inv, float tmax, float &tnear);
+	// which children the ray enters before tmax, as a 2 bit mask, and where
+	struct RayPack
+	{
+		__m128	ox, oy, oz, ix, iy, iz, tmin;
+
+		explicit RayPack(const Ray &r)
+			: ox(_mm_set1_ps(r.o.x)), oy(_mm_set1_ps(r.o.y)), oz(_mm_set1_ps(r.o.z)),
+			  ix(_mm_set1_ps(1.0f / r.d.x)), iy(_mm_set1_ps(1.0f / r.d.y)), iz(_mm_set1_ps(1.0f / r.d.z)),
+			  tmin(_mm_set1_ps(r.tmin)) {}
+	};
+	static int HitChildren(const Node &n, const RayPack &r, float tmax, float *tnear);
 	static bool HitTri(const Tri &tri, const Ray &ray, float tmax, float &t, float &u, float &v);
 
-	std::vector<Node>	nodes_;
+	std::vector<Node>	nodes_;		// nodes_[0] is the root
 	std::vector<Tri>	tris_;
 };
 
-inline bool Bvh::HitBox(const Node &n, const Ray &ray, Vec3 inv, float tmax, float &tnear)
+inline int Bvh::HitChildren(const Node &n, const RayPack &r, float tmax, float *tnear)
 {
-	float t0 = ray.tmin, t1 = tmax;
-	for (int a = 0; a < 3; a++)
-	{
-		float ta = (n.bmin[a] - ray.o[a]) * inv[a];
-		float tb = (n.bmax[a] - ray.o[a]) * inv[a];
-		if (ta > tb) { const float s = ta; ta = tb; tb = s; }
-		if (ta > t0) t0 = ta;
-		if (tb < t1) t1 = tb;
-	}
-	tnear = t0;
-	return t0 <= t1;
+	const __m128 tx = _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(n.bx), r.ox), r.ix);
+	const __m128 ty = _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(n.by), r.oy), r.iy);
+	const __m128 tz = _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(n.bz), r.oz), r.iz);
+	// swap the min and max halves so each lane sees both of its slab's planes
+	const __m128 sx = _mm_shuffle_ps(tx, tx, _MM_SHUFFLE(1, 0, 3, 2));
+	const __m128 sy = _mm_shuffle_ps(ty, ty, _MM_SHUFFLE(1, 0, 3, 2));
+	const __m128 sz = _mm_shuffle_ps(tz, tz, _MM_SHUFFLE(1, 0, 3, 2));
+	const __m128 enter = _mm_max_ps(_mm_max_ps(_mm_min_ps(tx, sx), _mm_min_ps(ty, sy)),
+		_mm_max_ps(_mm_min_ps(tz, sz), r.tmin));
+	const __m128 leave = _mm_min_ps(_mm_min_ps(_mm_max_ps(tx, sx), _mm_max_ps(ty, sy)),
+		_mm_min_ps(_mm_max_ps(tz, sz), _mm_set1_ps(tmax)));
+	_mm_storel_pi((__m64 *)tnear, enter);
+	return _mm_movemask_ps(_mm_cmple_ps(enter, leave)) & 3;
 }
 
 // Moller-Trumbore
@@ -101,41 +119,42 @@ bool Bvh::AnyHit(const Ray &ray, F blocks) const
 	if (nodes_.empty())
 		return false;
 
-	const Vec3 inv(1.0f / ray.d.x, 1.0f / ray.d.y, 1.0f / ray.d.z);
+	const RayPack pack(ray);
 	uint32_t stack[64];
 	int sp = 0;
 	uint32_t ni = 0;
-	float tn;
-
-	if (!HitBox(nodes_[0], ray, inv, ray.tmax, tn))
-		return false;
 
 	for (;;)
 	{
 		const Node &n = nodes_[ni];
-		if (n.count)
+		float tnear[2];
+		const int mask = HitChildren(n, pack, ray.tmax, tnear);
+
+		bool descend = false;
+		for (int c = 0; c < 2; c++)
 		{
-			for (uint32_t i = 0; i < n.count; i++)
-			{
-				const Tri &tri = tris_[n.left + i];
-				float t, u, v;
-				if (HitTri(tri, ray, ray.tmax, t, u, v) && blocks(tri.index, u, v))
-					return true;
-			}
-		}
-		else
-		{
-			const bool h0 = HitBox(nodes_[n.left], ray, inv, ray.tmax, tn);
-			const bool h1 = HitBox(nodes_[n.left + 1], ray, inv, ray.tmax, tn);
-			if (h0 && h1)
-			{
-				stack[sp++] = n.left + 1;
-				ni = n.left;
+			if (!(mask & (1 << c)))
 				continue;
+			if (n.count[c])
+			{
+				for (uint32_t i = 0; i < n.count[c]; i++)
+				{
+					const Tri &tri = tris_[n.child[c] + i];
+					float t, u, v;
+					if (HitTri(tri, ray, ray.tmax, t, u, v) && blocks(tri.index, u, v))
+						return true;
+				}
 			}
-			if (h0) { ni = n.left; continue; }
-			if (h1) { ni = n.left + 1; continue; }
+			else if (descend)
+				stack[sp++] = n.child[c];
+			else
+			{
+				ni = n.child[c];
+				descend = true;
+			}
 		}
+		if (descend)
+			continue;
 		if (!sp)
 			return false;
 		ni = stack[--sp];

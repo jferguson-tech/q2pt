@@ -1,0 +1,341 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Jonathan Ferguson
+
+#include "pt_world.h"
+
+#include <algorithm>
+#include <cfloat>
+#include <utility>
+
+namespace pt {
+
+float g_to_linear[256];
+
+void InitColourTables()
+{
+	static bool done = false;
+	if (done)
+		return;
+	done = true;
+	for (int i = 0; i < 256; i++)
+		g_to_linear[i] = std::pow(i / 255.0f, 2.2f);
+}
+
+void Texture::Set(const pt_texture_t &src)
+{
+	width = src.width;
+	height = src.height;
+	const size_t count = (size_t)width * height;
+	pixels.assign(src.pixels, src.pixels + count);
+
+	Vec3 sum;
+	for (size_t p = 0; p < count; p++)
+		sum += Decode(pixels[p]);
+	if (count)
+		average = Max(sum / (float)count, Vec3(1e-4f));
+}
+
+void Material::Set(const pt_material_t &src, const Texture *tex, const Texture *normal_tex)
+{
+	texture = (tex && tex->width > 0 && tex->height > 0) ? tex : nullptr;
+	normal_texture = (normal_tex && normal_tex->width > 0 && normal_tex->height > 0) ? normal_tex : nullptr;
+	emission = Vec3(src.emission);
+	alpha = src.alpha;
+	emission_seen = src.emission_seen;
+	roughness = src.roughness < 0.0f ? 0.0f : (src.roughness > 1.0f ? 1.0f : src.roughness);
+	metallic = src.metallic < 0.0f ? 0.0f : (src.metallic > 1.0f ? 1.0f : src.metallic);
+	flags = src.flags;
+	emissive = MaxComponent(emission) > 0.0f && !(flags & PT_MAT_SKY);
+	emission_per_texel = emission;
+	if (texture && !(flags & PT_MAT_EMIT_TEXTURE))
+	{
+		const Vec3 avg = texture->average;
+		emission_per_texel = Vec3(emission.x / avg.x, emission.y / avg.y, emission.z / avg.z);
+	}
+}
+
+void Tri::Set(Vec3 a, Vec3 b, Vec3 c)
+{
+	p0 = a;
+	e1 = b - a;
+	e2 = c - a;
+	const Vec3 x = Cross(e1, e2);
+	const float len = Length(x);
+	area = len * 0.5f;
+	n = len > 0.0f ? x / len : Vec3(0, 0, 1);
+	smooth = false;
+
+	// which way the texture runs across the surface, for normal maps
+	const float du1 = uv[1][0] - uv[0][0], dv1 = uv[1][1] - uv[0][1];
+	const float du2 = uv[2][0] - uv[0][0], dv2 = uv[2][1] - uv[0][1];
+	const float det = du1 * dv2 - du2 * dv1;
+	if (std::fabs(det) > 1e-12f)
+	{
+		tu = Normalize(e1 * dv2 - e2 * dv1) * (det < 0.0f ? -1.0f : 1.0f);
+		tv = Normalize(e2 * du1 - e1 * du2) * (det < 0.0f ? -1.0f : 1.0f);
+	}
+	else
+		Basis(n, tu, tv);
+}
+
+Vec3 World::Sky(Vec3 d) const
+{
+	const float ax = std::fabs(d.x), ay = std::fabs(d.y), az = std::fabs(d.z);
+	int a = 0;
+	if (ay > ax) a = 1;
+	if (az > (a ? ay : ax)) a = 2;
+	const int b = (a + 1) % 3, c = (a + 2) % 3;
+	const float m = std::fabs(d[a]);
+	const int face = a * 2 + (d[a] < 0.0f ? 1 : 0);
+	if (sky[face] < 0 || m <= 0.0f)
+		return Vec3(0, 0, 0);
+	return textures[sky[face]].SampleClamped((d[b] / m + 1.0f) * 0.5f, (d[c] / m + 1.0f) * 0.5f) * sky_scale;
+}
+
+namespace {
+
+void BuildLightGrid(World &w, const std::vector<float> &power)
+{
+	LightGrid &g = w.grid;
+	if (w.lights.empty() || w.tris.empty())
+		return;
+
+	Vec3 lo(FLT_MAX, FLT_MAX, FLT_MAX), hi(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+	for (const Tri &t : w.tris)
+	{
+		const Vec3 p[3] = {t.p0, t.p0 + t.e1, t.p0 + t.e2};
+		for (const Vec3 &v : p)
+		{
+			lo = Min(lo, v);
+			hi = Max(hi, v);
+		}
+	}
+
+	// about 40000 cells, but never finer than a doorway
+	const Vec3 extent = hi - lo;
+	float cell = std::cbrt(std::max(1.0f, extent.x * extent.y * extent.z) / 40000.0f);
+	if (cell < 96.0f)
+		cell = 96.0f;
+	g.origin = lo;
+	g.inv_cell = 1.0f / cell;
+	for (int a = 0; a < 3; a++)
+		g.dims[a] = std::max(1, (int)std::ceil(extent[a] * g.inv_cell));
+
+	const size_t cells = (size_t)g.dims[0] * g.dims[1] * g.dims[2];
+	const int k = LightGrid::kPerCell;
+	g.light.assign(cells * k, 0);
+	g.pdf.assign(cells * k, 0.0f);
+	g.cdf.assign(cells * k, 1.0f);
+	g.count.assign(cells, 0);
+
+	const float min_dist2 = cell * cell * 0.75f;	// half the cell diagonal, squared
+	std::vector<std::pair<float, uint32_t>> scored(w.lights.size());
+
+	for (size_t ci = 0; ci < cells; ci++)
+	{
+		const size_t cx = ci % g.dims[0], cy = (ci / g.dims[0]) % g.dims[1], cz = ci / ((size_t)g.dims[0] * g.dims[1]);
+		const Vec3 centre = lo + Vec3(cx + 0.5f, cy + 0.5f, cz + 0.5f) * cell;
+
+		for (size_t li = 0; li < w.lights.size(); li++)
+		{
+			const Vec3 d = w.lights[li].origin - centre;
+			scored[li] = {power[li] / std::max(Dot(d, d), min_dist2), (uint32_t)li};
+		}
+		const size_t keep = std::min((size_t)k, scored.size());
+		std::partial_sort(scored.begin(), scored.begin() + keep, scored.end(),
+			[](const std::pair<float, uint32_t> &a, const std::pair<float, uint32_t> &b) { return a.first > b.first; });
+
+		float total = 0.0f;
+		for (size_t i = 0; i < keep; i++)
+			total += scored[i].first;
+		if (total <= 0.0f)
+			continue;
+
+		float run = 0.0f;
+		for (size_t i = 0; i < keep; i++)
+		{
+			g.light[ci * k + i] = scored[i].second;
+			g.pdf[ci * k + i] = scored[i].first / total;
+			run += scored[i].first;
+			g.cdf[ci * k + i] = run / total;
+		}
+		g.cdf[ci * k + keep - 1] = 1.0f;
+		g.count[ci] = (uint8_t)keep;
+	}
+}
+
+} // namespace
+
+std::unique_ptr<World> BuildWorld(const pt_world_t *in)
+{
+	std::unique_ptr<World> w(new World);
+
+	w->textures.resize(in->num_textures);
+	for (int i = 0; i < in->num_textures; i++)
+		w->textures[i].Set(in->textures[i]);
+
+	const auto texture = [&](int t) { return (t >= 0 && t < in->num_textures) ? &w->textures[t] : nullptr; };
+
+	w->materials.resize(std::max(1, in->num_materials));
+	for (int i = 0; i < in->num_materials; i++)
+	{
+		Material &m = w->materials[i];
+		m.Set(in->materials[i], texture(in->materials[i].texture), texture(in->materials[i].normal_texture));
+		m.sampled = m.emissive;
+		if (m.flags & PT_MAT_WAVES)
+			w->has_waves = true;
+	}
+	for (int i = 0; i < in->num_materials; i++)
+	{
+		const int next = in->materials[i].anim_next;
+		if (next >= 0 && next < in->num_materials && next != i)
+			w->materials[i].anim_next = &w->materials[next];
+	}
+	for (Material &m : w->materials)
+	{
+		// animations loop; count the steps until this one comes round again
+		int length = 1;
+		for (const Material *n = m.anim_next; n && n != &m && length < 64; n = n->anim_next)
+			length++;
+		m.anim_length = length;
+	}
+
+	std::vector<Vec3> soup((size_t)in->num_triangles * 3);
+	w->tris.resize(in->num_triangles);
+	for (int i = 0; i < in->num_triangles; i++)
+	{
+		Tri &t = w->tris[i];
+		for (int k = 0; k < 3; k++)
+		{
+			const uint32_t vi = in->indices[i * 3 + k];
+			soup[(size_t)i * 3 + k] = Vec3(&in->positions[vi * 3]);
+			t.uv[k][0] = in->uvs[vi * 2];
+			t.uv[k][1] = in->uvs[vi * 2 + 1];
+		}
+		t.Set(soup[(size_t)i * 3], soup[(size_t)i * 3 + 1], soup[(size_t)i * 3 + 2]);
+		const uint32_t m = in->tri_materials[i];
+		t.mat = &w->materials[m < (uint32_t)in->num_materials ? m : 0];
+	}
+	w->bvh.Build(soup.data(), (uint32_t)in->num_triangles);
+
+	// everything that emits, with a chance of being picked proportional to its power
+	std::vector<float> power;
+	for (int i = 0; i < in->num_triangles; i++)
+	{
+		const Tri &t = w->tris[i];
+		if (!t.mat->emissive || t.area <= 1e-6f)
+			continue;
+		Light l;
+		l.tri = (uint32_t)i;
+		l.origin = t.p0 + (t.e1 + t.e2) * (1.0f / 3.0f);
+		l.emission = t.mat->emission;
+		l.pdf = 0;
+		l.style = 0;
+		w->lights.push_back(l);
+		power.push_back(Luminance(t.mat->emission) * t.area * kPi);
+	}
+	for (int i = 0; i < in->num_lights; i++)
+	{
+		Light l;
+		l.tri = ~0u;
+		l.origin = Vec3(in->lights[i].origin);
+		l.emission = Vec3(in->lights[i].intensity);
+		l.pdf = 0;
+		l.style = in->lights[i].style;
+		const float p = Luminance(l.emission) * 4.0f * kPi;
+		if (p <= 0.0f)
+			continue;
+		w->lights.push_back(l);
+		power.push_back(p);
+	}
+
+	double total = 0;
+	for (float p : power)
+		total += p;
+	double run = 0;
+	w->light_cdf.resize(power.size());
+	for (size_t i = 0; i < power.size(); i++)
+	{
+		w->lights[i].pdf = (float)(power[i] / total);
+		run += power[i];
+		w->light_cdf[i] = (float)(run / total);
+	}
+	if (!w->light_cdf.empty())
+		w->light_cdf.back() = 1.0f;
+	BuildLightGrid(*w, power);
+
+	for (int i = 0; i < 6; i++)
+		w->sky[i] = (in->sky_textures[i] >= 0 && in->sky_textures[i] < in->num_textures) ? in->sky_textures[i] : -1;
+	w->sky_scale = in->sky_scale;
+	return w;
+}
+
+uint32_t HashBytes(const void *data, size_t bytes, uint32_t h)
+{
+	const uint8_t *p = (const uint8_t *)data;
+	for (size_t i = 0; i < bytes; i++)
+		h = (h ^ p[i]) * 16777619u;
+	return h;
+}
+
+void BuildFrame(Frame &f, const pt_scene_t *in, const std::vector<std::unique_ptr<Texture>> &textures)
+{
+	f.materials.clear();
+	f.tris.clear();
+	f.lights.clear();
+	f.hash = 2166136261u;
+
+	std::vector<Vec3> soup;
+	if (in)
+	{
+		const auto texture = [&](int t)
+		{
+			return (t >= 0 && t < (int)textures.size() && textures[t]) ? textures[t].get() : nullptr;
+		};
+
+		f.materials.resize(std::max(1, in->num_materials));
+		for (int i = 0; i < in->num_materials; i++)
+			f.materials[i].Set(in->materials[i], texture(in->materials[i].texture), texture(in->materials[i].normal_texture));
+
+		f.tris.resize(in->num_triangles);
+		soup.resize((size_t)in->num_triangles * 3);
+		for (int i = 0; i < in->num_triangles; i++)
+		{
+			Tri &t = f.tris[i];
+			for (int k = 0; k < 3; k++)
+			{
+				soup[(size_t)i * 3 + k] = Vec3(&in->positions[i * 9 + k * 3]);
+				t.uv[k][0] = in->uvs[i * 6 + k * 2];
+				t.uv[k][1] = in->uvs[i * 6 + k * 2 + 1];
+			}
+			t.Set(soup[(size_t)i * 3], soup[(size_t)i * 3 + 1], soup[(size_t)i * 3 + 2]);
+			if (in->normals)
+			{
+				for (int k = 0; k < 3; k++)
+					t.vn[k] = Vec3(&in->normals[i * 9 + k * 3]);
+				t.smooth = true;
+			}
+			const uint32_t m = in->tri_materials[i];
+			t.mat = &f.materials[m < (uint32_t)in->num_materials ? m : 0];
+		}
+
+		for (int i = 0; i < in->num_lights; i++)
+		{
+			Light l;
+			l.tri = ~0u;
+			l.origin = Vec3(in->lights[i].origin);
+			l.emission = Vec3(in->lights[i].intensity);
+			l.pdf = 0;
+			l.style = 0;
+			if (Luminance(l.emission) > 0.0f)
+				f.lights.push_back(l);
+		}
+
+		f.hash = HashBytes(in->positions, (size_t)in->num_triangles * 9 * sizeof(float), f.hash);
+		f.hash = HashBytes(in->materials, (size_t)in->num_materials * sizeof(pt_material_t), f.hash);
+		f.hash = HashBytes(in->lights, (size_t)in->num_lights * sizeof(pt_point_light_t), f.hash);
+	}
+	f.bvh.Build(soup.data(), (uint32_t)f.tris.size());
+}
+
+} // namespace pt

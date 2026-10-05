@@ -49,7 +49,7 @@ typedef struct
 } matkey_t;
 
 static pt_texture_t		*w_textures;
-static image_t			**w_teximages;
+static const void		**w_texkeys;		// what each texture was made from, to share them
 static int				w_numtextures, w_maxtextures;
 
 static pt_material_t	*w_materials;
@@ -78,25 +78,25 @@ static uint32_t			*w_skyfaces[6];
 
 //=============================================================================
 
-static int W_AddTexture (int width, int height, const uint32_t *pixels, image_t *image)
+static int W_AddTexture (int width, int height, const uint32_t *pixels, const void *key)
 {
 	int		i;
 
-	if (image)
+	if (key)
 		for (i=0 ; i<w_numtextures ; i++)
-			if (w_teximages[i] == image)
+			if (w_texkeys[i] == key)
 				return i;
 
 	if (w_numtextures == w_maxtextures)
 	{
 		w_maxtextures = w_maxtextures ? w_maxtextures * 2 : 256;
 		w_textures = realloc (w_textures, w_maxtextures * sizeof(*w_textures));
-		w_teximages = realloc (w_teximages, w_maxtextures * sizeof(*w_teximages));
+		w_texkeys = realloc ((void *)w_texkeys, w_maxtextures * sizeof(*w_texkeys));
 	}
 	w_textures[w_numtextures].width = width;
 	w_textures[w_numtextures].height = height;
 	w_textures[w_numtextures].pixels = pixels;
-	w_teximages[w_numtextures] = image;
+	w_texkeys[w_numtextures] = key;
 	return w_numtextures++;
 }
 
@@ -135,6 +135,7 @@ static int W_AddMaterial (texinfo_t *tex)
 	char			name[MAX_QPATH];
 	image_t			*image;
 	pt_material_t	*mat;
+	matinfo_t		info;
 	int				i, flags, value;
 
 	flags = LittleLong (tex->flags) & (SURF_LIGHT|SURF_SKY|SURF_WARP|SURF_TRANS33|SURF_TRANS66);
@@ -161,6 +162,28 @@ static int W_AddMaterial (texinfo_t *tex)
 	memset (mat, 0, sizeof(*mat));
 	mat->texture = image ? W_AddTexture (image->width, image->height, image->pixels, image) : -1;
 	mat->alpha = 1;
+	mat->normal_texture = -1;
+	mat->anim_next = -1;
+
+	R_MaterialInfo (name, &info);
+	if (flags & SURF_WARP)
+	{	// water, slime, lava: a smooth, rippling surface
+		info.roughness = 0.05f;
+		info.metallic = 0;
+		info.bump = 0;
+		mat->flags |= PT_MAT_WAVES;
+	}
+	else if (flags & (SURF_TRANS33|SURF_TRANS66))
+	{	// glass and force fields
+		info.roughness = 0.05f;
+		info.metallic = 0;
+		info.bump = 0;
+	}
+	mat->roughness = info.roughness;
+	mat->metallic = info.metallic;
+	if (image && info.bump > 0 && !(flags & SURF_SKY))
+		mat->normal_texture = W_AddTexture (image->width, image->height,
+			R_ImageNormalMap (image, &info), &image->normalmap);
 
 	if (flags & SURF_SKY)
 		mat->flags |= PT_MAT_SKY;
@@ -187,6 +210,33 @@ static int W_AddMaterial (texinfo_t *tex)
 	}
 
 	return w_nummaterials++;
+}
+
+/*
+===============
+W_TexinfoMaterial
+
+The material for a texinfo, with the rest of its animation linked on
+===============
+*/
+static int W_TexinfoMaterial (texinfo_t *texinfos, int numtexinfo, int *texmat, int texnum)
+{
+	int		material, next, nextmaterial;
+
+	if (texmat[texnum] >= 0)
+		return texmat[texnum];
+
+	material = W_AddMaterial (&texinfos[texnum]);
+	texmat[texnum] = material;		// before recursing: animations are loops
+
+	next = LittleLong (texinfos[texnum].nexttexinfo);
+	if (next > 0 && next < numtexinfo && next != texnum)
+	{
+		nextmaterial = W_TexinfoMaterial (texinfos, numtexinfo, texmat, next);
+		if (nextmaterial != material && w_materials[material].anim_next < 0)
+			w_materials[material].anim_next = nextmaterial;
+	}
+	return material;
 }
 
 static void W_AddTriangle (float *a, float *b, float *c, float *uva, float *uvb, float *uvc, int material)
@@ -294,9 +344,7 @@ static int W_LoadFaces (byte *base, int filelen, int modelnum)
 		if (LittleLong (tex->flags) & SURF_NODRAW)
 			continue;
 
-		if (texmat[texnum] < 0)
-			texmat[texnum] = W_AddMaterial (tex);
-		material = texmat[texnum];
+		material = W_TexinfoMaterial (texinfos, numtexinfo, texmat, texnum);
 
 		width = height = 64;
 		if (w_matkeys[material].image)
@@ -356,7 +404,7 @@ static void W_LoadLights (byte *base, int filelen)
 	char	key[MAX_KEY], classname[64];
 	vec3_t	origin, color;
 	float	light;
-	int		len, i;
+	int		len, i, style;
 	qboolean hasorigin;
 
 	data = W_Lump (base, filelen, LUMP_ENTITIES, 1, &len);
@@ -375,6 +423,7 @@ static void W_LoadLights (byte *base, int filelen)
 		VectorClear (origin);
 		color[0] = color[1] = color[2] = 1;
 		light = 300;
+		style = 0;
 		hasorigin = false;
 
 		for (;;)
@@ -400,6 +449,8 @@ static void W_LoadLights (byte *base, int filelen)
 				light = atof (token);
 			else if (!strcmp (key, "_color"))
 				sscanf (token, "%f %f %f", &color[0], &color[1], &color[2]);
+			else if (!strcmp (key, "style") || !strcmp (key, "_style"))
+				style = atoi (token);
 		}
 
 		if (strcmp (classname, "light") || !hasorigin || light <= 0)
@@ -415,6 +466,8 @@ static void W_LoadLights (byte *base, int filelen)
 			w_lights[w_numlights].origin[i] = origin[i];
 			w_lights[w_numlights].intensity[i] = color[i] * POINT_LIGHT_INTENSITY (light);
 		}
+		// flickering and switchable lights follow their light style
+		w_lights[w_numlights].style = (style > 0 && style < MAX_LIGHTSTYLES) ? style : 0;
 		w_numlights++;
 	}
 

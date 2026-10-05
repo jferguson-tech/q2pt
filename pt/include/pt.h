@@ -33,6 +33,7 @@ vertices appear counter clockwise.
 #define PT_MAT_EMIT_TEXTURE		4u	/* emitted radiance is emission * texel */
 #define PT_MAT_CAMERA_INVISIBLE	8u	/* not seen directly, still lights and shadows */
 #define PT_MAT_BLACK			16u	/* reflects nothing; it can still emit */
+#define PT_MAT_WAVES			32u	/* a liquid surface: its normal ripples over time */
 
 typedef struct pt_texture_s
 {
@@ -53,6 +54,13 @@ typedef struct pt_material_s
 								   white texel, in place of the real emission, so
 								   a bright lamp keeps its look */
 	float		alpha;			/* 1 = opaque; less lets light through */
+	float		roughness;		/* 0 = mirror, 1 = fully rough */
+	float		metallic;		/* 0 = dielectric, 1 = metal */
+	int			normal_texture;	/* -1 for none; same numbering as texture. RGB is a
+								   tangent space normal (x along u, y along v),
+								   alpha replaces roughness */
+	int			anim_next;		/* world only: the material shown one animation
+								   step later, or -1 */
 	uint32_t	flags;
 } pt_material_t;
 
@@ -60,6 +68,7 @@ typedef struct pt_point_light_s
 {
 	float		origin[3];
 	float		intensity[3];	/* radiant intensity; irradiance is this * cos / d^2 */
+	int			style;			/* world only: index into the view's light_styles */
 } pt_point_light_t;
 
 typedef struct pt_world_s
@@ -102,6 +111,7 @@ typedef struct pt_scene_s
 
 	const float			*positions;			/* 9 per triangle */
 	const float			*uvs;				/* 6 per triangle */
+	const float			*normals;			/* 9 per triangle, or NULL for flat shading */
 	const uint32_t		*tri_materials;		/* 1 per triangle */
 	int					num_triangles;
 
@@ -121,6 +131,10 @@ typedef struct pt_view_s
 	float	fov_x, fov_y;					/* degrees */
 
 	const pt_scene_t	*scene;				/* may be NULL */
+
+	const float	*light_styles;			/* brightness of each world light style, 1 = normal */
+	int			num_light_styles;
+	int			anim_frame;				/* which step animated materials are on */
 
 	/* quality settings; a backend may ignore what it has no use for */
 	float	scale;			/* internal resolution as a fraction of the view */

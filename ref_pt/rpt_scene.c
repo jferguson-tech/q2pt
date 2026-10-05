@@ -23,7 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "rpt_local.h"
 
-static float			*s_positions, *s_uvs;
+static float			*s_positions, *s_uvs, *s_normals;
 static uint32_t			*s_trimaterials;
 static int				s_numtris, s_maxtris;
 
@@ -70,18 +70,59 @@ static int S_Material (int texture, float r, float g, float b, float alpha, unsi
 	mat.emission[2] = b;
 	mat.alpha = alpha;
 	mat.flags = flags;
+	mat.roughness = 0.7f;
+	mat.normal_texture = -1;
+	mat.anim_next = -1;
 	return S_FindMaterial (&mat);
+}
+
+// a material for a model's skin, made of whatever the skin's name suggests
+static int S_ImageMaterial (image_t *image, float r, float g, float b, float alpha, unsigned flags)
+{
+	pt_material_t	mat;
+	matinfo_t		info;
+
+	memset (&mat, 0, sizeof(mat));
+	mat.texture = R_ImageTexture (image);
+	mat.emission[0] = r;
+	mat.emission[1] = g;
+	mat.emission[2] = b;
+	mat.alpha = alpha;
+	mat.flags = flags;
+	mat.roughness = 0.7f;
+	mat.normal_texture = -1;
+	mat.anim_next = -1;
+	if (image)
+	{
+		R_MaterialInfo (image->name, &info);
+		mat.roughness = info.roughness;
+		mat.metallic = info.metallic;
+		mat.normal_texture = R_ImageNormalTexture (image);
+	}
+	return S_FindMaterial (&mat);
+}
+
+// the normals of the triangle just added, for smooth shading
+static void S_Normals (const float *a, const float *b, const float *c)
+{
+	float	*n = s_normals + (s_numtris - 1) * 9;
+
+	n[0] = a[0]; n[1] = a[1]; n[2] = a[2];
+	n[3] = b[0]; n[4] = b[1]; n[5] = b[2];
+	n[6] = c[0]; n[7] = c[1]; n[8] = c[2];
 }
 
 static void S_Triangle (const float *a, const float *b, const float *c,
 	float as, float at, float bs, float bt, float cs, float ct, int material)
 {
 	float	*p, *uv;
+	vec3_t	d1, d2, normal;
 
 	if (s_numtris == s_maxtris)
 	{
 		s_maxtris = s_maxtris ? s_maxtris * 2 : 8192;
 		s_positions = realloc (s_positions, s_maxtris * 9 * sizeof(float));
+		s_normals = realloc (s_normals, s_maxtris * 9 * sizeof(float));
 		s_uvs = realloc (s_uvs, s_maxtris * 6 * sizeof(float));
 		s_trimaterials = realloc (s_trimaterials, s_maxtris * sizeof(uint32_t));
 	}
@@ -97,6 +138,13 @@ static void S_Triangle (const float *a, const float *b, const float *c,
 	uv[4] = cs; uv[5] = ct;
 
 	s_trimaterials[s_numtris++] = material;
+
+	// flat until S_Normals says otherwise
+	VectorSubtract (b, a, d1);
+	VectorSubtract (c, a, d2);
+	CrossProduct (d1, d2, normal);
+	VectorNormalize (normal);
+	S_Normals (normal, normal, normal);
 }
 
 /*
@@ -173,6 +221,8 @@ static void S_AddInline (entity_t *e, model_t *mod)
 			else
 			{
 				mat.texture = R_ImageTexture (image);
+				mat.normal_texture = mat.normal_texture >= 0 ? R_ImageNormalTexture (image) : -1;
+				mat.anim_next = -1;
 				if (e->flags & RF_TRANSLUCENT)
 					mat.alpha *= e->alpha;
 				s_worldremap[m] = S_FindMaterial (&mat);
@@ -198,7 +248,7 @@ A model, posed between two of its frames
 */
 static void S_AddAlias (entity_t *e, model_t *mod)
 {
-	static float	verts[MAX_VERTS][3];
+	static float	verts[MAX_VERTS][3], normals[MAX_VERTS][3];
 	dmdl_t			*hdr;
 	daliasframe_t	*frame, *oldframe;
 	dtrivertx_t		*v, *ov;
@@ -268,7 +318,23 @@ static void S_AddAlias (entity_t *e, model_t *mod)
 		emit[0] = emit[1] = emit[2] = 1;
 		flags |= PT_MAT_EMIT_TEXTURE;
 	}
-	material = S_Material (R_ImageTexture (skin), emit[0], emit[1], emit[2], alpha, flags);
+	material = S_ImageMaterial (skin, emit[0], emit[1], emit[2], alpha, flags);
+
+	// vertex normals: each vertex takes the area weighted average of its triangles
+	memset (normals, 0, hdr->num_xyz * sizeof(normals[0]));
+	tri = (dtriangle_t *)((byte *)hdr + hdr->ofs_tris);
+	for (i=0 ; i<hdr->num_tris ; i++, tri++)
+	{
+		vec3_t	d1, d2, facenormal;
+
+		VectorSubtract (verts[tri->index_xyz[2]], verts[tri->index_xyz[0]], d1);
+		VectorSubtract (verts[tri->index_xyz[1]], verts[tri->index_xyz[0]], d2);
+		CrossProduct (d1, d2, facenormal);
+		for (j=0 ; j<3 ; j++)
+			VectorAdd (normals[tri->index_xyz[j]], facenormal, normals[tri->index_xyz[j]]);
+	}
+	for (i=0 ; i<hdr->num_xyz ; i++)
+		VectorNormalize (normals[i]);
 
 	sscale = 1.0 / hdr->skinwidth;
 	tscale = 1.0 / hdr->skinheight;
@@ -277,11 +343,14 @@ static void S_AddAlias (entity_t *e, model_t *mod)
 
 	// the file winds its triangles clockwise
 	for (i=0 ; i<hdr->num_tris ; i++, tri++)
+	{
 		S_Triangle (verts[tri->index_xyz[0]], verts[tri->index_xyz[2]], verts[tri->index_xyz[1]],
 			(st[tri->index_st[0]].s + 0.5) * sscale, (st[tri->index_st[0]].t + 0.5) * tscale,
 			(st[tri->index_st[2]].s + 0.5) * sscale, (st[tri->index_st[2]].t + 0.5) * tscale,
 			(st[tri->index_st[1]].s + 0.5) * sscale, (st[tri->index_st[1]].t + 0.5) * tscale,
 			material);
+		S_Normals (normals[tri->index_xyz[0]], normals[tri->index_xyz[2]], normals[tri->index_xyz[1]]);
+	}
 }
 
 /*
@@ -478,6 +547,7 @@ void R_BuildScene (refdef_t *fd, pt_scene_t *scene)
 			s_lights[numlights].origin[j] = fd->dlights[i].origin[j];
 			s_lights[numlights].intensity[j] = fd->dlights[i].color[j] * POINT_LIGHT_INTENSITY (fd->dlights[i].intensity);
 		}
+		s_lights[numlights].style = 0;
 		numlights++;
 	}
 
@@ -486,6 +556,7 @@ void R_BuildScene (refdef_t *fd, pt_scene_t *scene)
 	scene->num_materials = s_nummaterials;
 	scene->positions = s_positions;
 	scene->uvs = s_uvs;
+	scene->normals = s_normals;
 	scene->tri_materials = s_trimaterials;
 	scene->num_triangles = s_numtris;
 	scene->lights = s_lights;

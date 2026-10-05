@@ -3,8 +3,10 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <functional>
+#include <immintrin.h>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -12,6 +14,10 @@
 namespace pt {
 
 // Runs "for i in [0, count)" across all cores; the caller takes part.
+//
+// A frame is a burst of several short runs, so a worker that has just
+// finished one spins for a moment before going to sleep: waking a sleeping
+// thread costs more than many of these runs take.
 class Pool
 {
 public:
@@ -28,9 +34,9 @@ public:
 		{
 			std::lock_guard<std::mutex> lock(mutex_);
 			quit_ = true;
-			generation_++;
+			generation_.fetch_add(1);
 		}
-		start_.notify_all();
+		wake_.notify_all();
 		for (std::thread &t : workers_)
 			t.join();
 	}
@@ -41,20 +47,24 @@ public:
 	{
 		if (count <= 0)
 			return;
+
+		job_ = &job;
+		count_ = count;
+		next_.store(0);
+		busy_.store((int)workers_.size());
 		{
+			// under the lock so a worker about to sleep cannot miss it
 			std::lock_guard<std::mutex> lock(mutex_);
-			job_ = &job;
-			count_ = count;
-			next_.store(0);
-			busy_ = (int)workers_.size();
-			generation_++;
+			generation_.fetch_add(1);
 		}
-		start_.notify_all();
+		if (sleepers_.load() > 0)
+			wake_.notify_all();
 
 		Drain();
 
-		std::unique_lock<std::mutex> lock(mutex_);
-		done_.wait(lock, [this] { return busy_ == 0; });
+		// the others are at most one item from done
+		while (busy_.load() > 0)
+			_mm_pause();
 		job_ = nullptr;
 	}
 
@@ -70,36 +80,50 @@ private:
 		}
 	}
 
+	// true once there is a new generation; spins first, then sleeps
+	bool WaitForWork(unsigned seen)
+	{
+		const auto give_up = std::chrono::steady_clock::now() + std::chrono::microseconds(300);
+		for (int spins = 0; ; spins++)
+		{
+			if (generation_.load() != seen)
+				return true;
+			_mm_pause();
+			if ((spins & 255) == 255 && std::chrono::steady_clock::now() > give_up)
+				break;
+		}
+
+		std::unique_lock<std::mutex> lock(mutex_);
+		sleepers_.fetch_add(1);
+		wake_.wait(lock, [&] { return generation_.load() != seen; });
+		sleepers_.fetch_sub(1);
+		return true;
+	}
+
 	void Worker()
 	{
 		unsigned seen = 0;
 		for (;;)
 		{
-			{
-				std::unique_lock<std::mutex> lock(mutex_);
-				start_.wait(lock, [&] { return generation_ != seen; });
-				seen = generation_;
-				if (quit_)
-					return;
-			}
+			WaitForWork(seen);
+			seen = generation_.load();
+			if (quit_)
+				return;
 			Drain();
-			{
-				std::lock_guard<std::mutex> lock(mutex_);
-				busy_--;
-			}
-			done_.notify_one();
+			busy_.fetch_sub(1);
 		}
 	}
 
 	std::vector<std::thread>	workers_;
 	std::mutex					mutex_;
-	std::condition_variable		start_, done_;
+	std::condition_variable		wake_;
 	const std::function<void(int)> *job_ = nullptr;
 	std::atomic<int>			next_{0};
+	std::atomic<int>			busy_{0};
+	std::atomic<int>			sleepers_{0};
+	std::atomic<unsigned>		generation_{0};
 	int							count_ = 0;
-	int							busy_ = 0;
-	unsigned					generation_ = 0;
-	bool						quit_ = false;
+	std::atomic<bool>			quit_{false};
 };
 
 } // namespace pt

@@ -96,10 +96,20 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(REF_PT_SRC
 	ref_pt/rpt_main.c ref_pt/rpt_image.c ref_pt/rpt_draw.c ref_pt/rpt_world.c
-	ref_pt/rpt_model.c ref_pt/rpt_scene.c
+	ref_pt/rpt_model.c ref_pt/rpt_scene.c ref_pt/rpt_material.c
 	win32/q_shwin.c ${SHARED_SRC} ref_pt/ref_pt.def)
 
-add_library(pt_cpu STATIC pt/cpu/pt_cpu.cpp pt/cpu/pt_bvh.cpp)
+add_library(pt_cpu STATIC pt/cpu/pt_cpu.cpp pt/cpu/pt_bvh.cpp pt/cpu/pt_world.cpp pt/cpu/pt_trace.cpp)
+# The tracer is all small inlined functions; RelWithDebInfo would otherwise
+# hold inlining back. AVX2 is on by default: every x64 CPU since 2013-2015
+# has it. Configure with -DPT_AVX2=OFF for something older.
+option(PT_AVX2 "Build the CPU path tracer for AVX2" ON)
+if(MSVC)
+	target_compile_options(pt_cpu PRIVATE /Ob2 /Oi /Ot)
+	if(PT_AVX2 AND Q2_ARCH STREQUAL x64)
+		target_compile_options(pt_cpu PRIVATE /arch:AVX2)
+	endif()
+endif()
 add_library(ref_ptcpu SHARED ${REF_PT_SRC})
 target_link_libraries(ref_ptcpu PRIVATE pt_cpu winmm gdi32 user32)
 set_target_properties(ref_ptcpu PROPERTIES PREFIX "")

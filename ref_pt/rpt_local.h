@@ -48,7 +48,16 @@ typedef struct image_s
 	int			registration_sequence;		// 0 = free
 	uint32_t	*pixels;					// R,G,B,A bytes, premultiplied
 	int			pt_texture;					// backend handle + 1, 0 = not created
+	uint32_t	*normalmap;					// made on demand, see rpt_material.c
+	int			pt_normal_texture;			// backend handle + 1 for normalmap
 } image_t;
+
+typedef struct
+{
+	float	roughness;	// 0 mirror - 1 matte
+	float	metallic;	// 0 - 1
+	float	bump;		// how deep the picture's detail is taken to be; 0 = flat
+} matinfo_t;
 
 typedef enum
 {
@@ -116,6 +125,14 @@ void	R_SetPalette (const unsigned char *palette);
 void	Draw_Blend (int x, int y, int w, int h, float *blend);
 
 int		R_ImageTexture (image_t *image);
+int		R_ImageNormalTexture (image_t *image);
+
+//
+// rpt_material.c
+//
+void	R_InitMaterials (void);
+void	R_MaterialInfo (const char *name, matinfo_t *info);
+uint32_t *R_ImageNormalMap (image_t *image, const matinfo_t *info);
 
 //
 // rpt_world.c

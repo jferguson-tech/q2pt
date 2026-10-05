@@ -54,9 +54,25 @@ void Bvh::Build(const Vec3 *verts, uint32_t num_tris)
 		p.index = i;
 	}
 
-	nodes_.reserve(num_tris * 2);
-	nodes_.emplace_back();
-	BuildNode(0, prims.data(), 0, num_tris);
+	nodes_.reserve(num_tris);
+	float lo[3], hi[3];
+	const Ref top = BuildNode(prims.data(), 0, num_tris, lo, hi);
+	if (top.count)
+	{
+		// everything fitted in one leaf: hang it off a root whose other child is empty
+		Node root{};
+		for (int a = 0; a < 3; a++)
+		{
+			float *b = a == 0 ? root.bx : (a == 1 ? root.by : root.bz);
+			b[0] = lo[a];
+			b[2] = hi[a];
+			b[1] = FLT_MAX;
+			b[3] = -FLT_MAX;
+		}
+		root.child[0] = top.index;
+		root.count[0] = top.count;
+		nodes_.push_back(root);
+	}
 
 	tris_.resize(num_tris);
 	for (uint32_t i = 0; i < num_tris; i++)
@@ -69,8 +85,9 @@ void Bvh::Build(const Vec3 *verts, uint32_t num_tris)
 	}
 }
 
-// binned surface area heuristic
-void Bvh::BuildNode(uint32_t node, BuildPrim *prims, uint32_t first, uint32_t count)
+// Binned surface area heuristic. Returns a leaf, or the node made for an
+// inner split, and the bounds of everything under it.
+Bvh::Ref Bvh::BuildNode(BuildPrim *prims, uint32_t first, uint32_t count, float *lo, float *hi)
 {
 	Box bounds, cbounds;
 	for (uint32_t i = 0; i < count; i++)
@@ -80,8 +97,8 @@ void Bvh::BuildNode(uint32_t node, BuildPrim *prims, uint32_t first, uint32_t co
 	}
 	for (int a = 0; a < 3; a++)
 	{
-		nodes_[node].bmin[a] = bounds.lo[a];
-		nodes_[node].bmax[a] = bounds.hi[a];
+		lo[a] = bounds.lo[a];
+		hi[a] = bounds.hi[a];
 	}
 
 	const Vec3 extent = cbounds.hi - cbounds.lo;
@@ -148,24 +165,32 @@ void Bvh::BuildNode(uint32_t node, BuildPrim *prims, uint32_t first, uint32_t co
 	if (mid == first || mid == first + count)
 	{
 		if (count <= kLeafSize * 2)
-		{
-			nodes_[node].left = first;
-			nodes_[node].count = count;
-			return;
-		}
+			return Ref{first, count};
 		// many triangles on one spot: split down the middle
 		mid = first + count / 2;
 		std::nth_element(prims + first, prims + mid, prims + first + count,
 			[axis](const BuildPrim &a, const BuildPrim &b) { return a.centroid[axis] < b.centroid[axis]; });
 	}
 
-	const uint32_t left = (uint32_t)nodes_.size();
+	const uint32_t node = (uint32_t)nodes_.size();
 	nodes_.emplace_back();
-	nodes_.emplace_back();
-	nodes_[node].left = left;
-	nodes_[node].count = 0;
-	BuildNode(left, prims, first, mid - first);
-	BuildNode(left + 1, prims, mid, first + count - mid);
+
+	float clo[2][3], chi[2][3];
+	const Ref left = BuildNode(prims, first, mid - first, clo[0], chi[0]);
+	const Ref right = BuildNode(prims, mid, first + count - mid, clo[1], chi[1]);
+
+	Node &n = nodes_[node];
+	for (int c = 0; c < 2; c++)
+	{
+		n.bx[c] = clo[c][0]; n.bx[c + 2] = chi[c][0];
+		n.by[c] = clo[c][1]; n.by[c + 2] = chi[c][1];
+		n.bz[c] = clo[c][2]; n.bz[c + 2] = chi[c][2];
+	}
+	n.child[0] = left.index;
+	n.count[0] = left.count;
+	n.child[1] = right.index;
+	n.count[1] = right.count;
+	return Ref{node, 0};
 }
 
 bool Bvh::Intersect(const Ray &ray, Hit &hit) const
@@ -173,62 +198,56 @@ bool Bvh::Intersect(const Ray &ray, Hit &hit) const
 	if (nodes_.empty())
 		return false;
 
-	const Vec3 inv(1.0f / ray.d.x, 1.0f / ray.d.y, 1.0f / ray.d.z);
+	const RayPack pack(ray);
 	struct Entry { uint32_t node; float tnear; };
 	Entry stack[64];
 	int sp = 0;
 	uint32_t ni = 0;
 	float tmax = ray.tmax;
 	bool found = false;
-	float tn;
-
-	if (!HitBox(nodes_[0], ray, inv, tmax, tn))
-		return false;
 
 	for (;;)
 	{
 		const Node &n = nodes_[ni];
-		if (n.count)
+		float tnear[2];
+		const int mask = HitChildren(n, pack, tmax, tnear);
+
+		// nearer child first, so a hit in it can rule the other out
+		const int first = (mask == 3 && tnear[1] < tnear[0]) ? 1 : 0;
+		uint32_t next = ~0u;
+		for (int k = 0; k < 2; k++)
 		{
-			for (uint32_t i = 0; i < n.count; i++)
-			{
-				const Tri &tri = tris_[n.left + i];
-				float t, u, v;
-				if (HitTri(tri, ray, tmax, t, u, v))
-				{
-					tmax = t;
-					hit.t = t;
-					hit.u = u;
-					hit.v = v;
-					hit.tri = tri.index;
-					found = true;
-				}
-			}
-		}
-		else
-		{
-			float t0, t1;
-			const bool h0 = HitBox(nodes_[n.left], ray, inv, tmax, t0);
-			const bool h1 = HitBox(nodes_[n.left + 1], ray, inv, tmax, t1);
-			if (h0 && h1)
-			{
-				// nearer child first
-				if (t0 <= t1)
-				{
-					stack[sp++] = {n.left + 1, t1};
-					ni = n.left;
-				}
-				else
-				{
-					stack[sp++] = {n.left, t0};
-					ni = n.left + 1;
-				}
+			const int c = first ^ k;
+			if (!(mask & (1 << c)) || tnear[c] >= tmax)
 				continue;
+			if (n.count[c])
+			{
+				for (uint32_t i = 0; i < n.count[c]; i++)
+				{
+					const Tri &tri = tris_[n.child[c] + i];
+					float t, u, v;
+					if (HitTri(tri, ray, tmax, t, u, v))
+					{
+						tmax = t;
+						hit.t = t;
+						hit.u = u;
+						hit.v = v;
+						hit.tri = tri.index;
+						found = true;
+					}
+				}
 			}
-			if (h0) { ni = n.left; continue; }
-			if (h1) { ni = n.left + 1; continue; }
+			else if (next == ~0u)
+				next = n.child[c];
+			else
+				stack[sp++] = {n.child[c], tnear[c]};
 		}
 
+		if (next != ~0u)
+		{
+			ni = next;
+			continue;
+		}
 		for (;;)
 		{
 			if (!sp)

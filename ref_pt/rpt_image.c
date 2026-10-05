@@ -358,10 +358,41 @@ int R_ImageTexture (image_t *image)
 	return image->pt_texture - 1;
 }
 
+/*
+===============
+R_ImageNormalTexture
+
+The backend's texture for the image's generated detail map, or -1 where
+the material is flat
+===============
+*/
+int R_ImageNormalTexture (image_t *image)
+{
+	pt_texture_t	tex;
+	matinfo_t		info;
+
+	if (!image)
+		return -1;
+	if (!image->pt_normal_texture)
+	{
+		R_MaterialInfo (image->name, &info);
+		if (info.bump <= 0)
+			return -1;
+		tex.width = image->width;
+		tex.height = image->height;
+		tex.pixels = R_ImageNormalMap (image, &info);
+		image->pt_normal_texture = rpt.backend->texture_create (rpt.backend, &tex) + 1;
+	}
+	return image->pt_normal_texture - 1;
+}
+
 static void R_FreeImage (image_t *image)
 {
 	if (image->pt_texture && rpt.backend)
 		rpt.backend->texture_destroy (rpt.backend, image->pt_texture - 1);
+	if (image->pt_normal_texture && rpt.backend)
+		rpt.backend->texture_destroy (rpt.backend, image->pt_normal_texture - 1);
+	free (image->normalmap);
 	free (image->pixels);
 	memset (image, 0, sizeof(*image));
 }
