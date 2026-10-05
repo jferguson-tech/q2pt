@@ -1558,7 +1558,7 @@ void PathTrace_MenuInit( void )
 	Cvar_Get( "pt_bloom", "0.3", CVAR_ARCHIVE );
 	Cvar_Get( "pt_fog", "1", CVAR_ARCHIVE );
 	Cvar_Get( "pt_water", "2", CVAR_ARCHIVE );
-	Cvar_Get( "pt_stats", "0", CVAR_ARCHIVE );
+	Cvar_Get( "pt_stats", "1", CVAR_ARCHIVE );
 
 	s_pt_menu.x = viddef.width / 2;
 	s_pt_menu.y = viddef.height / 2 - 58;
