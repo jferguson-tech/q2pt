@@ -393,6 +393,9 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 	const Tri *tri;
 	Surface surf;
 	Vec3 sky;
+	bool sky_hit = false;		// the view ends at the sky, at sky_p
+	Vec3 sky_p, sky_n;
+	float sky_depth = 0.0f;
 
 	for (int layer = 0; through > 0.001f; layer++)
 	{
@@ -401,6 +404,10 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 		if (tri->mat->flags & PT_MAT_SKY)
 		{
 			sky = sc.Sky(ray.d) * through;
+			sky_hit = true;
+			sky_p = ray.o + ray.d * hit.t;
+			sky_n = Dot(tri->n, ray.d) < 0.0f ? tri->n : -tri->n;
+			sky_depth = travelled + hit.t;
 			break;
 		}
 		MakeSurface(sc, *tri, hit, ray, surf, sc.filter_textures);
@@ -522,7 +529,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 	{
 		// Nothing solid behind: sky, or nothing at all. If a layer was
 		// crossed it stands in as the surface, so that its light is still
-		// averaged over time.
+		// averaged over time; failing that, the place where the sky begins.
 		px.add[i] = front_add + sky * tint;
 		if (have_layer)
 		{
@@ -532,6 +539,35 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 			px.normal[i] = first_layer.n;
 			px.depth[i] = first_layer_depth;
 			px.roughness[i] = first_layer.roughness;
+		}
+		else if (sky_hit)
+		{
+			px.pos[i] = sky_p;
+			px.seen[i] = sky_p;
+			px.plane[i] = sky_n;
+			px.normal[i] = sky_n;
+			px.depth[i] = sky_depth;
+			px.roughness[i] = 1.0f;
+		}
+
+		// the air in front of the sky scatters light like any other: the
+		// sky is dimmed by it and the shafts in it show
+		if (sc.fog_density > 0.0f && px.depth[i] >= 0.0f)
+		{
+			const float reach = have_layer ? first_layer_depth : sky_depth;
+			const float at = rng.Float() * reach;
+			const Vec3 lit = DirectMedium(sc, cam.origin + eye_dir * at, rng);
+			const Vec3 glow = ClampSample(lit * (sc.fog_density * (0.25f * kInvPi) * std::exp(-sc.fog_density * at) * reach),
+				sc.max_sample);
+			const float glow_lum = Luminance(glow);
+			px.albedo[kFog][i] = Vec3(1, 1, 1);
+			px.light[kFog][i] = glow;
+			px.m1[kFog][i] = glow_lum;
+			px.m2[kFog][i] = glow_lum * glow_lum;
+
+			const float kept = std::exp(-sc.fog_density * (sky_hit ? sky_depth : first_layer_depth));
+			px.albedo[kOver][i] *= kept;
+			px.add[i] *= kept;
 		}
 		return;
 	}

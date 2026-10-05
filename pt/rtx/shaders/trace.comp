@@ -83,6 +83,9 @@ void main()
 	Material base;
 	Surface surf;
 	vec3 sky = vec3(0.0);
+	bool sky_hit = false;		// the view ends at the sky, at sky_p
+	vec3 sky_p = vec3(0.0), sky_n = vec3(0.0);
+	float sky_depth = 0.0;
 
 	for (int layer = 0; through > 0.001; layer++)
 	{
@@ -91,6 +94,12 @@ void main()
 		if ((base.flags & MAT_SKY) != 0u)
 		{
 			sky = Sky(dir) * through;
+			sky_hit = true;
+			sky_p = origin + dir * hit.t;
+			const vec3 face = normalize(cross(Corner(hit.moving, hit.tri, 1) - Corner(hit.moving, hit.tri, 0),
+				Corner(hit.moving, hit.tri, 2) - Corner(hit.moving, hit.tri, 0)));
+			sky_n = dot(face, dir) < 0.0 ? face : -face;
+			sky_depth = travelled + hit.t;
 			break;
 		}
 		MakeSurface(hit, base, origin, dir, fr.settings2.y != 0, surf);
@@ -186,16 +195,30 @@ void main()
 	{
 		// Nothing solid behind: sky, or nothing at all. If a layer was
 		// crossed it stands in as the surface, so that its light is still
-		// gathered over time.
-		imageStore(img_surface[now], pixel, vec4(layer_n, have_layer ? layer_depth : -1.0));
-		// the sky is as good as infinitely far off
-		imageStore(img_seen, pixel, vec4(have_layer ? layer_p : eye + eye_dir * 100000.0, layer_roughness));
+		// gathered over time; failing that, the place where the sky begins.
+		vec3 beyond = front_add + sky * tint;
+		const bool stand_in = have_layer || sky_hit;
+		const float stand_depth = have_layer ? layer_depth : sky_depth;
+
+		// the air in front of the sky scatters light like any other: the
+		// sky is dimmed by it and the shafts in it show
+		if (fog > 0.0 && stand_in)
+		{
+			const float at = Rand() * stand_depth;
+			const vec3 lit = DirectMedium(eye + eye_dir * at);
+			over += ClampSample(lit * (fog * (0.25 * INV_PI) * exp(-fog * at) * stand_depth), max_sample);
+			beyond *= exp(-fog * (sky_hit ? sky_depth : layer_depth));
+		}
+
+		imageStore(img_surface[now], pixel, vec4(have_layer ? layer_n : sky_n, stand_in ? stand_depth : -1.0));
+		imageStore(img_seen, pixel, vec4(have_layer ? layer_p : (sky_hit ? sky_p : eye + eye_dir * 100000.0),
+			have_layer ? layer_roughness : 1.0));
 		imageStore(img_albedo[0], pixel, vec4(0.0));
 		imageStore(img_albedo[1], pixel, vec4(0.0));
 		imageStore(img_noisy[0], pixel, vec4(0.0));
 		imageStore(img_noisy[1], pixel, vec4(0.0));
 		imageStore(img_noisy[2], pixel, vec4(over, 1.0));
-		imageStore(img_extra, pixel, vec4(front_add + sky * tint, 1.0));
+		imageStore(img_extra, pixel, vec4(beyond, 1.0));
 		return;
 	}
 
