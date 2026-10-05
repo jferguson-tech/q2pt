@@ -3,162 +3,312 @@
 #version 460
 #extension GL_EXT_ray_query : require
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_GOOGLE_include_directive : require
 
-// What the eye sees: one ray per pixel into the scene, the surface it meets
-// shaded by its texture and how squarely it faces the eye. The lighting
-// proper comes later.
+// Traces one pixel: what the eye sees there, and samples of the light on it.
+// Follows TracePixel in the CPU backend. What it writes is noisy; the passes
+// after it gather it over time and filter it.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-// same values as PT_MAT_* in pt.h
-const uint MAT_SKY = 1u;
-const uint MAT_ALPHA_TEST = 2u;
-const uint MAT_CAMERA_INVISIBLE = 8u;
+#define TRACING
+#include "scene.glsl"
 
-struct Tri
+const float GLASS_INDEX = 1.5;
+const float WATER_INDEX = 1.33;
+const int MAX_LAYERS = 8;	// see-through surfaces looked through before the next counts as solid
+
+// Light meeting the boundary between two clear materials: how much is
+// reflected, and the cosine of the angle the rest leaves at. eta is the
+// refractive index on the side the light comes from over that on the other.
+// Returns 1 when nothing gets through (total internal reflection).
+float Dielectric(float cosi, float eta, out float cost)
 {
-	vec2	uv0, uv1, uv2;
-	uint	material;
-	uint	pad;
-};
-
-struct Material
-{
-	int		texture;		// index into textures, or -1
-	uint	flags;
-	float	alpha;
-	float	roughness;
-	vec4	emission;
-};
-
-layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
-layout(set = 0, binding = 1, rgba8) uniform writeonly image2D picture;
-
-// the map (instance 0) and what moves (instance 1), each as three corners
-// per triangle, what goes with each triangle, and its materials
-layout(std430, set = 0, binding = 2) readonly buffer WorldCorners { float v[]; } world_corners;
-layout(std430, set = 0, binding = 3) readonly buffer WorldTris { Tri t[]; } world_tris;
-layout(std430, set = 0, binding = 4) readonly buffer WorldMaterials { Material m[]; } world_materials;
-layout(std430, set = 0, binding = 5) readonly buffer FrameCorners { float v[]; } frame_corners;
-layout(std430, set = 0, binding = 6) readonly buffer FrameTris { Tri t[]; } frame_tris;
-layout(std430, set = 0, binding = 7) readonly buffer FrameMaterials { Material m[]; } frame_materials;
-
-layout(set = 0, binding = 8) uniform sampler2D textures[];
-
-layout(push_constant) uniform Push
-{
-	vec4	origin;		// w: tangent of half the horizontal field of view
-	vec4	forward;	// w: tangent of half the vertical one
-	vec4	right;
-	vec4	up;
-	ivec4	sky_a;		// textures of the sky's faces +X -X +Y -Y,
-	ivec4	sky_b;		// +Z -Z; -1 where there is none
-} pc;
-
-const int MAX_LAYERS = 8;	// see-through surfaces looked through before giving up
-
-vec3 ToLinear(vec3 c)
-{
-	return pow(c, vec3(2.2));
+	const float sin2t = eta * eta * (1.0 - cosi * cosi);
+	if (sin2t >= 1.0)
+	{
+		cost = 0.0;
+		return 1.0;
+	}
+	cost = sqrt(1.0 - sin2t);
+	const float rs = (eta * cosi - cost) / (eta * cosi + cost);
+	const float rp = (cosi - eta * cost) / (cosi + eta * cost);
+	return 0.5 * (rs * rs + rp * rp);
 }
 
-// The sky is a cube of six pictures around the eye. On the face along axis
-// a, with b and c the next two axes in turn, a direction d lands at
-//   u = (d[b] / |d[a]| + 1) / 2,  v = (d[c] / |d[a]| + 1) / 2
-vec3 Sky(vec3 d)
+// what is left of light after a distance through something that absorbs it
+vec3 Fade(vec3 absorb, float distance)
 {
-	const vec3 a = abs(d);
-	int axis = (a.x >= a.y && a.x >= a.z) ? 0 : (a.y >= a.z ? 1 : 2);
-	const int face = axis * 2 + (d[axis] < 0.0 ? 1 : 0);
-	const int tex = face < 4 ? pc.sky_a[face] : pc.sky_b[face - 4];
-	if (tex < 0)
-		return vec3(0.0);
-	const float inv = 1.0 / a[axis];
-	const vec2 uv = vec2(d[(axis + 1) % 3], d[(axis + 2) % 3]) * inv * 0.5 + 0.5;
-	return ToLinear(textureLod(textures[nonuniformEXT(tex)], clamp(uv, 0.002, 0.998), 0.0).rgb);
+	if (distance <= 0.0 || MaxComponent(absorb) <= 0.0)
+		return vec3(1.0);
+	return exp(-absorb * distance);
 }
 
 void main()
 {
 	const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-	const ivec2 size = imageSize(picture);
+	const ivec2 size = fr.size.xy;
 	if (pixel.x >= size.x || pixel.y >= size.y)
 		return;
+	const int now = fr.frame_has.z;
+	rng_state = Hash(uint(pixel.y * size.x + pixel.x), uint(fr.counts.z));
 
-	const vec3 dir = normalize(pc.forward.xyz
-		+ pc.right.xyz * ((2.0 * (pixel.x + 0.5) / size.x - 1.0) * pc.origin.w)
-		+ pc.up.xyz * ((1.0 - 2.0 * (pixel.y + 0.5) / size.y) * pc.forward.w));
+	const vec3 eye = fr.origin.xyz;
+	const vec3 eye_dir = normalize(fr.forward.xyz
+		+ fr.right.xyz * ((2.0 * (pixel.x + 0.5 + fr.right.w) / size.x - 1.0) * fr.origin.w)
+		+ fr.up.xyz * ((1.0 - 2.0 * (pixel.y + 0.5 + fr.up.w) / size.y) * fr.forward.w));
 
-	vec3 colour = vec3(0.0);
-	float through = 1.0;	// how much of what lies further on still shows
+	const float max_sample = fr.settings_f.x;
+	const float fog = fr.settings_f.w;
+	const int reflections = fr.settings.z;
+
+	// Walk through whatever is see-through to the first solid surface. The
+	// solid surface is what the filters work on; the layers in front dim it
+	// and add their own light on top.
+	vec3 origin = eye, dir = eye_dir;
 	float tmin = 0.0;
+	float through = 1.0;		// how much of what is behind still shows
+	vec3 tint = vec3(1.0);		// what liquid on the way has left of each colour
+	vec3 absorb = fr.medium.xyz;	// of the liquid the path is in now; none in air
+	float entered = 0.0;		// where along the current ray that began
+	float travelled = 0.0;		// along the path so far, which water may have bent
+	vec3 front_add = vec3(0.0);		// from the layers: what they emit
+	vec3 front_diffuse = vec3(0.0);	// what they scatter, which is noisy
+	vec3 front_mirror = vec3(0.0);	// and what they mirror, noisy too
+	bool have_layer = false;
+	vec3 layer_p = vec3(0.0), layer_n = vec3(0.0);
+	float layer_depth = 0.0, layer_roughness = 0.0;
+	bool solid = false;
+	Hit hit;
+	Material base;
+	Surface surf;
+	vec3 sky = vec3(0.0);
 
-	for (int layer = 0; layer < MAX_LAYERS && through > 0.01; layer++)
+	for (int layer = 0; through > 0.001; layer++)
 	{
-		rayQueryEXT query;
-		rayQueryInitializeEXT(query, scene, gl_RayFlagsOpaqueEXT, 0xff, pc.origin.xyz, tmin, dir, 1.0e30);
-		while (rayQueryProceedEXT(query))
-			;
-		if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT)
+		if (!Closest(origin, dir, tmin, true, false, hit, base))
 			break;
-
-		const bool moving = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true) != 0;
-		const int prim = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
-		const vec2 bary = rayQueryGetIntersectionBarycentricsEXT(query, true);
-		const float t = rayQueryGetIntersectionTEXT(query, true);
-		// whatever happens next, the ray goes on from just past here
-		tmin = t + max(t, 1.0) * 1.0e-4;
-
-		Tri tri;
-		Material mat;
-		vec3 p0, p1, p2;
-		if (moving)
+		if ((base.flags & MAT_SKY) != 0u)
 		{
-			tri = frame_tris.t[prim];
-			mat = frame_materials.m[tri.material];
-			const int i = prim * 9;
-			p0 = vec3(frame_corners.v[i], frame_corners.v[i + 1], frame_corners.v[i + 2]);
-			p1 = vec3(frame_corners.v[i + 3], frame_corners.v[i + 4], frame_corners.v[i + 5]);
-			p2 = vec3(frame_corners.v[i + 6], frame_corners.v[i + 7], frame_corners.v[i + 8]);
-		}
-		else
-		{
-			tri = world_tris.t[prim];
-			mat = world_materials.m[tri.material];
-			const int i = prim * 9;
-			p0 = vec3(world_corners.v[i], world_corners.v[i + 1], world_corners.v[i + 2]);
-			p1 = vec3(world_corners.v[i + 3], world_corners.v[i + 4], world_corners.v[i + 5]);
-			p2 = vec3(world_corners.v[i + 6], world_corners.v[i + 7], world_corners.v[i + 8]);
-		}
-
-		if ((mat.flags & MAT_SKY) != 0u)
-		{
-			colour += Sky(dir) * through;
-			through = 0.0;
+			sky = Sky(dir) * through;
 			break;
 		}
-		if ((mat.flags & MAT_CAMERA_INVISIBLE) != 0u)
-			continue;
-
-		const vec2 uv = tri.uv0 * (1.0 - bary.x - bary.y) + tri.uv1 * bary.x + tri.uv2 * bary.y;
-		vec4 texel = vec4(1.0);
-		if (mat.texture >= 0)
-			texel = textureLod(textures[nonuniformEXT(mat.texture)], uv, 0.0);
-		if ((mat.flags & MAT_ALPHA_TEST) != 0u && texel.a < 0.5)
-			continue;
-
-		vec3 shade = ToLinear(texel.rgb);
-		if (max(mat.emission.r, max(mat.emission.g, mat.emission.b)) <= 0.0)
+		MakeSurface(hit, base, origin, dir, fr.settings2.y != 0, surf);
+		tint *= Fade(absorb, hit.t - entered);
+		entered = hit.t;
+		if (surf.mat.alpha >= 1.0 || layer >= MAX_LAYERS)
 		{
-			// not a light: brighter the more squarely it faces the eye
-			const vec3 normal = normalize(cross(p1 - p0, p2 - p0));
-			shade *= 0.15 + 0.85 * abs(dot(normal, dir));
+			solid = true;
+			break;
 		}
 
-		const float covers = clamp(mat.alpha, 0.0, 1.0);
-		colour += shade * (through * covers);
-		through *= 1.0 - covers;
+		if (!have_layer)
+		{
+			have_layer = true;
+			layer_p = surf.p;
+			layer_n = surf.n;
+			layer_depth = travelled + hit.t;
+			layer_roughness = surf.roughness;
+		}
+
+		// Glass and water are clear materials with a tint painted on. The
+		// boundary reflects some of the light, more at a glancing angle, and
+		// lets the rest in; water bends it on the way.
+		bool bent = false;
+		if ((surf.mat.flags & MAT_BLACK) == 0u && surf.roughness < LIGHT_SAMPLED_ROUGHNESS)
+		{
+			const bool waves = (surf.mat.flags & MAT_WAVES) != 0u;
+			const bool liquid = waves && fr.settings2.x != 0;
+			const float cosi = clamp(dot(surf.n, surf.wo), 0.0, 1.0);
+			float fresnel, cost = 0.0;
+			float eta = 1.0;
+			if (liquid)
+			{
+				// its underside faces down: there the eye is in the water looking out
+				eta = surf.tri_n.z < -0.5 ? WATER_INDEX : 1.0 / WATER_INDEX;
+				fresnel = Dielectric(cosi, eta, cost);
+			}
+			else
+			{
+				// a pane: in one face and out the other with no net bend, and
+				// both faces reflect
+				const float one = Dielectric(cosi, 1.0 / GLASS_INDEX, cost);
+				fresnel = 2.0 * one / (1.0 + one);
+			}
+
+			// with reflections off the light simply all goes through
+			if (reflections < 1 && fresnel < 1.0)
+				fresnel = 0.0;
+			if (fresnel > 0.0)
+			{
+				vec3 mirror = surf.n * (2.0 * dot(surf.n, surf.wo)) - surf.wo;
+				if (dot(mirror, surf.ng) < 0.0)
+					mirror -= surf.ng * (2.0 * dot(mirror, surf.ng));
+				float reached;
+				front_mirror += ClampSample(Radiance(surf.p + surf.ng * RAY_OFFSET, mirror, true, 1, fr.settings.w, reached),
+					max_sample) * (through * fresnel);
+			}
+			through *= 1.0 - fresnel;
+
+			// going in, the liquid starts soaking up light; coming out, it stops
+			if (waves)
+				absorb = surf.tri_n.z < -0.5 ? vec3(0.0) : surf.mat.absorb.rgb;
+
+			if (liquid && fresnel < 1.0)
+			{
+				// into (or out of) the water
+				travelled += hit.t;
+				origin = surf.p - surf.ng * RAY_OFFSET;
+				dir = normalize(dir * eta + surf.n * (eta * cosi - cost));
+				if (dot(dir, surf.ng) > 0.0)
+					dir = normalize(dir - surf.ng * (2.0 * dot(dir, surf.ng)));
+				tmin = 0.0;
+				entered = 0.0;
+				bent = true;
+			}
+		}
+
+		// the painted tint: covers its share of what is behind and shows lit itself
+		const float share = through * surf.mat.alpha;
+		if ((surf.mat.bits & BIT_EMISSIVE) != 0u && surf.front)
+			front_add += Emitted(surf, true) * share;
+		if (share > 0.0 && MaxComponent(surf.kd) > 0.0)
+			front_diffuse += surf.kd * (DirectWorld(surf, true).diffuse + DirectFrameOne(surf).diffuse) * (INV_PI * share);
+		through *= 1.0 - surf.mat.alpha;
+		if (!bent)
+			tmin = hit.t + 0.01;
 	}
 
-	imageStore(picture, pixel, vec4(pow(colour, vec3(1.0 / 2.2)), 1.0));
+	// the layers' light is noisy and is gathered and filtered like the rest
+	vec3 over = have_layer ? ClampSample(front_diffuse + front_mirror, max_sample) : vec3(0.0);
+
+	if (!solid)
+	{
+		// Nothing solid behind: sky, or nothing at all. If a layer was
+		// crossed it stands in as the surface, so that its light is still
+		// gathered over time.
+		imageStore(img_surface[now], pixel, vec4(layer_n, have_layer ? layer_depth : -1.0));
+		// the sky is as good as infinitely far off
+		imageStore(img_seen, pixel, vec4(have_layer ? layer_p : eye + eye_dir * 100000.0, layer_roughness));
+		imageStore(img_albedo[0], pixel, vec4(0.0));
+		imageStore(img_albedo[1], pixel, vec4(0.0));
+		imageStore(img_noisy[0], pixel, vec4(0.0));
+		imageStore(img_noisy[1], pixel, vec4(0.0));
+		imageStore(img_noisy[2], pixel, vec4(over, 1.0));
+		imageStore(img_extra, pixel, vec4(front_add + sky * tint, 1.0));
+		return;
+	}
+
+	vec3 kd = surf.kd * through * tint;
+	const vec3 spec_albedo = max(SpecularAlbedo(surf), vec3(MIN_DEMODULATE));
+	vec3 ks = spec_albedo * through * tint;
+	const bool has_diffuse = MaxComponent(surf.kd) > 0.0;
+	const bool has_specular = MaxComponent(surf.f0) > 0.0;
+	const float depth = travelled + hit.t;
+
+	// where to look for this point in the last frame's picture: where the
+	// eye would see it without the water's bend, or where it was if it moved
+	vec3 seen = travelled > 0.0 ? eye + eye_dir * depth : surf.p;
+	if (travelled <= 0.0 && hit.moving && fr.frame_has.y != 0)
+	{
+		const int i = hit.tri * 9;
+		const vec3 q0 = vec3(frame_prev.v[i], frame_prev.v[i + 1], frame_prev.v[i + 2]);
+		const vec3 q1 = vec3(frame_prev.v[i + 3], frame_prev.v[i + 4], frame_prev.v[i + 5]);
+		const vec3 q2 = vec3(frame_prev.v[i + 6], frame_prev.v[i + 7], frame_prev.v[i + 8]);
+		seen = q0 * (1.0 - hit.bary.x - hit.bary.y) + q1 * hit.bary.x + q2 * hit.bary.y;
+	}
+
+	// exact, so it skips the filters
+	const Lit flash = DirectFrameAll(surf);
+	vec3 extra = front_add + (surf.kd * flash.diffuse * INV_PI + flash.specular) * tint * through;
+	if ((surf.mat.bits & BIT_EMISSIVE) != 0u && surf.front)
+		extra += Emitted(surf, true) * tint * through;
+
+	// Air that scatters light: some of what the surface sends is lost on the
+	// way, and the air itself glows where light falls through it, which is
+	// what shows as shafts. One point along the way is sampled per frame.
+	if (fog > 0.0)
+	{
+		const float reach = have_layer ? layer_depth : hit.t;		// the straight part of the view
+		const float at = Rand() * reach;
+		const vec3 lit = DirectMedium(eye + eye_dir * at);
+		over += ClampSample(lit * (fog * (0.25 * INV_PI) * exp(-fog * at) * reach), max_sample);
+
+		const float kept = exp(-fog * depth);
+		kd *= kept;
+		ks *= kept;
+		extra *= kept;
+	}
+
+	// a specular path costs as much as a diffuse one; where the lobe reflects
+	// little, take it only some of the time
+	const float spec_chance = (!has_specular || reflections < 2) ? 0.0
+		: min(1.0, max(0.1, Luminance(SpecularAlbedo(surf)) * 10.0) * fr.settings_f.y);
+
+	const int bounces = fr.settings.x;
+	int paths = max(1, fr.settings2.z);
+
+	// Paths are best spent where the picture has little to go on: on what
+	// has just come into view. What last frame knew of this point says so.
+	const int adaptive = fr.bases.x;
+	if (adaptive > 1)
+	{
+		float known = 0.0;
+		if (fr.output_i.w != 0)
+		{
+			const vec3 v = seen - fr.prev_origin.xyz;
+			const float z = dot(v, fr.prev_forward.xyz);
+			if (z > 0.01)
+			{
+				const ivec2 q = ivec2(floor(vec2(
+					(dot(v, fr.prev_right.xyz) / (z * fr.prev_origin.w) * 0.5 + 0.5) * size.x,
+					(0.5 - dot(v, fr.prev_up.xyz) / (z * fr.prev_forward.w) * 0.5) * size.y)));
+				if (q.x >= 0 && q.y >= 0 && q.x < size.x && q.y < size.y)
+				{
+					const float was = imageLoad(img_surface[1 - now], q).a;
+					const float expected = length(v);
+					if (was > 0.0 && abs(was - expected) < 0.1 * expected)
+						known = imageLoad(img_kept[(1 - now) * 3], q).a;
+				}
+			}
+		}
+		if (known < 2.0)
+			paths *= adaptive;
+		else if (known < 8.0)
+			paths *= max(1, adaptive / 2);
+		paths = min(paths, 64);
+	}
+	vec3 sum_d = vec3(0.0), sum_s = vec3(0.0);
+	for (int k = 0; k < paths; k++)
+	{
+		const Lit direct = DirectWorld(surf, true);
+		vec3 d = direct.diffuse * INV_PI;
+		vec3 sp = direct.specular / spec_albedo;
+
+		if (bounces > 0)
+		{
+			const vec3 from = surf.p + surf.ng * RAY_OFFSET;
+			float reached;
+			if (has_diffuse)
+				d += Radiance(from, SampleDiffuse(surf), false, 1, bounces, reached);
+			if (spec_chance > 0.0 && Rand() < spec_chance)
+			{
+				vec3 wi, weight;
+				if (SampleSpecular(surf, wi, weight))
+					sp += weight * Radiance(from, wi, !surf.light_sampled_spec, 1, fr.settings.w, reached)
+						/ spec_albedo * (1.0 / spec_chance);
+			}
+		}
+		sum_d += ClampSample(d, max_sample);
+		sum_s += ClampSample(sp, max_sample);
+	}
+
+	imageStore(img_surface[now], pixel, vec4(surf.n, depth));
+	imageStore(img_seen, pixel, vec4(seen, surf.roughness));
+	imageStore(img_albedo[0], pixel, vec4(kd, 1.0));
+	imageStore(img_albedo[1], pixel, vec4(ks, 1.0));
+	imageStore(img_noisy[0], pixel, vec4(sum_d / float(paths), 1.0));
+	imageStore(img_noisy[1], pixel, vec4(sum_s / float(paths), 1.0));
+	imageStore(img_noisy[2], pixel, vec4(over, 1.0));
+	imageStore(img_extra, pixel, vec4(extra, 1.0));
 }

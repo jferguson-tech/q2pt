@@ -123,17 +123,20 @@ if(Vulkan_FOUND AND Vulkan_glslc_FOUND AND Q2_ARCH STREQUAL x64)
 	set(PT_SHADER_DIR ${CMAKE_BINARY_DIR}/pt_shaders)
 	file(MAKE_DIRECTORY ${PT_SHADER_DIR})
 	set(PT_SHADER_INC)
-	foreach(shader blit.vert blit.frag trace.comp)
+	foreach(shader blit.vert blit.frag trace.comp temporal.comp atrous.comp compose.comp
+			bloom.comp resolve.comp)
 		add_custom_command(
 			OUTPUT ${PT_SHADER_DIR}/${shader}.inc
 			COMMAND Vulkan::glslc -mfmt=c --target-env=vulkan1.3 -O
 				${CMAKE_SOURCE_DIR}/pt/rtx/shaders/${shader} -o ${PT_SHADER_DIR}/${shader}.inc
-			DEPENDS ${CMAKE_SOURCE_DIR}/pt/rtx/shaders/${shader}
+			DEPENDS ${CMAKE_SOURCE_DIR}/pt/rtx/shaders/${shader} ${CMAKE_SOURCE_DIR}/pt/rtx/shaders/scene.glsl
 			VERBATIM)
 		list(APPEND PT_SHADER_INC ${PT_SHADER_DIR}/${shader}.inc)
 	endforeach()
 
-	add_library(pt_rtx STATIC pt/rtx/pt_rtx.cpp ${PT_SHADER_INC})
+	# the lights and the tables for finding them are worked out by the CPU
+	# backend's code, so that both light a map the same way
+	add_library(pt_rtx STATIC pt/rtx/pt_rtx.cpp pt/cpu/pt_world.cpp pt/cpu/pt_bvh.cpp ${PT_SHADER_INC})
 	target_include_directories(pt_rtx PRIVATE ${PT_SHADER_DIR})
 	target_link_libraries(pt_rtx PUBLIC Vulkan::Vulkan)
 
