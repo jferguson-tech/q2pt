@@ -337,6 +337,13 @@ LRESULT CALLBACK MainWndProc (
 		SCR_DirtyScreen ();	// force entire screen to update next frame
         return DefWindowProc (hWnd, uMsg, wParam, lParam);
 
+	case WM_CLOSE:
+		// Alt+F4 or the close button. Left to DefWindowProc this destroyed the
+		// window and left the game running without one; quit properly instead.
+		// Renderer changes destroy the window directly and never come here.
+		Cbuf_ExecuteText (EXEC_APPEND, "quit\n");
+		return 0;
+
 	case WM_DESTROY:
 		// let sound and input know about this?
 		cl_hwnd = NULL;
