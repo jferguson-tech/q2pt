@@ -146,6 +146,7 @@ struct CpuBackend
 	int				width = 0, height = 0;
 	std::vector<uint32_t> scene;			// 0x00RRGGBB, window sized
 	bool			has_view = false;
+	int				shown[4] = {0, 0, 0, 0};	// the part of the window the last view covered
 	pt_view_t		view{};
 
 	Pool					pool;
@@ -1643,6 +1644,7 @@ void Present(pt_backend_t *b, const uint32_t *overlay)
 			}
 		}
 	}
+	s->shown[0] = x0; s->shown[1] = y0; s->shown[2] = x1; s->shown[3] = y1;
 	s->has_view = false;
 
 	HDC dc = GetDC(s->hwnd);
@@ -1651,6 +1653,25 @@ void Present(pt_backend_t *b, const uint32_t *overlay)
 		BitBlt(dc, 0, 0, s->width, s->height, s->memdc, 0, 0, SRCCOPY);
 		ReleaseDC(s->hwnd, dc);
 	}
+}
+
+int ReadPixels(pt_backend_t *b, uint32_t *pixels, int with_overlay)
+{
+	CpuBackend *s = Self(b);
+
+	for (int y = 0; y < s->height; y++)
+	{
+		const uint32_t *in = with_overlay ? &s->dibbits[(size_t)y * s->width] : &s->scene[(size_t)y * s->width];
+		uint32_t *out = &pixels[(size_t)y * s->width];
+		const bool rowin = with_overlay || (y >= s->shown[1] && y < s->shown[3]);
+
+		for (int x = 0; x < s->width; x++)
+		{
+			const uint32_t c = (rowin && (with_overlay || (x >= s->shown[0] && x < s->shown[2]))) ? in[x] : 0;
+			out[x] = ((c >> 16) & 0xff) | (c & 0xff00) | ((c & 0xff) << 16) | 0xff000000u;
+		}
+	}
+	return 1;
 }
 
 const char *Stats(pt_backend_t *b)
@@ -1674,6 +1695,7 @@ extern "C" pt_backend_t *pt_cpu_create(const pt_create_t *ci, char *err, int err
 	s->base.render_view = RenderView;
 	s->base.present = Present;
 	s->base.stats = Stats;
+	s->base.read_pixels = ReadPixels;
 	s->log = ci->log;
 	s->hwnd = (HWND)ci->hwnd;
 	s->width = ci->width;

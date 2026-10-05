@@ -224,6 +224,10 @@ struct pt_backend_s
 
 	/* one line about the last frame, valid until the next call */
 	const char *(*stats)(pt_backend_t *self);
+
+	/* the picture last presented: width*height pixels, bytes R,G,B,A, top row
+	   first, with or without the overlay. Returns 0 if it cannot. */
+	int		(*read_pixels)(pt_backend_t *self, uint32_t *pixels, int with_overlay);
 };
 
 /* both return NULL on failure with a reason in err */

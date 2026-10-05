@@ -164,6 +164,14 @@ qboolean R_UpdateSettings (void);
 void	R_ViewSettings (pt_view_t *view);
 
 //
+// rpt_shot.c
+//
+void	R_InitShots (void);
+void	R_ShutdownShots (void);
+int		R_ShotPasses (pt_view_t *view);
+void	R_ShotFinish (void);
+
+//
 // rpt_water.c
 //
 void	R_WaterReset (void);

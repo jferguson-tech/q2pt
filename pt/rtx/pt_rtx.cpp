@@ -625,6 +625,11 @@ void TextureUpdate(pt_backend_t *, int, const uint32_t *)
 {
 }
 
+int ReadPixels(pt_backend_t *, uint32_t *, int)
+{
+	return 0;
+}
+
 void Record(RtxBackend *s, uint32_t image_index)
 {
 	VkCommandBuffer cmd = s->cmd;
@@ -805,6 +810,7 @@ extern "C" pt_backend_t *pt_rtx_create(const pt_create_t *ci, char *err, int err
 	s->base.render_view = RenderView;
 	s->base.present = Present;
 	s->base.stats = Stats;
+	s->base.read_pixels = ReadPixels;
 	s->log = ci->log;
 	s->hwnd = (HWND)ci->hwnd;
 	s->width = ci->width;
