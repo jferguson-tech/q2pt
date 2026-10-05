@@ -282,6 +282,7 @@ void R_Shutdown (void)
 	R_WaterReset ();		// while the backend that holds its pictures is still there
 	R_ShutdownImages ();
 	R_ShutdownModels ();
+	R_SceneShutdown ();
 	r_worldname[0] = 0;
 	r_skyname[0] = 0;
 	r_worlddirty = false;

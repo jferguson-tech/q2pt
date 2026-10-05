@@ -560,21 +560,69 @@ static void S_AddBeam (entity_t *e)
 	}
 }
 
+#define	DOT_SIZE	16
+
+static int	s_dottexture = -1;		// a white disc on nothing, for particles
+
+/*
+=============
+R_SceneShutdown
+
+The backend is going, and its textures with it
+=============
+*/
+void R_SceneShutdown (void)
+{
+	s_dottexture = -1;
+}
+
+// the picture every particle is cut from: opaque inside a circle, a hole outside
+static int S_DotTexture (void)
+{
+	static uint32_t	pixels[DOT_SIZE * DOT_SIZE];
+	pt_texture_t	tex;
+	float			dx, dy;
+	int				x, y;
+
+	if (s_dottexture >= 0)
+		return s_dottexture;
+
+	for (y=0 ; y<DOT_SIZE ; y++)
+	{
+		for (x=0 ; x<DOT_SIZE ; x++)
+		{
+			dx = (x + 0.5f) * (2.0f / DOT_SIZE) - 1;
+			dy = (y + 0.5f) * (2.0f / DOT_SIZE) - 1;
+			// white all over, so that the colour comes from the material alone
+			pixels[y * DOT_SIZE + x] = dx * dx + dy * dy <= 1 ? 0xffffffffu : 0x00ffffffu;
+		}
+	}
+	tex.width = tex.height = DOT_SIZE;
+	tex.pixels = pixels;
+	s_dottexture = rpt.backend->texture_create (rpt.backend, &tex);
+	return s_dottexture;
+}
+
 /*
 =============
 S_AddParticles
 
-Each a small glowing triangle facing the viewer, the size ref_gl draws them
+Each a small glowing disc facing the viewer, the size ref_gl draws them: a
+square cut round by its texture
 =============
 */
 static void S_AddParticles (refdef_t *fd, vec3_t forward, vec3_t right, vec3_t up)
 {
 	static int	cache[256][4], cacheframe[256][4];
 	particle_t	*p;
-	vec3_t		a, b, c;
+	vec3_t		corner[4];
 	uint32_t	color;
-	float		scale;
-	int			i, j, level, index;
+	float		radius;
+	int			i, j, level, index, dot;
+
+	if (!fd->num_particles)
+		return;
+	dot = S_DotTexture ();
 
 	for (i=0, p=fd->particles ; i<fd->num_particles ; i++, p++)
 	{
@@ -583,25 +631,27 @@ static void S_AddParticles (refdef_t *fd, vec3_t forward, vec3_t right, vec3_t u
 		if (cacheframe[index][level] != s_framecount)
 		{
 			color = d_8to24table[index];
-			cache[index][level] = S_Material (-1, s_linear[color & 0xff], s_linear[(color >> 8) & 0xff],
-				s_linear[(color >> 16) & 0xff], (level + 1) * 0.25f, PT_MAT_BLACK);
+			cache[index][level] = S_Material (dot, s_linear[color & 0xff], s_linear[(color >> 8) & 0xff],
+				s_linear[(color >> 16) & 0xff], (level + 1) * 0.25f,
+				PT_MAT_BLACK | (dot >= 0 ? PT_MAT_ALPHA_TEST : 0));
 			cacheframe[index][level] = s_framecount;
 		}
 
-		// hack a scale up to keep particles from disappearing
-		scale = (p->origin[0] - fd->vieworg[0]) * forward[0]
+		// far ones are drawn larger, as ref_gl does, to keep them from disappearing
+		radius = (p->origin[0] - fd->vieworg[0]) * forward[0]
 			+ (p->origin[1] - fd->vieworg[1]) * forward[1]
 			+ (p->origin[2] - fd->vieworg[2]) * forward[2];
-		// ref_gl draws a soft dot that fills only the middle of its triangle
-		scale = scale < 20 ? 0.6 : 0.6 + scale * 0.0025;
+		radius = radius < 20 ? 0.4f : 0.4f + radius * 0.0015f;
 
 		for (j=0 ; j<3 ; j++)
 		{
-			a[j] = p->origin[j];
-			b[j] = p->origin[j] + right[j] * scale;
-			c[j] = p->origin[j] + up[j] * scale;
+			corner[0][j] = p->origin[j] - right[j] * radius - up[j] * radius;
+			corner[1][j] = p->origin[j] + right[j] * radius - up[j] * radius;
+			corner[2][j] = p->origin[j] + right[j] * radius + up[j] * radius;
+			corner[3][j] = p->origin[j] - right[j] * radius + up[j] * radius;
 		}
-		S_Triangle (a, b, c, 0, 0, 0, 0, 0, 0, cache[index][level]);
+		S_Triangle (corner[0], corner[1], corner[2], 0, 0, 1, 0, 1, 1, cache[index][level]);
+		S_Triangle (corner[0], corner[2], corner[3], 0, 0, 1, 1, 0, 1, cache[index][level]);
 	}
 }
 
