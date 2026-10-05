@@ -1389,6 +1389,195 @@ void M_Menu_Options_f (void)
 /*
 =======================================================================
 
+PATH TRACING MENU
+
+The main settings of the path traced renderers. Everything takes effect at
+once; there is nothing to apply. The rest are console variables, pt_*.
+
+=======================================================================
+*/
+
+static menuframework_s	s_pt_menu;
+
+static menulist_s		s_pt_quality_list;
+static menuslider_s		s_pt_scale_slider;
+static menulist_s		s_pt_reflections_list;
+static menuslider_s		s_pt_bounces_slider;
+static menulist_s		s_pt_taa_box;
+static menuslider_s		s_pt_exposure_slider;
+
+#define	PT_QUALITY_CUSTOM	4
+
+static void PT_QualityFunc( void *unused )
+{
+	// the renderer sets the other variables from the preset on its next frame
+	if ( s_pt_quality_list.curvalue != PT_QUALITY_CUSTOM )
+		Cvar_SetValue( "pt_quality", s_pt_quality_list.curvalue );
+}
+
+static void PT_ScaleFunc( void *unused )
+{
+	Cvar_SetValue( "pt_scale", s_pt_scale_slider.curvalue * 0.05f );
+}
+
+static void PT_ReflectionsFunc( void *unused )
+{
+	Cvar_SetValue( "pt_reflections", s_pt_reflections_list.curvalue );
+}
+
+static void PT_BouncesFunc( void *unused )
+{
+	Cvar_SetValue( "pt_bounces", s_pt_bounces_slider.curvalue );
+}
+
+static void PT_TaaFunc( void *unused )
+{
+	Cvar_SetValue( "pt_taa", s_pt_taa_box.curvalue );
+}
+
+static void PT_ExposureFunc( void *unused )
+{
+	Cvar_SetValue( "pt_exposure", s_pt_exposure_slider.curvalue * 0.25f );
+}
+
+/*
+** PT_SetMenuValues
+**
+** The preset changes several variables behind the menu's back, so the
+** controls are read back from them every frame.
+*/
+static void PT_SetMenuValues( void )
+{
+	int		quality;
+
+	quality = (int)Cvar_VariableValue( "pt_quality" );
+	s_pt_quality_list.curvalue = ( quality < 0 || quality >= PT_QUALITY_CUSTOM ) ? PT_QUALITY_CUSTOM : quality;
+
+	s_pt_scale_slider.curvalue = (int)( ClampCvar( 0.25f, 1, Cvar_VariableValue( "pt_scale" ) ) * 20 + 0.5f );
+	s_pt_reflections_list.curvalue = (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_reflections" ) );
+	s_pt_bounces_slider.curvalue = (int)ClampCvar( 0, 6, Cvar_VariableValue( "pt_bounces" ) );
+	s_pt_taa_box.curvalue = Cvar_VariableValue( "pt_taa" ) != 0;
+	s_pt_exposure_slider.curvalue = (int)( ClampCvar( 0.5f, 6, Cvar_VariableValue( "pt_exposure" ) ) * 4 + 0.5f );
+}
+
+void PathTrace_MenuInit( void )
+{
+	static const char *quality_names[] =
+	{
+		"low",
+		"medium",
+		"high",
+		"ultra",
+		"custom",
+		0
+	};
+	static const char *reflection_names[] =
+	{
+		"off",
+		"glass and water",
+		"everything",
+		0
+	};
+	static const char *yesno_names[] =
+	{
+		"no",
+		"yes",
+		0
+	};
+
+	// the renderers create these too; the defaults here have to match
+	// rpt_settings.c in case the menu is opened before one has run
+	Cvar_Get( "pt_quality", "1", CVAR_ARCHIVE );
+	Cvar_Get( "pt_scale", "0.5", CVAR_ARCHIVE );
+	Cvar_Get( "pt_reflections", "2", CVAR_ARCHIVE );
+	Cvar_Get( "pt_bounces", "3", CVAR_ARCHIVE );
+	Cvar_Get( "pt_taa", "1", CVAR_ARCHIVE );
+	Cvar_Get( "pt_exposure", "2", CVAR_ARCHIVE );
+
+	s_pt_menu.x = viddef.width / 2;
+	s_pt_menu.y = viddef.height / 2 - 58;
+	s_pt_menu.nitems = 0;
+
+	s_pt_quality_list.generic.type		= MTYPE_SPINCONTROL;
+	s_pt_quality_list.generic.x			= 0;
+	s_pt_quality_list.generic.y			= 0;
+	s_pt_quality_list.generic.name		= "quality";
+	s_pt_quality_list.generic.callback	= PT_QualityFunc;
+	s_pt_quality_list.itemnames			= quality_names;
+
+	s_pt_scale_slider.generic.type		= MTYPE_SLIDER;
+	s_pt_scale_slider.generic.x			= 0;
+	s_pt_scale_slider.generic.y			= 20;
+	s_pt_scale_slider.generic.name		= "resolution";
+	s_pt_scale_slider.generic.callback	= PT_ScaleFunc;
+	s_pt_scale_slider.minvalue			= 5;
+	s_pt_scale_slider.maxvalue			= 20;
+
+	s_pt_reflections_list.generic.type	= MTYPE_SPINCONTROL;
+	s_pt_reflections_list.generic.x		= 0;
+	s_pt_reflections_list.generic.y		= 30;
+	s_pt_reflections_list.generic.name	= "reflections";
+	s_pt_reflections_list.generic.callback = PT_ReflectionsFunc;
+	s_pt_reflections_list.itemnames		= reflection_names;
+
+	s_pt_bounces_slider.generic.type	= MTYPE_SLIDER;
+	s_pt_bounces_slider.generic.x		= 0;
+	s_pt_bounces_slider.generic.y		= 40;
+	s_pt_bounces_slider.generic.name	= "light bounces";
+	s_pt_bounces_slider.generic.callback = PT_BouncesFunc;
+	s_pt_bounces_slider.minvalue		= 0;
+	s_pt_bounces_slider.maxvalue		= 6;
+
+	s_pt_taa_box.generic.type			= MTYPE_SPINCONTROL;
+	s_pt_taa_box.generic.x				= 0;
+	s_pt_taa_box.generic.y				= 50;
+	s_pt_taa_box.generic.name			= "anti-aliasing";
+	s_pt_taa_box.generic.callback		= PT_TaaFunc;
+	s_pt_taa_box.itemnames				= yesno_names;
+
+	s_pt_exposure_slider.generic.type	= MTYPE_SLIDER;
+	s_pt_exposure_slider.generic.x		= 0;
+	s_pt_exposure_slider.generic.y		= 60;
+	s_pt_exposure_slider.generic.name	= "exposure";
+	s_pt_exposure_slider.generic.callback = PT_ExposureFunc;
+	s_pt_exposure_slider.minvalue		= 2;
+	s_pt_exposure_slider.maxvalue		= 24;
+
+	PT_SetMenuValues();
+
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_quality_list );
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_scale_slider );
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_reflections_list );
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_bounces_slider );
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_taa_box );
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_exposure_slider );
+}
+
+void PathTrace_MenuDraw (void)
+{
+	const char	*note = "applies to the path traced renderers";
+
+	M_Banner( "m_banner_video" );
+	PT_SetMenuValues();
+	Menu_AdjustCursor( &s_pt_menu, 1 );
+	Menu_Draw( &s_pt_menu );
+	Menu_DrawStringDark( viddef.width / 2 - (int)strlen( note ) * 4, s_pt_menu.y + 84, note );
+}
+
+const char *PathTrace_MenuKey( int key )
+{
+	return Default_MenuKey( &s_pt_menu, key );
+}
+
+void M_Menu_PathTrace_f (void)
+{
+	PathTrace_MenuInit();
+	M_PushMenu ( PathTrace_MenuDraw, PathTrace_MenuKey );
+}
+
+/*
+=======================================================================
+
 VIDEO MENU
 
 =======================================================================
@@ -3961,6 +4150,7 @@ void M_Init (void)
 		Cmd_AddCommand ("menu_credits", M_Menu_Credits_f );
 	Cmd_AddCommand ("menu_multiplayer", M_Menu_Multiplayer_f );
 	Cmd_AddCommand ("menu_video", M_Menu_Video_f);
+	Cmd_AddCommand ("menu_pathtrace", M_Menu_PathTrace_f);
 	Cmd_AddCommand ("menu_options", M_Menu_Options_f);
 		Cmd_AddCommand ("menu_keys", M_Menu_Keys_f);
 	Cmd_AddCommand ("menu_quit", M_Menu_Quit_f);

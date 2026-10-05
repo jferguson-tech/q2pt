@@ -386,6 +386,29 @@ int R_ImageNormalTexture (image_t *image)
 	return image->pt_normal_texture - 1;
 }
 
+/*
+===============
+R_MaterialsChanged
+
+Throws away every generated detail map, so that they are made again from
+the current material settings
+===============
+*/
+void R_MaterialsChanged (void)
+{
+	int		i;
+	image_t	*image;
+
+	for (i=0, image=r_images ; i<numr_images ; i++, image++)
+	{
+		if (image->pt_normal_texture && rpt.backend)
+			rpt.backend->texture_destroy (rpt.backend, image->pt_normal_texture - 1);
+		image->pt_normal_texture = 0;
+		free (image->normalmap);
+		image->normalmap = NULL;
+	}
+}
+
 static void R_FreeImage (image_t *image)
 {
 	if (image->pt_texture && rpt.backend)

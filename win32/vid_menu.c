@@ -40,6 +40,7 @@ static cvar_t *sw_mode;
 static cvar_t *sw_stipplealpha;
 
 extern void M_ForceMenuOff( void );
+extern void M_Menu_PathTrace_f( void );
 
 /*
 ====================================================================
@@ -66,6 +67,7 @@ static menulist_s  		s_stipple_box;
 static menulist_s  		s_paletted_texture_box;
 static menulist_s  		s_finish_box;
 static menuaction_s		s_cancel_action[2];
+static menuaction_s		s_pathtrace_action[2];
 static menuaction_s		s_defaults_action[2];
 
 static void DriverCallback( void *unused )
@@ -187,6 +189,11 @@ static void ApplyChanges( void *unused )
 	}
 
 	M_ForceMenuOff();
+}
+
+static void PathTraceOptions( void *unused )
+{
+	M_Menu_PathTrace_f();
 }
 
 static void CancelChanges( void *unused )
@@ -325,16 +332,22 @@ void VID_MenuInit( void )
 		s_fs_box[i].itemnames = yesno_names;
 		s_fs_box[i].curvalue = vid_fullscreen->value;
 
+		s_pathtrace_action[i].generic.type = MTYPE_ACTION;
+		s_pathtrace_action[i].generic.name = "path tracing options";
+		s_pathtrace_action[i].generic.x    = 0;
+		s_pathtrace_action[i].generic.y    = 90;
+		s_pathtrace_action[i].generic.callback = PathTraceOptions;
+
 		s_defaults_action[i].generic.type = MTYPE_ACTION;
 		s_defaults_action[i].generic.name = "reset to defaults";
 		s_defaults_action[i].generic.x    = 0;
-		s_defaults_action[i].generic.y    = 90;
+		s_defaults_action[i].generic.y    = 100;
 		s_defaults_action[i].generic.callback = ResetDefaults;
 
 		s_cancel_action[i].generic.type = MTYPE_ACTION;
 		s_cancel_action[i].generic.name = "cancel";
 		s_cancel_action[i].generic.x    = 0;
-		s_cancel_action[i].generic.y    = 100;
+		s_cancel_action[i].generic.y    = 110;
 		s_cancel_action[i].generic.callback = CancelChanges;
 	}
 
@@ -382,6 +395,9 @@ void VID_MenuInit( void )
 	Menu_AddItem( &s_opengl_menu, ( void * ) &s_tq_slider );
 	Menu_AddItem( &s_opengl_menu, ( void * ) &s_paletted_texture_box );
 	Menu_AddItem( &s_opengl_menu, ( void * ) &s_finish_box );
+
+	Menu_AddItem( &s_software_menu, ( void * ) &s_pathtrace_action[SOFTWARE_MENU] );
+	Menu_AddItem( &s_opengl_menu, ( void * ) &s_pathtrace_action[OPENGL_MENU] );
 
 	Menu_AddItem( &s_software_menu, ( void * ) &s_defaults_action[SOFTWARE_MENU] );
 	Menu_AddItem( &s_software_menu, ( void * ) &s_cancel_action[SOFTWARE_MENU] );

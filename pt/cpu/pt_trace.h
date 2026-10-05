@@ -9,7 +9,6 @@
 namespace pt {
 
 const float kRayOffset = 0.03f;			// keeps rays off the surface they leave
-const float kMaxSample = 40.0f;			// luminance clamp per path, tames fireflies
 
 // Below this roughness the specular lobe is too narrow for light sampling
 // to find; lights are then picked up when a reflected ray happens to hit them.
@@ -44,7 +43,8 @@ struct Lit
 };
 
 bool Finite(float f);
-Vec3 ClampSample(Vec3 c);
+// limits how bright one sample may be, which tames fireflies
+Vec3 ClampSample(Vec3 c, float max_luminance);
 
 // See-through surfaces are one sided, as the game draws them: from behind
 // they are not there. A pane of glass modelled as a slab would otherwise tint

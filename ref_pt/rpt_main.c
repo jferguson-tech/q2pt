@@ -48,13 +48,6 @@ static char		r_skyname[MAX_QPATH];
 static char		r_worldname[MAX_QPATH];
 static qboolean	r_worlddirty;
 
-static cvar_t	*pt_scale;
-static cvar_t	*pt_samples;
-static cvar_t	*pt_bounces;
-static cvar_t	*pt_exposure;
-static cvar_t	*pt_stats;
-static cvar_t	*pt_taa;
-static cvar_t	*pt_debug;
 
 //=============================================================================
 
@@ -227,15 +220,7 @@ qboolean R_Init (void *hInstance, void *wndProc)
 	vid_fullscreen = ri.Cvar_Get ("vid_fullscreen", "0", CVAR_ARCHIVE);
 	gl_mode = ri.Cvar_Get ("gl_mode", "3", CVAR_ARCHIVE);
 
-	pt_scale = ri.Cvar_Get ("pt_scale", "0.5", CVAR_ARCHIVE);
-	pt_samples = ri.Cvar_Get ("pt_samples", "1", CVAR_ARCHIVE);
-	pt_bounces = ri.Cvar_Get ("pt_bounces", "3", CVAR_ARCHIVE);
-	pt_exposure = ri.Cvar_Get ("pt_exposure", "2", CVAR_ARCHIVE);
-	pt_stats = ri.Cvar_Get ("pt_stats", "0", 0);
-	pt_taa = ri.Cvar_Get ("pt_taa", "1", CVAR_ARCHIVE);
-	// 1 surface colour, 2 diffuse light, 3 specular, 4 glass and water layers,
-	// 5 unfiltered extras, 6 normals, 7 history length, 8 layer history length
-	pt_debug = ri.Cvar_Get ("pt_debug", "0", 0);
+	R_InitSettings ();
 
 #ifdef RPT_RTX
 	pt_rtx_disable = ri.Cvar_Get ("pt_rtx_disable", "0", CVAR_ARCHIVE);
@@ -380,6 +365,9 @@ void R_RenderFrame (refdef_t *fd)
 	if (fd->rdflags & RDF_NOWORLDMODEL)
 		return;		// menu model previews
 
+	if (R_UpdateSettings ())
+		r_worlddirty = true;
+
 	if (r_worlddirty)
 	{
 		r_worlddirty = false;
@@ -396,12 +384,7 @@ void R_RenderFrame (refdef_t *fd)
 	AngleVectors (fd->viewangles, view.forward, view.right, view.up);
 	view.fov_x = fd->fov_x;
 	view.fov_y = fd->fov_y;
-	view.scale = pt_scale->value;
-	view.samples = pt_samples->value;
-	view.bounces = pt_bounces->value;
-	view.exposure = pt_exposure->value;
-	view.antialias = pt_taa->value != 0;
-	view.debug = pt_debug->value;
+	R_ViewSettings (&view);
 	R_BuildScene (fd, &scene);
 	view.scene = &scene;
 

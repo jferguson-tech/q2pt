@@ -205,7 +205,7 @@ static int W_AddMaterial (texinfo_t *tex)
 				mat->emission[i] = color[i] * value * LIGHT_UNIT;
 
 			// to the eye a lamp is its texture, a bit over full brightness
-			mat->emission_seen = 1.5f;
+			mat->emission_seen = r_lampglow;
 		}
 	}
 
@@ -645,7 +645,7 @@ void R_LoadWorld (char *name, char *skyname)
 	world.num_triangles = w_world.num;
 	world.lights = w_lights;
 	world.num_lights = w_numlights;
-	world.sky_scale = 2.0f;
+	world.sky_scale = r_skyscale;
 
 	rpt.backend->load_world (rpt.backend, &world);
 

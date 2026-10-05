@@ -24,8 +24,7 @@ namespace {
 
 using namespace pt;
 
-const float kMovingHistory = 32.0f;		// frames of history kept while anything changes
-const int kFilterPasses = 4;
+const int kMaxFilterPasses = 4;
 const float kMinDemodulate = 0.02f;		// reflectance floor when lighting is divided by it
 
 // kOver: light from see-through layers in front of the surface, which has no
@@ -154,6 +153,7 @@ struct CpuBackend
 	bool					have_history = false;
 	bool					antialiased = false;	// last frame was
 	float					jitter_x = 0.0f, jitter_y = 0.0f;	// this frame's offset within the pixel
+	float					moving_history = 32.0f;	// frames of lighting kept while anything changes
 	Camera					prev_camera;
 	uint32_t				prev_hash = 0;
 	uint32_t				frame_index = 0;
@@ -328,7 +328,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 			sky = sc.world->Sky(ray.d) * through;
 			break;
 		}
-		MakeSurface(sc, *tri, hit, ray, surf, true);
+		MakeSurface(sc, *tri, hit, ray, surf, sc.filter_textures);
 		const Material &mat = *surf.mat;
 		if (mat.alpha >= 1.0f || layer >= 8)
 		{
@@ -350,7 +350,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 		bool bent = false;
 		if (!(mat.flags & PT_MAT_BLACK) && surf.roughness < kLightSampledRoughness)
 		{
-			const bool liquid = (mat.flags & PT_MAT_WAVES) != 0;
+			const bool liquid = (mat.flags & PT_MAT_WAVES) != 0 && sc.refraction;
 			const float cosi = std::min(1.0f, std::max(0.0f, Dot(surf.n, surf.wo)));
 			float fresnel, cost = 0.0f;
 			float eta = 1.0f;
@@ -368,7 +368,10 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 				fresnel = 2.0f * one / (1.0f + one);
 			}
 
-			if (bounces > 0 && fresnel > 0.0f)
+			// with reflections off the light simply all goes through
+			if (sc.reflections < 1 && fresnel < 1.0f)
+				fresnel = 0.0f;
+			if (fresnel > 0.0f)
 			{
 				Ray mirror;
 				mirror.o = surf.p + surf.ng * kRayOffset;
@@ -380,7 +383,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 
 				float reached = 0.0f;
 				const float weight = through * fresnel;
-				front_mirror += ClampSample(Radiance(sc, mirror, rng, false, true, 1, bounces, &reached)) * weight;
+				front_mirror += ClampSample(Radiance(sc, mirror, rng, false, true, 1, sc.reflection_bounces, &reached), sc.max_sample) * weight;
 
 				// A reflection appears to sit behind the glass, as far again
 				// as the thing reflected is in front. That is where to look
@@ -421,7 +424,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 	}
 
 	// the layers' light is noisy and gets a channel of its own
-	const Vec3 over = ClampSample(front_diffuse + front_mirror);
+	const Vec3 over = ClampSample(front_diffuse + front_mirror, sc.max_sample);
 	const float over_lum = Luminance(over);
 	// whether there is a layer must not depend on what this frame's sample
 	// happened to find, or its history would start over at random
@@ -476,8 +479,8 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 
 	// a specular path costs as much as a diffuse one; where the lobe reflects
 	// little, take it only some of the time
-	const float spec_chance = !has_specular ? 0.0f
-		: std::min(1.0f, std::max(0.1f, Luminance(surf.SpecularAlbedo()) * 10.0f));
+	const float spec_chance = (!has_specular || sc.reflections < 2) ? 0.0f
+		: std::min(1.0f, std::max(0.1f, Luminance(surf.SpecularAlbedo()) * 10.0f) * sc.reflection_rate);
 
 	Vec3 sum[2];
 	float m1[2] = {}, m2[2] = {};
@@ -506,14 +509,14 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 				Vec3 weight;
 				if (SampleSpecular(surf, rng, bounce.d, weight))
 					c[kSpecular] += Demodulate(
-						weight * Radiance(sc, bounce, rng, false, !surf.light_sampled_spec, 1, bounces),
+						weight * Radiance(sc, bounce, rng, false, !surf.light_sampled_spec, 1, sc.reflection_bounces),
 						spec_albedo) * (1.0f / spec_chance);
 			}
 		}
 
 		for (int ch = 0; ch < 2; ch++)
 		{
-			c[ch] = ClampSample(c[ch]);
+			c[ch] = ClampSample(c[ch], sc.max_sample);
 			const float lum = Luminance(c[ch]);
 			sum[ch] += c[ch];
 			m1[ch] += lum;
@@ -671,8 +674,8 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 				// a mirror shows something else as soon as the eye moves, so
 				// smooth reflections keep less of the past while things change
 				float keep = len;
-				if (c == kSpecular && max_history <= kMovingHistory)
-					keep = std::min(len, std::max(2.0f, kMovingHistory * cur.roughness[i] * 2.0f));
+				if (c == kSpecular && max_history <= s->moving_history)
+					keep = std::min(len, std::max(2.0f, s->moving_history * cur.roughness[i] * 2.0f));
 				const float a = 1.0f / keep;
 				const Vec3 h = hist[c] * inv;
 				const float h1 = hm1[c] * inv, h2 = hm2[c] * inv;
@@ -1047,6 +1050,19 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	sc.num_light_styles = view->light_styles ? view->num_light_styles : 0;
 	sc.anim_frame = view->anim_frame < 0 ? 0 : view->anim_frame;
 	sc.time = view->time;
+	sc.light_samples = view->light_samples > 0 ? std::min(view->light_samples, 64) : 8;
+	sc.max_sample = view->firefly_clamp > 0.0f ? view->firefly_clamp : 40.0f;
+	sc.wave_strength = std::max(0.0f, view->wave_strength);
+	sc.filter_textures = view->texture_filter != 0;
+	sc.reflections = view->reflections;
+	sc.reflection_bounces = std::max(1, view->reflection_bounces > 0 ? view->reflection_bounces : bounces);
+	sc.reflection_rate = std::max(0.0f, view->reflection_rate);
+	sc.refraction = view->refraction != 0;
+	if (bounces < 1)
+		sc.reflections = 0;		// no bounces at all means none off mirrors either
+	s->moving_history = (float)std::min(std::max(view->history, 1), 512);
+	const int passes = std::min(std::max(view->denoise, 0), kMaxFilterPasses);
+	s->pool.SetLimit(view->threads);
 	s->frame_index++;
 
 	// everything outside the camera that changes the picture
@@ -1054,6 +1070,12 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	hash = HashBytes(sc.light_styles, (size_t)sc.num_light_styles * sizeof(float), hash);
 	hash = HashBytes(&sc.anim_frame, sizeof(sc.anim_frame), hash);
 	hash = HashBytes(&bounces, sizeof(bounces), hash);
+	{
+		const float settings[] = {(float)samples, (float)sc.light_samples, sc.max_sample, sc.wave_strength,
+			(float)sc.filter_textures, (float)sc.reflections, (float)sc.reflection_bounces, sc.reflection_rate,
+			(float)sc.refraction, view->exposure};
+		hash = HashBytes(settings, sizeof(settings), hash);
+	}
 	if (s->world->has_waves)
 		hash = HashBytes(&sc.time, sizeof(sc.time), hash);
 
@@ -1074,7 +1096,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 
 	// with nothing changing the average may run forever and converge
 	const bool still = s->have_history && cam == s->prev_camera && hash == s->prev_hash;
-	const float max_history = still ? 65536.0f : kMovingHistory;
+	const float max_history = still ? 65536.0f : s->moving_history;
 	const Camera prev_cam = s->prev_camera;
 	s->pool.Run(rh, [&](int y) { Accumulate(s, prev_cam, max_history, y); });
 	const auto accumulated = std::chrono::steady_clock::now();
@@ -1103,7 +1125,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	});
 
 	const FilterLight *in = s->filter_a.data();
-	for (int pass = 0; pass < kFilterPasses; pass++)
+	for (int pass = 0; pass < passes; pass++)
 	{
 		FilterLight *out = (pass & 1) ? s->filter_a.data() : s->filter_b.data();
 		const FilterGeo *geo = s->filter_geo.data();

@@ -121,14 +121,7 @@ static qboolean Mat_HasWord (const char *words, const char *name)
 	return false;
 }
 
-/*
-===============
-R_MaterialInfo
-
-name is an image path such as textures/e1u1/metal1_1.wal
-===============
-*/
-void R_MaterialInfo (const char *name, matinfo_t *info)
+static void Mat_Lookup (const char *name, matinfo_t *info)
 {
 	char	lower[MAX_QPATH], base[MAX_QPATH], *p;
 	int		i;
@@ -175,6 +168,33 @@ void R_MaterialInfo (const char *name, matinfo_t *info)
 		}
 	}
 	*info = mat_defaultwall;
+}
+
+/*
+===============
+R_MaterialInfo
+
+name is an image path such as textures/e1u1/metal1_1.wal
+===============
+*/
+void R_MaterialInfo (const char *name, matinfo_t *info)
+{
+	Mat_Lookup (name, info);
+
+	// pt_roughness, pt_metallic and pt_bump scale whatever was decided
+	info->roughness *= r_roughscale;
+	if (info->roughness < 0.02f)
+		info->roughness = 0.02f;
+	if (info->roughness > 1)
+		info->roughness = 1;
+	info->metallic *= r_metalscale;
+	if (info->metallic < 0)
+		info->metallic = 0;
+	if (info->metallic > 1)
+		info->metallic = 1;
+	info->bump *= r_bumpscale;
+	if (info->bump < 0)
+		info->bump = 0;
 }
 
 /*

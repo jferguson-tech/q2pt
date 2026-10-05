@@ -192,6 +192,16 @@ struct Scene
 	int			anim_frame = 0;
 	float		time = 0.0f;
 
+	// settings, see pt_view_t
+	int			light_samples = 8;
+	float		max_sample = 40.0f;
+	float		wave_strength = 1.0f;
+	bool		filter_textures = true;
+	int			reflections = 2;
+	int			reflection_bounces = 3;
+	float		reflection_rate = 1.0f;
+	bool		refraction = true;
+
 	const Tri &TriAt(uint32_t index) const
 	{
 		return (index & kDynamic) ? frame->tris[index & ~kDynamic] : world->tris[index];

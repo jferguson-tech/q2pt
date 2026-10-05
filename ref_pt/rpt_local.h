@@ -126,6 +126,7 @@ void	Draw_Blend (int x, int y, int w, int h, float *blend);
 
 int		R_ImageTexture (image_t *image);
 int		R_ImageNormalTexture (image_t *image);
+void	R_MaterialsChanged (void);
 
 //
 // rpt_material.c
@@ -144,6 +145,18 @@ void	R_WorldMaterial (int index, pt_material_t *material, image_t **image);
 // see rpt_world.c: brightness of a light entity or dynamic light of strength l
 #define	LIGHT_UNIT	(3.14159265f / 255.0f)
 #define	POINT_LIGHT_INTENSITY(l)	((l) * (l) * (l) / 8.0f * LIGHT_UNIT)
+
+//
+// rpt_settings.c
+//
+extern	cvar_t	*pt_stats;
+extern	cvar_t	*pt_debug;
+extern	float	r_skyscale, r_lampglow;
+extern	float	r_bumpscale, r_roughscale, r_metalscale;
+
+void	R_InitSettings (void);
+qboolean R_UpdateSettings (void);
+void	R_ViewSettings (pt_view_t *view);
 
 //
 // rpt_model.c

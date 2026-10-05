@@ -96,7 +96,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(REF_PT_SRC
 	ref_pt/rpt_main.c ref_pt/rpt_image.c ref_pt/rpt_draw.c ref_pt/rpt_world.c
-	ref_pt/rpt_model.c ref_pt/rpt_scene.c ref_pt/rpt_material.c
+	ref_pt/rpt_model.c ref_pt/rpt_scene.c ref_pt/rpt_material.c ref_pt/rpt_settings.c
 	win32/q_shwin.c ${SHARED_SRC} ref_pt/ref_pt.def)
 
 add_library(pt_cpu STATIC pt/cpu/pt_cpu.cpp pt/cpu/pt_bvh.cpp pt/cpu/pt_world.cpp pt/cpu/pt_trace.cpp)

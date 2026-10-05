@@ -26,7 +26,7 @@ public:
 		unsigned n = std::thread::hardware_concurrency();
 		if (n < 1) n = 1;
 		for (unsigned i = 1; i < n; i++)
-			workers_.emplace_back([this] { Worker(); });
+			workers_.emplace_back([this, i] { Worker((int)i); });
 	}
 
 	~Pool()
@@ -42,6 +42,9 @@ public:
 	}
 
 	int Threads() const { return (int)workers_.size() + 1; }
+
+	// how many threads take part in a run, the caller included; 0 = all
+	void SetLimit(int threads) { limit_.store(threads <= 0 ? 1 << 30 : threads); }
 
 	void Run(int count, const std::function<void(int)> &job)
 	{
@@ -100,7 +103,7 @@ private:
 		return true;
 	}
 
-	void Worker()
+	void Worker(int id)	// ids start at 1; the caller is thread 0
 	{
 		unsigned seen = 0;
 		for (;;)
@@ -109,7 +112,8 @@ private:
 			seen = generation_.load();
 			if (quit_)
 				return;
-			Drain();
+			if (id < limit_.load())
+				Drain();
 			busy_.fetch_sub(1);
 		}
 	}
@@ -121,6 +125,7 @@ private:
 	std::atomic<int>			next_{0};
 	std::atomic<int>			busy_{0};
 	std::atomic<int>			sleepers_{0};
+	std::atomic<int>			limit_{1 << 30};
 	std::atomic<unsigned>		generation_{0};
 	int							count_ = 0;
 	std::atomic<bool>			quit_{false};

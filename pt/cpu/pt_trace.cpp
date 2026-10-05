@@ -11,8 +11,6 @@ namespace pt {
 
 namespace {
 
-const int kLightCandidates = 8;			// per shading point the eye sees
-const int kBounceLightCandidates = 4;	// and per point further along a path
 const float kGlobalLightChance = 0.2f;	// how often a light is picked map wide instead of nearby
 const float kMinAlpha = 0.002f;			// GGX gets numerically touchy below this
 
@@ -126,12 +124,12 @@ bool Finite(float f)
 	return (bits & 0x7f800000u) != 0x7f800000u;
 }
 
-Vec3 ClampSample(Vec3 c)
+Vec3 ClampSample(Vec3 c, float max_luminance)
 {
 	const float lum = Luminance(c);
 	if (!Finite(lum))
 		return Vec3();
-	return lum > kMaxSample ? c * (kMaxSample / lum) : c;
+	return lum > max_luminance ? c * (max_luminance / lum) : c;
 }
 
 bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &hit, const Tri *&tri)
@@ -228,7 +226,7 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 		n = Normalize(tri.tu * tx + tri.tv * ty + n * tz);
 		s.roughness = c[3] * (1.0f / 255.0f);
 	}
-	if (mat.flags & PT_MAT_WAVES)
+	if ((mat.flags & PT_MAT_WAVES) && sc.wave_strength > 0.0f)
 	{
 		// a few crossing ripples, enough to break up a reflection
 		const float t = sc.time;
@@ -238,7 +236,7 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 			+ 0.5f * std::sin((s.p.x - s.p.y) * 0.17f + t * 2.3f);
 		Vec3 t1, t2;
 		Basis(n, t1, t2);
-		n = Normalize(n + t1 * (a * 0.02f) + t2 * (b * 0.02f));
+		n = Normalize(n + t1 * (a * 0.02f * sc.wave_strength) + t2 * (b * 0.02f * sc.wave_strength));
 	}
 	// a normal tilted away from the viewer is no use for shading
 	if (Dot(n, s.wo) < 0.02f || Dot(n, s.ng) <= 0.0f)
@@ -267,7 +265,7 @@ Vec3 Emitted(const Surface &s, bool seen)
 
 Lit DirectWorld(const Scene &sc, const Surface &s, Rng &rng, bool first_hit)
 {
-	const int candidates = first_hit ? kLightCandidates : kBounceLightCandidates;
+	const int candidates = std::max(1, first_hit ? sc.light_samples : sc.light_samples / 2);
 	const World &w = *sc.world;
 	Lit none;
 	if (w.lights.empty())
@@ -510,6 +508,14 @@ Vec3 Radiance(const Scene &sc, Ray ray, Rng &rng, bool camera, bool count_emitte
 		float pick_spec = ls / (ld + ls);
 		if (ld > 0.0f && ls > 0.0f)
 			pick_spec = std::min(0.95f, std::max(0.05f, pick_spec));
+		if (sc.reflections < 2)
+		{
+			// shiny surfaces still show highlights from lights, but nothing is
+			// followed off them
+			if (ld <= 0.0f)
+				return radiance;
+			pick_spec = 0.0f;
+		}
 
 		Vec3 wi;
 		if (rng.Float() < pick_spec)

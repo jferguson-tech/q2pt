@@ -143,6 +143,26 @@ typedef struct pt_view_s
 	float	exposure;
 	int		antialias;	/* blend frames over time to smooth edges */
 	int		debug;			/* 0 = the picture; otherwise one part of it, see pt_debug */
+
+	/* reflections */
+	int		reflections;		/* 0 none, 1 glass and liquids, 2 every shiny surface */
+	int		reflection_bounces;	/* how far a reflected path is followed; 1 shows
+								   reflected things under direct light only */
+	float	reflection_rate;	/* scales how often a rough surface gets a
+								   reflection path; 1 = the backend's own choice */
+	int		refraction;			/* liquids bend the view */
+	float	wave_strength;		/* ripples on liquids; 0 = flat, 1 = normal */
+
+	/* lighting */
+	int		light_samples;		/* lights weighed per point the eye sees; half
+								   as many further along a path */
+	float	firefly_clamp;		/* brightest a single path may be */
+
+	/* image */
+	int		texture_filter;		/* smooth textures where seen directly */
+	int		denoise;			/* passes of the spatial filter, 0-4 */
+	int		history;			/* frames of lighting kept while things change */
+	int		threads;			/* 0 = all */
 } pt_view_t;
 
 /*
