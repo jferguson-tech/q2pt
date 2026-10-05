@@ -37,6 +37,11 @@ static cvar_t	*pt_taa;				// temporal anti-aliasing
 static cvar_t	*pt_denoise;			// passes of the spatial filter, 0-4
 static cvar_t	*pt_history;			// frames of lighting kept while things change
 static cvar_t	*pt_exposure;
+static cvar_t	*pt_auto_exposure;		// adapt to how bright the scene is
+static cvar_t	*pt_tonemap;				// 0 filmic, 1 neutral, 2 clipped like the original
+static cvar_t	*pt_saturation;
+static cvar_t	*pt_contrast;
+static cvar_t	*pt_bloom;				// glow around bright things, 0 = none
 static cvar_t	*pt_texture_filter;		// 0: the original's blocky texels
 static cvar_t	*pt_threads;			// 0 = all
 
@@ -47,6 +52,9 @@ static cvar_t	*pt_light_samples;		// lights weighed per shading point
 static cvar_t	*pt_firefly_clamp;		// brightest a single path may be
 static cvar_t	*pt_sky;				// sky brightness
 static cvar_t	*pt_lamp_glow;			// how bright lamp fixtures look to the eye
+static cvar_t	*pt_surface_light;		// scales the light from glowing surfaces
+static cvar_t	*pt_point_light;			// scales the map's point lights
+static cvar_t	*pt_liquid_glow;			// glowing slime and lava light whole rooms; this reins them in
 
 // reflections
 static cvar_t	*pt_reflections;		// 0 none, 1 glass and water, 2 everything shiny
@@ -62,6 +70,7 @@ static cvar_t	*pt_metallic;
 
 float	r_skyscale = 2;
 float	r_lampglow = 1.5f;
+float	r_surfacelight = 1, r_pointlight = 1, r_liquidglow = 0.25f;
 float	r_bumpscale = 1, r_roughscale = 1, r_metalscale = 1;
 
 #define	NUM_PRESETS	4
@@ -106,6 +115,11 @@ void R_InitSettings (void)
 	pt_denoise = ri.Cvar_Get ("pt_denoise", "4", CVAR_ARCHIVE);
 	pt_history = ri.Cvar_Get ("pt_history", "32", CVAR_ARCHIVE);
 	pt_exposure = ri.Cvar_Get ("pt_exposure", "2", CVAR_ARCHIVE);
+	pt_auto_exposure = ri.Cvar_Get ("pt_auto_exposure", "1", CVAR_ARCHIVE);
+	pt_tonemap = ri.Cvar_Get ("pt_tonemap", "0", CVAR_ARCHIVE);
+	pt_saturation = ri.Cvar_Get ("pt_saturation", "1", CVAR_ARCHIVE);
+	pt_contrast = ri.Cvar_Get ("pt_contrast", "1", CVAR_ARCHIVE);
+	pt_bloom = ri.Cvar_Get ("pt_bloom", "0.3", CVAR_ARCHIVE);
 	pt_texture_filter = ri.Cvar_Get ("pt_texture_filter", "1", CVAR_ARCHIVE);
 	pt_threads = ri.Cvar_Get ("pt_threads", "0", CVAR_ARCHIVE);
 
@@ -115,6 +129,9 @@ void R_InitSettings (void)
 	pt_firefly_clamp = ri.Cvar_Get ("pt_firefly_clamp", "40", CVAR_ARCHIVE);
 	pt_sky = ri.Cvar_Get ("pt_sky", "2", CVAR_ARCHIVE);
 	pt_lamp_glow = ri.Cvar_Get ("pt_lamp_glow", "1.5", CVAR_ARCHIVE);
+	pt_surface_light = ri.Cvar_Get ("pt_surface_light", "1", CVAR_ARCHIVE);
+	pt_point_light = ri.Cvar_Get ("pt_point_light", "1", CVAR_ARCHIVE);
+	pt_liquid_glow = ri.Cvar_Get ("pt_liquid_glow", "0.25", CVAR_ARCHIVE);
 
 	pt_reflections = ri.Cvar_Get ("pt_reflections", "2", CVAR_ARCHIVE);
 	pt_reflection_bounces = ri.Cvar_Get ("pt_reflection_bounces", "0", CVAR_ARCHIVE);
@@ -128,6 +145,9 @@ void R_InitSettings (void)
 
 	r_skyscale = pt_sky->value;
 	r_lampglow = pt_lamp_glow->value;
+	r_surfacelight = pt_surface_light->value;
+	r_pointlight = pt_point_light->value;
+	r_liquidglow = pt_liquid_glow->value;
 	r_bumpscale = pt_bump->value;
 	r_roughscale = pt_roughness->value;
 	r_metalscale = pt_metallic->value;
@@ -193,10 +213,15 @@ qboolean R_UpdateSettings (void)
 
 	R_UpdatePreset ();
 
-	if (pt_sky->value != r_skyscale || pt_lamp_glow->value != r_lampglow)
+	if (pt_sky->value != r_skyscale || pt_lamp_glow->value != r_lampglow
+		|| pt_surface_light->value != r_surfacelight || pt_point_light->value != r_pointlight
+		|| pt_liquid_glow->value != r_liquidglow)
 	{
 		r_skyscale = pt_sky->value;
 		r_lampglow = pt_lamp_glow->value;
+		r_surfacelight = pt_surface_light->value;
+		r_pointlight = pt_point_light->value;
+		r_liquidglow = pt_liquid_glow->value;
 		reload = true;
 	}
 
@@ -240,4 +265,10 @@ void R_ViewSettings (pt_view_t *view)
 	view->denoise = pt_denoise->value;
 	view->history = pt_history->value;
 	view->threads = pt_threads->value;
+
+	view->auto_exposure = pt_auto_exposure->value != 0;
+	view->tonemap = pt_tonemap->value;
+	view->saturation = pt_saturation->value;
+	view->contrast = pt_contrast->value;
+	view->bloom = pt_bloom->value;
 }

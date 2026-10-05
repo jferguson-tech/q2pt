@@ -152,6 +152,7 @@ void	R_WorldMaterial (int index, pt_material_t *material, image_t **image);
 extern	cvar_t	*pt_stats;
 extern	cvar_t	*pt_debug;
 extern	float	r_skyscale, r_lampglow;
+extern	float	r_surfacelight, r_pointlight, r_liquidglow;
 extern	float	r_bumpscale, r_roughscale, r_metalscale;
 
 void	R_InitSettings (void);

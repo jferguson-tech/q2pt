@@ -202,7 +202,8 @@ static int W_AddMaterial (texinfo_t *tex)
 			if (image)
 				W_Reflectivity (image, color);
 			for (i=0 ; i<3 ; i++)
-				mat->emission[i] = color[i] * value * LIGHT_UNIT;
+				mat->emission[i] = color[i] * value * LIGHT_UNIT * r_surfacelight
+					* ((flags & SURF_WARP) ? r_liquidglow : 1);
 
 			// to the eye a lamp is its texture, a bit over full brightness
 			mat->emission_seen = r_lampglow;
@@ -464,7 +465,7 @@ static void W_LoadLights (byte *base, int filelen)
 		for (i=0 ; i<3 ; i++)
 		{
 			w_lights[w_numlights].origin[i] = origin[i];
-			w_lights[w_numlights].intensity[i] = color[i] * POINT_LIGHT_INTENSITY (light);
+			w_lights[w_numlights].intensity[i] = color[i] * POINT_LIGHT_INTENSITY (light) * r_pointlight;
 		}
 		// flickering and switchable lights follow their light style
 		w_lights[w_numlights].style = (style > 0 && style < MAX_LIGHTSTYLES) ? style : 0;

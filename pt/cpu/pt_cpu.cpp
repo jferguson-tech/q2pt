@@ -25,6 +25,10 @@ namespace {
 using namespace pt;
 
 const int kMaxFilterPasses = 4;
+
+// With automatic exposure the picture's typical luminance is brought to this
+// before the user's exposure is applied.
+const float kTypicalTarget = 0.0054f;
 const float kMinDemodulate = 0.02f;		// reflectance floor when lighting is divided by it
 
 // kOver: light from see-through layers in front of the surface, which has no
@@ -145,9 +149,15 @@ struct CpuBackend
 	Pixels					cur, prev;
 	std::vector<FilterGeo>	filter_geo;
 	std::vector<FilterLight> filter_a, filter_b;
-	std::vector<Vec3>		hdr;			// this frame's picture before it is steadied
-	std::vector<Vec3>		steady, steady_prev;	// the picture blended over time
-	std::vector<float>		steady_count, steady_count_prev;	// frames in each pixel's blend
+	std::vector<Vec3>		hdr;			// this frame's picture, at traced resolution
+	std::vector<Vec3>		near_lo, near_hi;	// range of hdr around each traced pixel
+	std::vector<Vec3>		bloom_a, bloom_b;
+	// the picture blended over time, at the view's resolution
+	std::vector<Vec3>		steady, steady_prev;
+	std::vector<float>		steady_count, steady_count_prev;	// how much is in each pixel's blend
+	int						out_w = 0, out_h = 0;
+	float					auto_exposure = 1.0f;
+	float					prev_time = 0.0f;
 	std::vector<uint32_t>	ldr;			// tone mapped, render sized
 	int						rw = 0, rh = 0;
 	bool					have_history = false;
@@ -234,18 +244,52 @@ void ClipView(const CpuBackend *s, int &x0, int &y0, int &x1, int &y1)
 	if (y1 > s->height) y1 = s->height;
 }
 
-// filmic curve (Narkowicz's ACES fit), then display gamma
-uint32_t ToneMap(Vec3 c)
+// How the finished picture is graded for the screen
+struct Grade
 {
-	uint32_t out = 0;
+	int		curve = 0;			// 0 filmic, 1 neutral, 2 clipped like the original
+	float	saturation = 1.0f;
+	float	contrast = 1.0f;
+};
+
+uint32_t ToneMap(Vec3 c, const Grade &g)
+{
+	float v[3];
 	for (int i = 0; i < 3; i++)
 	{
 		const float x = c[i] > 0.0f ? c[i] : 0.0f;
-		float y = (x * (2.51f * x + 0.03f)) / (x * (2.43f * x + 0.59f) + 0.14f);
-		y = y < 0.0f ? 0.0f : (y > 1.0f ? 1.0f : y);
-		out = (out << 8) | g_to_display[(int)(y * 4096.0f)];
+		float y;
+		switch (g.curve)
+		{
+		case 1:		// rolls off gently towards white at 4
+			y = x * (1.0f + x * (1.0f / 16.0f)) / (1.0f + x);
+			break;
+		case 2:
+			y = x;
+			break;
+		default:	// Narkowicz's fit to the ACES filmic curve
+			y = (x * (2.51f * x + 0.03f)) / (x * (2.43f * x + 0.59f) + 0.14f);
+			break;
+		}
+		v[i] = y < 0.0f ? 0.0f : (y > 1.0f ? 1.0f : y);
 	}
-	return out;
+
+	if (g.saturation != 1.0f || g.contrast != 1.0f)
+	{
+		const float lum = 0.2126f * v[0] + 0.7152f * v[1] + 0.0722f * v[2];
+		for (int i = 0; i < 3; i++)
+		{
+			float y = lum + (v[i] - lum) * g.saturation;
+			if (y < 0.0f) y = 0.0f;
+			if (g.contrast != 1.0f)
+				y = 0.18f * std::pow(y * (1.0f / 0.18f), g.contrast);	// pivots on mid grey
+			v[i] = y > 1.0f ? 1.0f : y;
+		}
+	}
+
+	return ((uint32_t)g_to_display[(int)(v[0] * 4096.0f)] << 16)
+		| ((uint32_t)g_to_display[(int)(v[1] * 4096.0f)] << 8)
+		| (uint32_t)g_to_display[(int)(v[2] * 4096.0f)];
 }
 
 Vec3 Demodulate(Vec3 light, Vec3 reflectance)
@@ -867,32 +911,179 @@ float Halton(uint32_t index, uint32_t base)
 	return r;
 }
 
-// Temporal anti-aliasing. Each frame looks through a different point of
-// every pixel; averaged over frames that gives smooth edges, but any single
-// frame must count for very little or the picture visibly jumps about with
-// the offsets. So every pixel keeps count of how many frames are in its
-// average, and a new one counts for one over that.
-//
-// History is found by following the point back to where it was on screen.
-// It is not thrown away for being a different surface: along an edge a pixel
-// sees one side on some frames and the other side on others, and the blend
-// of the two is exactly the smooth edge wanted. What keeps stale history out
-// is that it may not stray outside what the pixel and its neighbours show
-// now.
-void Steady(CpuBackend *s, const Camera &cam, const Camera &prev_cam, bool have_history, float max_count, int y)
+// The typical brightness of the picture: the geometric mean of its luminance,
+// which a few very bright pixels do not drag about the way an average would
+float TypicalLuminance(const CpuBackend *s)
+{
+	double sum = 0.0;
+	int count = 0;
+	for (int y = 1; y < s->rh; y += 3)
+	{
+		for (int x = 1; x < s->rw; x += 3)
+		{
+			sum += std::log(Luminance(s->hdr[(size_t)y * s->rw + x]) + 1e-4f);
+			count++;
+		}
+	}
+	return count ? (float)std::exp(sum / count) : 0.0f;
+}
+
+// Glow around what is brighter than the screen can show. Works on a half
+// size copy: the bright part is taken out, blurred widely, and added back.
+void Bloom(CpuBackend *s, float strength)
 {
 	const int rw = s->rw, rh = s->rh;
+	const int bw = std::max(1, rw / 2), bh = std::max(1, rh / 2);
+	const size_t count = (size_t)bw * bh;
+	if (s->bloom_a.size() != count)
+	{
+		s->bloom_a.assign(count, Vec3());
+		s->bloom_b.assign(count, Vec3());
+	}
+	std::vector<Vec3> &a = s->bloom_a, &b = s->bloom_b;
+
+	s->pool.Run(bh, [&](int y)
+	{
+		for (int x = 0; x < bw; x++)
+		{
+			Vec3 sum;
+			for (int k = 0; k < 4; k++)
+			{
+				const int qx = std::min(rw - 1, x * 2 + (k & 1)), qy = std::min(rh - 1, y * 2 + (k >> 1));
+				const Vec3 c = s->hdr[(size_t)qy * rw + qx];
+				const float lum = Luminance(c);
+				if (lum > 1.0f)
+					sum += c * ((lum - 1.0f) / lum);
+			}
+			a[(size_t)y * bw + x] = sum * 0.25f;
+		}
+	});
+
+	// three box blurs come close to a gaussian
+	const int radius = std::max(1, bh / 48);
+	const float norm = 1.0f / (2 * radius + 1);
+	for (int pass = 0; pass < 3; pass++)
+	{
+		s->pool.Run(bh, [&](int y)		// across, a into b
+		{
+			const Vec3 *row = &a[(size_t)y * bw];
+			Vec3 run;
+			for (int x = -radius; x <= radius; x++)
+				run += row[std::min(bw - 1, std::max(0, x))];
+			for (int x = 0; x < bw; x++)
+			{
+				b[(size_t)y * bw + x] = run * norm;
+				run += row[std::min(bw - 1, x + radius + 1)] - row[std::max(0, x - radius)];
+			}
+		});
+		s->pool.Run(bw, [&](int x)		// down, b into a
+		{
+			Vec3 run;
+			for (int y = -radius; y <= radius; y++)
+				run += b[(size_t)std::min(bh - 1, std::max(0, y)) * bw + x];
+			for (int y = 0; y < bh; y++)
+			{
+				a[(size_t)y * bw + x] = run * norm;
+				run += b[(size_t)std::min(bh - 1, y + radius + 1) * bw + x] - b[(size_t)std::max(0, y - radius) * bw + x];
+			}
+		});
+	}
+
+	s->pool.Run(rh, [&](int y)
+	{
+		const float fy = (y + 0.5f) * 0.5f - 0.5f;
+		const int y0 = std::min(bh - 1, std::max(0, (int)std::floor(fy))), y1 = std::min(bh - 1, y0 + 1);
+		const float ay = std::min(1.0f, std::max(0.0f, fy - y0));
+		for (int x = 0; x < rw; x++)
+		{
+			const float fx = (x + 0.5f) * 0.5f - 0.5f;
+			const int x0 = std::min(bw - 1, std::max(0, (int)std::floor(fx))), x1 = std::min(bw - 1, x0 + 1);
+			const float ax = std::min(1.0f, std::max(0.0f, fx - x0));
+			const Vec3 glow = (a[(size_t)y0 * bw + x0] * (1.0f - ax) + a[(size_t)y0 * bw + x1] * ax) * (1.0f - ay)
+				+ (a[(size_t)y1 * bw + x0] * (1.0f - ax) + a[(size_t)y1 * bw + x1] * ax) * ay;
+			s->hdr[(size_t)y * rw + x] += glow * strength;
+		}
+	});
+}
+
+// what the resolve needs to know about the view it is filling
+struct Target
+{
+	int		x, y, width, height;	// the view, in window pixels
+	int		x0, y0, x1, y1;			// the part of it inside the window
+};
+
+// Without anti-aliasing: stretch the picture to the view, bilinearly
+void UpscaleRow(CpuBackend *s, const Target &t, const Grade &grade, int oy)
+{
+	const int rw = s->rw, rh = s->rh;
+	const int wy = t.y + oy;
+	if (wy < t.y0 || wy >= t.y1)
+		return;
+
+	const float fy = (oy + 0.5f) * rh / t.height - 0.5f;
+	const int sy0 = std::min(rh - 1, std::max(0, (int)std::floor(fy))), sy1 = std::min(rh - 1, sy0 + 1);
+	const float ay = std::min(1.0f, std::max(0.0f, fy - sy0));
+	uint32_t *out = &s->scene[(size_t)wy * s->width];
+
+	for (int ox = 0; ox < t.width; ox++)
+	{
+		const int wx = t.x + ox;
+		if (wx < t.x0 || wx >= t.x1)
+			continue;
+		const float fx = (ox + 0.5f) * rw / t.width - 0.5f;
+		const int sx0 = std::min(rw - 1, std::max(0, (int)std::floor(fx))), sx1 = std::min(rw - 1, sx0 + 1);
+		const float ax = std::min(1.0f, std::max(0.0f, fx - sx0));
+		const Vec3 c = (s->hdr[(size_t)sy0 * rw + sx0] * (1.0f - ax) + s->hdr[(size_t)sy0 * rw + sx1] * ax) * (1.0f - ay)
+			+ (s->hdr[(size_t)sy1 * rw + sx0] * (1.0f - ax) + s->hdr[(size_t)sy1 * rw + sx1] * ax) * ay;
+		out[wx] = ToneMap(c, grade);
+	}
+}
+
+// Temporal anti-aliasing and upscaling in one.
+//
+// The picture is traced at a lower resolution than the view, and each frame
+// through a different point of every traced pixel. A view pixel takes the
+// traced sample nearest to it and blends it into a running average kept at
+// the view's own resolution, giving it more say the nearer it landed. Over
+// a few frames every view pixel has had samples close to it, and the
+// average holds detail the traced resolution alone does not. No single
+// frame counts for much, so the offsets do not show as shaking.
+//
+// The average is found by following the point back to where it was on
+// screen. It is kept across different surfaces, because along an edge that
+// blend is exactly the smooth edge wanted; what keeps stale history out is
+// that it may not stray outside what the traced pixels around it show now.
+void ResolveRow(CpuBackend *s, const Camera &cam, const Camera &prev_cam, bool have_history, float max_count,
+	const Target &t, const Grade &grade, int oy)
+{
+	const int rw = s->rw, rh = s->rh, vw = t.width, vh = t.height;
+	const float to_low_x = (float)rw / vw, to_low_y = (float)rh / vh;
+	const float to_view_x = (float)vw / rw, to_view_y = (float)vh / rh;
 	const Vec3 *prev = s->steady_prev.data();
 	const float *prev_count = s->steady_count_prev.data();
 	const Pixels &was = s->prev;
+	const int wy = t.y + oy;
+	uint32_t *out_row = (wy >= t.y0 && wy < t.y1) ? &s->scene[(size_t)wy * s->width] : nullptr;
 
-	for (int x = 0; x < rw; x++)
+	const float ly = (oy + 0.5f) * to_low_y - 0.5f;
+	const int sy = std::min(rh - 1, std::max(0, (int)std::floor(ly - s->jitter_y + 0.5f)));
+	const float dy = ly - (sy + s->jitter_y);
+
+	for (int ox = 0; ox < vw; ox++)
 	{
-		const size_t i = (size_t)y * rw + x;
+		// the traced sample nearest this view pixel, and how near
+		const float lx = (ox + 0.5f) * to_low_x - 0.5f;
+		const int sx = std::min(rw - 1, std::max(0, (int)std::floor(lx - s->jitter_x + 0.5f)));
+		const float dx = lx - (sx + s->jitter_x);
+		const float nearness = std::max(0.02f, std::exp(-(dx * dx + dy * dy) * 10.0f));
+
+		const size_t i = (size_t)sy * rw + sx;
+		const size_t o = (size_t)oy * vw + ox;
 		const Vec3 c = s->hdr[i];
 		const bool sky = s->cur.depth[i] < 0.0f;
 		Vec3 out = c;
-		float count = 1.0f;
+		float count = nearness;
 
 		if (have_history)
 		{
@@ -900,74 +1091,66 @@ void Steady(CpuBackend *s, const Camera &cam, const Camera &prev_cam, bool have_
 			Vec3 p = s->cur.seen[i];
 			if (sky)
 				p = cam.origin + Normalize(cam.forward
-					+ cam.right * ((2.0f * (x + 0.5f) / rw - 1.0f) * cam.tx)
-					+ cam.up * ((1.0f - 2.0f * (y + 0.5f) / rh) * cam.ty)) * 100000.0f;
+					+ cam.right * ((2.0f * (sx + 0.5f) / rw - 1.0f) * cam.tx)
+					+ cam.up * ((1.0f - 2.0f * (sy + 0.5f) / rh) * cam.ty)) * 100000.0f;
 
-			// where it was, less this frame's offset within the pixel (which
-			// the sky point was not seen through)
+			// where the traced sample was last frame, less this frame's
+			// offset within the pixel (which the sky point was not seen through)
 			const Vec3 v = p - prev_cam.origin;
 			const float z = Dot(v, prev_cam.forward);
-			const float ox = sky ? 0.0f : s->jitter_x, oy = sky ? 0.0f : s->jitter_y;
-			const float fx = z > 0.01f ? (Dot(v, prev_cam.right) / (z * prev_cam.tx) * 0.5f + 0.5f) * rw - 0.5f - ox + 0.001f : -10.0f;
-			const float fy = z > 0.01f ? (0.5f - Dot(v, prev_cam.up) / (z * prev_cam.ty) * 0.5f) * rh - 0.5f - oy + 0.001f : -10.0f;
-
 			bool found = false;
 			Vec3 h;
 			float hcount = 0.0f;
 
-			if (fx >= 0.0f && fy >= 0.0f && fx <= rw - 1.0f && fy <= rh - 1.0f)
+			if (z > 0.01f)
 			{
-				const int ix = std::min((int)fx, rw - 2 < 0 ? 0 : rw - 2), iy = std::min((int)fy, rh - 2 < 0 ? 0 : rh - 2);
-				const int ix1 = std::min(ix + 1, rw - 1), iy1 = std::min(iy + 1, rh - 1);
-				const float ax = fx - ix, ay = fy - iy;
-				const size_t q00 = (size_t)iy * rw + ix, q01 = (size_t)iy * rw + ix1;
-				const size_t q10 = (size_t)iy1 * rw + ix, q11 = (size_t)iy1 * rw + ix1;
+				const float jx = sky ? 0.0f : s->jitter_x, jy = sky ? 0.0f : s->jitter_y;
+				const float fx = (Dot(v, prev_cam.right) / (z * prev_cam.tx) * 0.5f + 0.5f) * rw - 0.5f - jx;
+				const float fy = (0.5f - Dot(v, prev_cam.up) / (z * prev_cam.ty) * 0.5f) * rh - 0.5f - jy;
 
-				h = (prev[q00] * (1.0f - ax) + prev[q01] * ax) * (1.0f - ay)
-					+ (prev[q10] * (1.0f - ax) + prev[q11] * ax) * ay;
-				hcount = (prev_count[q00] * (1.0f - ax) + prev_count[q01] * ax) * (1.0f - ay)
-					+ (prev_count[q10] * (1.0f - ax) + prev_count[q11] * ax) * ay;
-				found = true;
+				// this view pixel moved as its traced sample did
+				float hx = ox + (fx - sx) * to_view_x, hy = oy + (fy - sy) * to_view_y;
 
 				// Something that moves with the eye, like the weapon in hand,
 				// was not where the world says: it was on this same pixel. Take
 				// that when the place it should have come from held something
 				// else and this pixel held much the same thing.
-				if (!sky && (ax > 0.01f || ay > 0.01f || ix != x || iy != y))
+				if (!sky && (std::fabs(fx - sx) > 0.01f || std::fabs(fy - sy) > 0.01f))
 				{
-					const size_t q = (ay < 0.5f ? (ax < 0.5f ? q00 : q01) : (ax < 0.5f ? q10 : q11));
-					const bool same_there = was.depth[q] >= 0.0f && SameSurface(s->cur, was, i, q);
+					const int qx = (int)std::floor(fx + 0.5f), qy = (int)std::floor(fy + 0.5f);
+					const bool inside = qx >= 0 && qy >= 0 && qx < rw && qy < rh;
+					const bool same_there = inside && was.depth[(size_t)qy * rw + qx] >= 0.0f
+						&& SameSurface(s->cur, was, i, (size_t)qy * rw + qx);
 					const bool same_here = was.depth[i] > 0.0f
 						&& std::fabs(was.depth[i] - s->cur.depth[i]) < 0.1f * s->cur.depth[i]
 						&& Dot(s->cur.plane[i], was.plane[i]) > 0.8f;
 					if (!same_there && same_here)
 					{
-						h = prev[i];
-						hcount = prev_count[i];
+						hx = (float)ox;
+						hy = (float)oy;
 					}
+				}
+
+				if (hx >= 0.0f && hy >= 0.0f && hx <= vw - 1.0f && hy <= vh - 1.0f)
+				{
+					const int ix = std::min((int)hx, vw - 2 < 0 ? 0 : vw - 2), iy = std::min((int)hy, vh - 2 < 0 ? 0 : vh - 2);
+					const int ix1 = std::min(ix + 1, vw - 1), iy1 = std::min(iy + 1, vh - 1);
+					const float ax = hx - ix, ay = hy - iy;
+					const size_t q00 = (size_t)iy * vw + ix, q01 = (size_t)iy * vw + ix1;
+					const size_t q10 = (size_t)iy1 * vw + ix, q11 = (size_t)iy1 * vw + ix1;
+
+					h = (prev[q00] * (1.0f - ax) + prev[q01] * ax) * (1.0f - ay)
+						+ (prev[q10] * (1.0f - ax) + prev[q11] * ax) * ay;
+					hcount = (prev_count[q00] * (1.0f - ax) + prev_count[q01] * ax) * (1.0f - ay)
+						+ (prev_count[q10] * (1.0f - ax) + prev_count[q11] * ax) * ay;
+					found = true;
 				}
 			}
 
-			if (found && hcount >= 1.0f)
+			if (found && hcount > 0.0f)
 			{
-				// what this pixel and its neighbours show now bounds what history may say
-				Vec3 lo = c, hi = c;
-				for (int dy = -1; dy <= 1; dy++)
-				{
-					const int qy = y + dy;
-					if (qy < 0 || qy >= rh)
-						continue;
-					for (int dx = -1; dx <= 1; dx++)
-					{
-						const int qx = x + dx;
-						if (qx < 0 || qx >= rw)
-							continue;
-						const Vec3 q = s->hdr[(size_t)qy * rw + qx];
-						lo = Min(lo, q);
-						hi = Max(hi, q);
-					}
-				}
-				const Vec3 clamped = Max(lo, Min(hi, h));
+				// what the traced pixels around here show now bounds what history may say
+				const Vec3 clamped = Max(s->near_lo[i], Min(s->near_hi[i], h));
 
 				// history that had to be pulled back a long way was about
 				// something else; let the picture catch up quickly
@@ -975,14 +1158,15 @@ void Steady(CpuBackend *s, const Camera &cam, const Camera &prev_cam, bool have_
 				if (pulled > 0.1f * (Luminance(clamped) + 0.02f))
 					hcount = std::min(hcount, 4.0f);
 
-				count = std::min(hcount + 1.0f, max_count);
-				out = clamped + (c - clamped) * (1.0f / count);
+				count = std::min(hcount + nearness, max_count);
+				out = clamped + (c - clamped) * std::min(1.0f, nearness / count);
 			}
 		}
 
-		s->steady[i] = out;
-		s->steady_count[i] = count;
-		s->ldr[i] = ToneMap(out);
+		s->steady[o] = out;
+		s->steady_count[o] = count;
+		if (out_row && t.x + ox >= t.x0 && t.x + ox < t.x1)
+			out_row[t.x + ox] = ToneMap(out, grade);
 	}
 }
 
@@ -1024,10 +1208,9 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		s->filter_a.assign(count, FilterLight());
 		s->filter_b.assign(count, FilterLight());
 		s->hdr.assign(count, Vec3());
-		s->steady.assign(count, Vec3());
-		s->steady_prev.assign(count, Vec3());
-		s->steady_count.assign(count, 0.0f);
-		s->steady_count_prev.assign(count, 0.0f);
+		s->near_lo.assign(count, Vec3());
+		s->near_hi.assign(count, Vec3());
+		s->antialiased = false;
 		s->ldr.assign(count, 0);
 		s->have_history = false;
 	}
@@ -1134,8 +1317,10 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	}
 	const auto filtered = std::chrono::steady_clock::now();
 
-	const float exposure = view->exposure;
+	// Exposure: the user's setting times, if wanted, whatever brings this
+	// scene's typical brightness to a fixed level.
 	const int debug = view->debug;
+	const float exposure = debug ? 1.0f : view->exposure * (view->auto_exposure ? s->auto_exposure : 1.0f);
 	s->pool.Run(rh, [&](int y)
 	{
 		for (int x = 0; x < rw; x++)
@@ -1164,40 +1349,89 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		}
 	});
 
-	const bool have_history = s->have_history && antialias && s->antialiased && !debug;
-	s->antialiased = antialias;
-	const float max_count = cam == prev_cam ? 1024.0f : 16.0f;
-	s->pool.Run(rh, [&](int y) { Steady(s, cam, prev_cam, have_history, max_count, y); });
-
-	// stretch to the view with bilinear filtering
-	const int vw = view->width, vh = view->height;
-	s->pool.Run(y1 - y0, [&](int row)
+	float typical = 0.0f;
+	if (!debug)
 	{
-		const int y = y0 + row;
-		const int fy = (int)(((int64_t)(y - view->y) * 2 + 1) * rh * 128 / vh) - 128;	// 8.8 fixed, texel centres
-		const int sy0 = std::max(0, fy >> 8), sy1 = std::min(rh - 1, (fy >> 8) + 1);
-		const uint32_t wy = fy < 0 ? 0 : (uint32_t)(fy & 255);
-		const uint32_t *r0 = &s->ldr[(size_t)sy0 * rw], *r1 = &s->ldr[(size_t)sy1 * rw];
-		uint32_t *out = &s->scene[(size_t)y * s->width];
-
-		for (int x = x0; x < x1; x++)
+		// The eye adapts: measured on what was just made, used from the next
+		// frame on, and followed over about a second so it does not pump.
+		typical = TypicalLuminance(s) / exposure;
+		if (typical > 0.0f)
 		{
-			const int fx = (int)(((int64_t)(x - view->x) * 2 + 1) * rw * 128 / vw) - 128;
-			const int sx0 = std::max(0, fx >> 8), sx1 = std::min(rw - 1, (fx >> 8) + 1);
-			const uint32_t wx = fx < 0 ? 0 : (uint32_t)(fx & 255);
-
-			uint32_t c = 0;
-			for (int shift = 0; shift < 24; shift += 8)
-			{
-				const uint32_t a = (r0[sx0] >> shift) & 255, bb = (r0[sx1] >> shift) & 255;
-				const uint32_t cc = (r1[sx0] >> shift) & 255, d = (r1[sx1] >> shift) & 255;
-				const uint32_t top = a * (256 - wx) + bb * wx;
-				const uint32_t bot = cc * (256 - wx) + d * wx;
-				c |= ((top * (256 - wy) + bot * wy) >> 16) << shift;
-			}
-			out[x] = c;
+			const float want = std::min(16.0f, std::max(0.125f, kTypicalTarget / typical));
+			const float dt = view->time - s->prev_time;
+			if (!s->have_history || dt < 0.0f || dt > 1.0f)
+				s->auto_exposure = want;
+			else
+				s->auto_exposure += (want - s->auto_exposure) * (1.0f - std::exp(-dt * 2.5f));
 		}
-	});
+		if (view->bloom > 0.0f)
+			Bloom(s, view->bloom);
+	}
+	s->prev_time = view->time;
+
+	Grade grade;
+	grade.curve = view->tonemap;
+	grade.saturation = std::max(0.0f, view->saturation);
+	grade.contrast = view->contrast > 0.0f ? view->contrast : 1.0f;
+
+	Target target;
+	target.x = view->x;
+	target.y = view->y;
+	target.width = view->width;
+	target.height = view->height;
+	target.x0 = x0;
+	target.y0 = y0;
+	target.x1 = x1;
+	target.y1 = y1;
+
+	const int vw = view->width, vh = view->height;
+	if (s->out_w != vw || s->out_h != vh)
+	{
+		s->out_w = vw;
+		s->out_h = vh;
+		const size_t out_count = (size_t)vw * vh;
+		s->steady.assign(out_count, Vec3());
+		s->steady_prev.assign(out_count, Vec3());
+		s->steady_count.assign(out_count, 0.0f);
+		s->steady_count_prev.assign(out_count, 0.0f);
+		s->antialiased = false;
+	}
+
+	const bool resolve_history = s->have_history && antialias && s->antialiased && !debug;
+	s->antialiased = antialias;
+	if (antialias)
+	{
+		// the range of colours around each traced pixel, which bounds its history
+		s->pool.Run(rh, [&](int y)
+		{
+			for (int x = 0; x < rw; x++)
+			{
+				Vec3 lo = s->hdr[(size_t)y * rw + x], hi = lo;
+				for (int dy = -1; dy <= 1; dy++)
+				{
+					const int qy = y + dy;
+					if (qy < 0 || qy >= rh)
+						continue;
+					for (int dx = -1; dx <= 1; dx++)
+					{
+						const int qx = x + dx;
+						if (qx < 0 || qx >= rw)
+							continue;
+						const Vec3 q = s->hdr[(size_t)qy * rw + qx];
+						lo = Min(lo, q);
+						hi = Max(hi, q);
+					}
+				}
+				s->near_lo[(size_t)y * rw + x] = lo;
+				s->near_hi[(size_t)y * rw + x] = hi;
+			}
+		});
+
+		const float max_count = cam == prev_cam ? 1024.0f : 16.0f;
+		s->pool.Run(vh, [&](int oy) { ResolveRow(s, cam, prev_cam, resolve_history, max_count, target, grade, oy); });
+	}
+	else
+		s->pool.Run(vh, [&](int oy) { UpscaleRow(s, target, grade, oy); });
 
 	// this frame becomes the history the next one looks back at
 	std::swap(s->cur, s->prev);
@@ -1212,10 +1446,10 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	{
 		return std::chrono::duration<double, std::milli>(c - a).count();
 	};
-	snprintf(s->stats, sizeof(s->stats), "%dx%d %dspp %db: %.1f ms (build %.1f trace %.1f history %.1f filter %.1f out %.1f) %zu dyn tris%s",
+	snprintf(s->stats, sizeof(s->stats), "%dx%d %dspp %db: %.1f ms (build %.1f trace %.1f history %.1f filter %.1f out %.1f) %zu dyn tris typ %.4f exp %.2f%s",
 		rw, rh, samples, bounces, ms(start, end), ms(start, built), ms(built, traced), ms(traced, accumulated),
 		ms(accumulated, filtered), ms(filtered, end),
-		s->frame.tris.size(), still ? " still" : "");
+		s->frame.tris.size(), typical, exposure, still ? " still" : "");
 }
 
 void Present(pt_backend_t *b, const uint32_t *overlay)

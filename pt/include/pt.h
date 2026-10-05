@@ -163,6 +163,12 @@ typedef struct pt_view_s
 	int		denoise;			/* passes of the spatial filter, 0-4 */
 	int		history;			/* frames of lighting kept while things change */
 	int		threads;			/* 0 = all */
+	int		auto_exposure;		/* adapt exposure to the scene; exposure then
+								   scales the result */
+	int		tonemap;			/* 0 filmic, 1 neutral, 2 clipped */
+	float	saturation;			/* 1 = unchanged */
+	float	contrast;			/* 1 = unchanged */
+	float	bloom;				/* glow around what is brighter than white; 0 = none */
 } pt_view_t;
 
 /*
