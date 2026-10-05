@@ -519,7 +519,7 @@ void CL_InitRender (void);
 void CL_RenderFrame (void);
 qboolean CL_RenderBusy (void);
 void CL_RenderStop (void);
-qboolean CL_RenderStart (char *demo, int fps, int paths);
+qboolean CL_RenderStart (char *demo, int fps, int paths, float start, float duration);
 
 //
 // cl_view.c

@@ -122,7 +122,7 @@ Some console commands and variables:
 | `pt_debug 1`-`11` | one part of the picture on its own |
 | `screenshot`, `pt_screenshot [paths]` | the frame as shown, or rendered again at high quality |
 | `record <name>`, `stop` | record a demo (the game's own commands) |
-| `pt_render <demo> [fps] [paths]` | render a demo offline into `baseq2\render\<demo>\` |
+| `pt_render <demo> [fps] [paths] [start] [length]` | render a demo offline into `baseq2\render\<demo>\`; start and length, in seconds, pick a part of it |
 | `pt_render_blur 0`-`1` | motion blur for offline rendering |
 
 ## How it is put together
