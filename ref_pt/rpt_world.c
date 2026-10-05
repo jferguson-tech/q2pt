@@ -46,6 +46,7 @@ typedef struct
 	image_t	*image;
 	int		flags;
 	int		value;
+	int		body;		// simulated body of liquid it is the surface of, or -1
 } matkey_t;
 
 static pt_texture_t		*w_textures;
@@ -130,13 +131,14 @@ static void W_Reflectivity (image_t *image, float *color)
 		color[i] = max > 0 ? sum[i] / max : 1;
 }
 
-static int W_AddMaterial (texinfo_t *tex)
+static int W_AddMaterial (texinfo_t *tex, int body)
 {
 	char			name[MAX_QPATH];
 	image_t			*image;
 	pt_material_t	*mat;
 	matinfo_t		info;
 	int				i, flags, value;
+	qboolean		classic = false;
 
 	flags = LittleLong (tex->flags) & (SURF_LIGHT|SURF_SKY|SURF_WARP|SURF_TRANS33|SURF_TRANS66|SURF_FLOWING);
 	value = (flags & SURF_LIGHT) ? LittleLong (tex->value) : 0;
@@ -145,7 +147,8 @@ static int W_AddMaterial (texinfo_t *tex)
 	image = R_FindImage (name, it_wall);
 
 	for (i=0 ; i<w_nummaterials ; i++)
-		if (w_matkeys[i].image == image && w_matkeys[i].flags == flags && w_matkeys[i].value == value)
+		if (w_matkeys[i].image == image && w_matkeys[i].flags == flags && w_matkeys[i].value == value
+			&& w_matkeys[i].body == body)
 			return i;
 
 	if (w_nummaterials == w_maxmaterials)
@@ -157,6 +160,7 @@ static int W_AddMaterial (texinfo_t *tex)
 	w_matkeys[w_nummaterials].image = image;
 	w_matkeys[w_nummaterials].flags = flags;
 	w_matkeys[w_nummaterials].value = value;
+	w_matkeys[w_nummaterials].body = body;
 
 	mat = &w_materials[w_nummaterials];
 	memset (mat, 0, sizeof(*mat));
@@ -166,12 +170,21 @@ static int W_AddMaterial (texinfo_t *tex)
 	mat->anim_next = -1;
 
 	R_MaterialInfo (name, &info);
-	if (flags & SURF_WARP)
-	{	// water, slime, lava: a smooth, rippling surface
+	if ((flags & SURF_WARP) && r_watermode == 0)
+	{	// classic: a flat sheet whose texture swims, lit by nothing but itself
+		info.roughness = 1;
+		info.metallic = 0;
+		info.bump = 0;
+		mat->flags |= PT_MAT_WARP;
+		classic = true;
+	}
+	else if (flags & SURF_WARP)
+	{	// water, slime, lava: a smooth, rippling surface that soaks up light
 		info.roughness = 0.05f;
 		info.metallic = 0;
 		info.bump = 0;
 		mat->flags |= PT_MAT_WAVES;
+		R_WaterAbsorb (image, name, mat->absorb);
 	}
 	else if (flags & (SURF_TRANS33|SURF_TRANS66))
 	{	// glass and force fields
@@ -196,6 +209,14 @@ static int W_AddMaterial (texinfo_t *tex)
 
 	if (flags & SURF_SKY)
 		mat->flags |= PT_MAT_SKY;
+	else if (classic)
+	{
+		if (flags & SURF_TRANS33)
+			mat->alpha = 0.33f;
+		else if (flags & SURF_TRANS66)
+			mat->alpha = 0.66f;
+		mat->emission[0] = mat->emission[1] = mat->emission[2] = 0.35f;
+	}
 	else
 	{
 		if (flags & SURF_TRANS33)
@@ -236,7 +257,7 @@ static int W_TexinfoMaterial (texinfo_t *texinfos, int numtexinfo, int *texmat, 
 	if (texmat[texnum] >= 0)
 		return texmat[texnum];
 
-	material = W_AddMaterial (&texinfos[texnum]);
+	material = W_AddMaterial (&texinfos[texnum], -1);
 	texmat[texnum] = material;		// before recursing: animations are loops
 
 	next = LittleLong (texinfos[texnum].nexttexinfo);
@@ -385,9 +406,28 @@ static int W_LoadFaces (byte *base, int filelen, int modelnum)
 		if (LittleShort (face->side))
 			VectorNegate (normal, normal);
 
+		// a level liquid surface of the world itself can be simulated: it
+		// gets the material of the body of liquid it belongs to
+		if (r_watermode == 2 && modelnum == 0 && (LittleLong (tex->flags) & SURF_WARP)
+			&& fabs (normal[2]) > 0.99f)
+		{
+			char	texname[40];
+			int		body;
+
+			Com_sprintf (texname, sizeof(texname), "%.32s", tex->texture);
+			strlwr (texname);
+			body = R_WaterBody (w_matkeys[material].image, texname, points[0][2], points, numedgesface);
+			if (body >= 0)
+			{
+				material = W_AddMaterial (tex, body);
+				R_WaterSetMaterial (body, material);
+			}
+		}
+
 		for (j=2 ; j<numedgesface ; j++)
 		{
 			VectorSubtract (points[j-1], points[0], d1);
+
 			VectorSubtract (points[j], points[0], d2);
 			CrossProduct (d1, d2, cross);
 			if (DotProduct (cross, normal) >= 0)
@@ -690,6 +730,7 @@ void R_LoadWorld (char *name, char *skyname)
 	w_nummodels = 0;
 	if (!name || !name[0])
 	{
+		R_WaterReset ();
 		rpt.backend->load_world (rpt.backend, NULL);
 		return;
 	}
@@ -704,6 +745,7 @@ void R_LoadWorld (char *name, char *skyname)
 		ri.Sys_Error (ERR_DROP, "R_LoadWorld: %s is not a version %d bsp", name, BSPVERSION);
 
 	w_numtextures = w_nummaterials = w_numlights = 0;
+	R_WaterReset ();
 	w_world.num = w_inline.num = 0;
 
 	memset (&world, 0, sizeof(world));
@@ -742,6 +784,7 @@ void R_LoadWorld (char *name, char *skyname)
 	world.num_lights = w_numlights;
 	world.sky_scale = r_skyscale;
 
+	R_WaterFinish ();		// before the backend copies the materials
 	rpt.backend->load_world (rpt.backend, &world);
 
 	ri.Con_Printf (PRINT_ALL, "%s: %d triangles, %d materials, %d textures, %d point lights, sky \"%s\"%s\n",
@@ -778,4 +821,9 @@ void R_WorldMaterial (int index, pt_material_t *material, image_t **image)
 {
 	*material = w_materials[index];
 	*image = w_matkeys[index].image;
+}
+
+pt_material_t *R_WorldMaterialPtr (int index)
+{
+	return &w_materials[index];
 }

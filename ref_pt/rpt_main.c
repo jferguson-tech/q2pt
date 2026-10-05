@@ -378,6 +378,23 @@ void R_RenderFrame (refdef_t *fd)
 		R_LoadWorld (r_worldname, r_skyname);
 	}
 
+	R_WaterFrame (fd);		// before the scene is built, and where the player really is
+
+	// a fixed camera, for looking at a place without walking there
+	{
+		static cvar_t	*pt_camera;
+		float			c[5];
+
+		if (!pt_camera)
+			pt_camera = ri.Cvar_Get ("pt_camera", "", 0);
+		if (sscanf (pt_camera->string, "%f%*[ ,]%f%*[ ,]%f%*[ ,]%f%*[ ,]%f", &c[0], &c[1], &c[2], &c[3], &c[4]) == 5)
+		{
+			VectorSet (fd->vieworg, c[0], c[1], c[2]);
+			VectorSet (fd->viewangles, c[3], c[4], 0);
+			fd->rdflags &= ~RDF_UNDERWATER;
+		}
+	}
+
 	memset (&view, 0, sizeof(view));
 	view.x = fd->x;
 	view.y = fd->y;
@@ -389,6 +406,8 @@ void R_RenderFrame (refdef_t *fd)
 	view.fov_x = fd->fov_x;
 	view.fov_y = fd->fov_y;
 	R_ViewSettings (&view);
+	if (fd->rdflags & RDF_UNDERWATER)
+		R_WaterAround (fd->vieworg, view.medium_absorb);
 	R_BuildScene (fd, &scene);
 	view.scene = &scene;
 

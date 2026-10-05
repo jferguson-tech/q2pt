@@ -42,6 +42,11 @@ void Material::Set(const pt_material_t &src, const Texture *tex, const Texture *
 	emission = Vec3(src.emission);
 	alpha = src.alpha;
 	emission_seen = src.emission_seen;
+	wave_map = src.wave_map;
+	caustic_map = src.caustic_map;
+	for (int k = 0; k < 4; k++)
+		wave_rect[k] = src.wave_rect[k];
+	absorb = Vec3(src.absorb);
 	scroll_u = src.scroll[0];
 	scroll_v = src.scroll[1];
 	roughness = src.roughness < 0.0f ? 0.0f : (src.roughness > 1.0f ? 1.0f : src.roughness);
@@ -355,6 +360,30 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 		t.mat = &w->materials[m < (uint32_t)in->num_materials ? m : 0];
 	}
 	w->bvh.Build(soup.data(), (uint32_t)in->num_triangles);
+
+	// the simulated liquid surfaces, for the light they throw back up
+	for (const Tri &t : w->tris)
+	{
+		if (!t.mat->caustic_map || t.n.z < 0.99f)
+			continue;
+		World::Water *body = nullptr;
+		for (World::Water &b : w->waters)
+			if (b.mat == t.mat)
+				body = &b;
+		if (!body)
+		{
+			w->waters.push_back({FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX, t.p0.z, t.mat});
+			body = &w->waters.back();
+		}
+		const Vec3 corner[3] = {t.p0, t.p0 + t.e1, t.p0 + t.e2};
+		for (const Vec3 &c : corner)
+		{
+			body->min_x = std::min(body->min_x, c.x);
+			body->min_y = std::min(body->min_y, c.y);
+			body->max_x = std::max(body->max_x, c.x);
+			body->max_y = std::max(body->max_y, c.y);
+		}
+	}
 
 	// everything that emits, with a chance of being picked proportional to its power
 	std::vector<float> power;

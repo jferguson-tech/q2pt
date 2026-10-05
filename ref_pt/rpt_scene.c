@@ -171,6 +171,24 @@ static entstate_t *S_Before (int index, entity_t *e, vec3_t origin, vec3_t axis[
 	return best;
 }
 
+/*
+=============
+R_EntityMoved
+
+How far entity number index has moved since last frame, or 0 if it was not
+there then. Only meaningful before R_BuildScene has run for this frame.
+=============
+*/
+float R_EntityMoved (int index, entity_t *e)
+{
+	vec3_t	d;
+
+	if (index < 0 || index >= s_numwas || s_was[index].model != e->model)
+		return 0;
+	VectorSubtract (e->origin, s_was[index].origin, d);
+	return VectorLength (d);
+}
+
 // the normals of the triangle just added, for smooth shading
 static void S_Normals (const float *a, const float *b, const float *c)
 {

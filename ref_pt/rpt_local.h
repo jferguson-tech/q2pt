@@ -155,11 +155,26 @@ extern	cvar_t	*pt_debug;
 extern	float	r_skyscale, r_lampglow;
 extern	float	r_surfacelight, r_pointlight, r_liquidglow;
 extern	float	r_detailglow;
+extern	int		r_watermode;		// 0 classic, 1 realistic, 2 simulated
+extern	float	r_watercell, r_waterwaves, r_watercaustics, r_waterdamping;
 extern	float	r_bumpscale, r_roughscale, r_metalscale;
 
 void	R_InitSettings (void);
 qboolean R_UpdateSettings (void);
 void	R_ViewSettings (pt_view_t *view);
+
+//
+// rpt_water.c
+//
+void	R_WaterReset (void);
+void	R_WaterAbsorb (image_t *image, const char *name, float *absorb);
+int		R_WaterBody (image_t *image, const char *name, float z, float points[][3], int numpoints);
+void	R_WaterSetMaterial (int body, int material);
+void	R_WaterFinish (void);
+void	R_WaterFrame (refdef_t *fd);
+void	R_WaterAround (const float *eye, float *absorb);
+pt_material_t *R_WorldMaterialPtr (int index);
+float	R_EntityMoved (int index, entity_t *e);
 
 //
 // rpt_model.c

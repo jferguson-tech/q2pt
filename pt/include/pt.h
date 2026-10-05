@@ -34,6 +34,7 @@ vertices appear counter clockwise.
 #define PT_MAT_CAMERA_INVISIBLE	8u	/* not seen directly, still lights and shadows */
 #define PT_MAT_BLACK			16u	/* reflects nothing; it can still emit */
 #define PT_MAT_WAVES			32u	/* a liquid surface: its normal ripples over time */
+#define PT_MAT_WARP				128u	/* the texture swims, as old engines drew liquids */
 #define PT_MAT_EMIT_BRIGHT		64u	/* only the texture's bright texels emit: screens,
 									   buttons, indicator lights */
 
@@ -63,6 +64,15 @@ typedef struct pt_material_s
 								   alpha replaces roughness */
 	int			anim_next;		/* world only: the material shown one animation
 								   step later, or -1 */
+	int			wave_map;		/* liquids: texture_create handle + 1 of a wave
+								   picture (R, G slopes in x and y about 0.5),
+								   0 = none; replaces the PT_MAT_WAVES ripples */
+	int			caustic_map;	/* handle + 1 of how much the waves brighten the
+								   light going through, R / 255 * 4; 0 = none */
+	float		wave_rect[4];	/* the maps cover world x, y from [0], [1] and are
+								   1 / [2], 1 / [3] across */
+	float		absorb[3];		/* liquids: share of light lost per unit of
+								   distance through it */
 	float		scroll[2];		/* texture repeats per second it slides by, in u and v */
 	uint32_t	flags;
 } pt_material_t;
@@ -143,6 +153,7 @@ typedef struct pt_view_s
 	const float	*light_styles;			/* brightness of each world light style, 1 = normal */
 	int			num_light_styles;
 	int			anim_frame;				/* which step animated materials are on */
+	float		medium_absorb[3];		/* the eye is inside a liquid that absorbs this much */
 	float		sky_axis[3];			/* the sky turns about this (unit) axis ... */
 	float		sky_angle;				/* ... by this many degrees */
 
@@ -205,6 +216,8 @@ struct pt_backend_s
 	/* textures for scene materials. Returns a handle, or -1 */
 	int		(*texture_create)(pt_backend_t *self, const pt_texture_t *texture);
 	void	(*texture_destroy)(pt_backend_t *self, int handle);
+	/* new pixels for a texture, same size */
+	void	(*texture_update)(pt_backend_t *self, int handle, const uint32_t *pixels);
 
 	void	(*render_view)(pt_backend_t *self, const pt_view_t *view);
 	void	(*present)(pt_backend_t *self, const uint32_t *overlay);

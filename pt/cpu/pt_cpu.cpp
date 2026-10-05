@@ -234,6 +234,15 @@ int TextureCreate(pt_backend_t *b, const pt_texture_t *texture)
 	return (int)slot;
 }
 
+void TextureUpdate(pt_backend_t *b, int handle, const uint32_t *pixels)
+{
+	CpuBackend *s = Self(b);
+	if (handle < 0 || handle >= (int)s->textures.size() || !s->textures[handle] || !pixels)
+		return;
+	Texture &t = *s->textures[handle];
+	t.pixels.assign(pixels, pixels + (size_t)t.width * t.height);
+}
+
 void TextureDestroy(pt_backend_t *b, int handle)
 {
 	CpuBackend *s = Self(b);
@@ -325,6 +334,14 @@ float Dielectric(float cosi, float eta, float &cost)
 const float kGlassIndex = 1.5f;
 const float kWaterIndex = 1.33f;
 
+// what is left of light after a distance through something that absorbs it
+Vec3 Fade(Vec3 absorb, float distance)
+{
+	if (distance <= 0.0f || MaxComponent(absorb) <= 0.0f)
+		return Vec3(1, 1, 1);
+	return Vec3(std::exp(-absorb.x * distance), std::exp(-absorb.y * distance), std::exp(-absorb.z * distance));
+}
+
 // Traces one pixel: what the eye sees there, and samples of the light on it
 void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, float jy, int x, int y, int samples, int bounces)
 {
@@ -358,6 +375,9 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 	// solid surface is what the filters work on; the layers in front dim it
 	// and add their own light on top.
 	float through = 1.0f;		// how much of what is behind still shows
+	Vec3 tint(1, 1, 1);			// what liquid on the way has left of each colour
+	Vec3 absorb(s->view.medium_absorb);	// of the liquid the path is in now; none in air
+	float entered = 0.0f;		// where along the current ray that began
 	float travelled = 0.0f;		// along the path so far, which water may have bent
 	Vec3 front_add;				// from the layers: what they emit
 	Vec3 front_diffuse;			// what they scatter, which is noisy
@@ -383,6 +403,8 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 		}
 		MakeSurface(sc, *tri, hit, ray, surf, sc.filter_textures);
 		const Material &mat = *surf.mat;
+		tint *= Fade(absorb, hit.t - entered);
+		entered = hit.t;
 		if (mat.alpha >= 1.0f || layer >= 8)
 		{
 			solid = true;
@@ -449,6 +471,10 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 			}
 			through *= 1.0f - fresnel;
 
+			// going in, the liquid starts soaking up light; coming out, it stops
+			if (mat.flags & PT_MAT_WAVES)
+				absorb = tri->n.z < -0.5f ? Vec3() : mat.absorb;
+
 			if (liquid && fresnel < 1.0f)
 			{
 				// into (or out of) the water
@@ -458,6 +484,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 				if (Dot(ray.d, surf.ng) > 0.0f)
 					ray.d = Normalize(ray.d - surf.ng * (2.0f * Dot(ray.d, surf.ng)));
 				ray.tmin = 0.0f;
+				entered = 0.0f;
 				bent = true;
 			}
 		}
@@ -494,7 +521,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 		// Nothing solid behind: sky, or nothing at all. If a layer was
 		// crossed it stands in as the surface, so that its light is still
 		// averaged over time.
-		px.add[i] = front_add + sky;
+		px.add[i] = front_add + sky * tint;
 		if (have_layer)
 		{
 			px.pos[i] = first_layer.p;
@@ -533,14 +560,14 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 	px.normal[i] = surf.n;
 	px.depth[i] = travelled + hit.t;
 	px.roughness[i] = surf.roughness;
-	px.albedo[kDiffuse][i] = kd;
-	px.albedo[kSpecular][i] = ks;
+	px.albedo[kDiffuse][i] = kd * tint;
+	px.albedo[kSpecular][i] = ks * tint;
 
 	// exact, so it skips the filters
 	const Lit flash = DirectFrameAll(sc, surf, rng);
-	px.add[i] = front_add + (surf.kd * flash.diffuse * kInvPi + flash.specular) * through;
+	px.add[i] = front_add + (surf.kd * flash.diffuse * kInvPi + flash.specular) * tint * through;
 	if (mat.emissive && surf.front)
-		px.add[i] += Emitted(surf, true) * through;
+		px.add[i] += Emitted(surf, true) * tint * through;
 
 	// Air that scatters light: some of what the surface sends is lost on the
 	// way, and the air itself glows where light falls through it, which is
@@ -1347,6 +1374,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	sc.num_light_styles = view->light_styles ? view->num_light_styles : 0;
 	sc.anim_frame = view->anim_frame < 0 ? 0 : view->anim_frame;
 	sc.time = view->time;
+	sc.handles = &s->textures;
 	{
 		const Vec3 axis(view->sky_axis);
 		const float angle = view->sky_angle * (kPi / 180.0f);
@@ -1642,6 +1670,7 @@ extern "C" pt_backend_t *pt_cpu_create(const pt_create_t *ci, char *err, int err
 	s->base.load_world = LoadWorld;
 	s->base.texture_create = TextureCreate;
 	s->base.texture_destroy = TextureDestroy;
+	s->base.texture_update = TextureUpdate;
 	s->base.render_view = RenderView;
 	s->base.present = Present;
 	s->base.stats = Stats;

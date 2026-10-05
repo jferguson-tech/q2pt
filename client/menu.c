@@ -1405,6 +1405,10 @@ static menulist_s		s_pt_reflections_list;
 static menuslider_s		s_pt_bounces_slider;
 static menulist_s		s_pt_taa_box;
 static menuslider_s		s_pt_exposure_slider;
+static menulist_s		s_pt_tonemap_list;
+static menulist_s		s_pt_bloom_box;
+static menulist_s		s_pt_fog_box;
+static menulist_s		s_pt_water_list;
 
 #define	PT_QUALITY_CUSTOM	4
 
@@ -1440,6 +1444,30 @@ static void PT_ExposureFunc( void *unused )
 	Cvar_SetValue( "pt_exposure", s_pt_exposure_slider.curvalue * 0.25f );
 }
 
+static void PT_TonemapFunc( void *unused )
+{
+	Cvar_SetValue( "pt_tonemap", s_pt_tonemap_list.curvalue );
+}
+
+static void PT_BloomFunc( void *unused )
+{
+	// keeps a strength set from the console unless it is being turned on from nothing
+	if ( !s_pt_bloom_box.curvalue )
+		Cvar_SetValue( "pt_bloom", 0 );
+	else if ( Cvar_VariableValue( "pt_bloom" ) <= 0 )
+		Cvar_SetValue( "pt_bloom", 0.3f );
+}
+
+static void PT_FogFunc( void *unused )
+{
+	Cvar_SetValue( "pt_fog", s_pt_fog_box.curvalue );
+}
+
+static void PT_WaterFunc( void *unused )
+{
+	Cvar_SetValue( "pt_water", s_pt_water_list.curvalue );
+}
+
 /*
 ** PT_SetMenuValues
 **
@@ -1458,6 +1486,10 @@ static void PT_SetMenuValues( void )
 	s_pt_bounces_slider.curvalue = (int)ClampCvar( 0, 6, Cvar_VariableValue( "pt_bounces" ) );
 	s_pt_taa_box.curvalue = Cvar_VariableValue( "pt_taa" ) != 0;
 	s_pt_exposure_slider.curvalue = (int)( ClampCvar( 0.5f, 6, Cvar_VariableValue( "pt_exposure" ) ) * 4 + 0.5f );
+	s_pt_tonemap_list.curvalue = (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_tonemap" ) );
+	s_pt_bloom_box.curvalue = Cvar_VariableValue( "pt_bloom" ) > 0;
+	s_pt_fog_box.curvalue = Cvar_VariableValue( "pt_fog" ) != 0;
+	s_pt_water_list.curvalue = (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_water" ) );
 }
 
 void PathTrace_MenuInit( void )
@@ -1478,6 +1510,20 @@ void PathTrace_MenuInit( void )
 		"everything",
 		0
 	};
+	static const char *tonemap_names[] =
+	{
+		"filmic",
+		"neutral",
+		"clipped",
+		0
+	};
+	static const char *water_names[] =
+	{
+		"classic",
+		"realistic",
+		"simulated",
+		0
+	};
 	static const char *yesno_names[] =
 	{
 		"no",
@@ -1493,6 +1539,10 @@ void PathTrace_MenuInit( void )
 	Cvar_Get( "pt_bounces", "3", CVAR_ARCHIVE );
 	Cvar_Get( "pt_taa", "1", CVAR_ARCHIVE );
 	Cvar_Get( "pt_exposure", "2", CVAR_ARCHIVE );
+	Cvar_Get( "pt_tonemap", "0", CVAR_ARCHIVE );
+	Cvar_Get( "pt_bloom", "0.3", CVAR_ARCHIVE );
+	Cvar_Get( "pt_fog", "1", CVAR_ARCHIVE );
+	Cvar_Get( "pt_water", "2", CVAR_ARCHIVE );
 
 	s_pt_menu.x = viddef.width / 2;
 	s_pt_menu.y = viddef.height / 2 - 58;
@@ -1543,6 +1593,34 @@ void PathTrace_MenuInit( void )
 	s_pt_exposure_slider.minvalue		= 2;
 	s_pt_exposure_slider.maxvalue		= 24;
 
+	s_pt_tonemap_list.generic.type		= MTYPE_SPINCONTROL;
+	s_pt_tonemap_list.generic.x			= 0;
+	s_pt_tonemap_list.generic.y			= 70;
+	s_pt_tonemap_list.generic.name		= "tone mapping";
+	s_pt_tonemap_list.generic.callback	= PT_TonemapFunc;
+	s_pt_tonemap_list.itemnames			= tonemap_names;
+
+	s_pt_bloom_box.generic.type			= MTYPE_SPINCONTROL;
+	s_pt_bloom_box.generic.x			= 0;
+	s_pt_bloom_box.generic.y			= 80;
+	s_pt_bloom_box.generic.name			= "bloom";
+	s_pt_bloom_box.generic.callback		= PT_BloomFunc;
+	s_pt_bloom_box.itemnames			= yesno_names;
+
+	s_pt_fog_box.generic.type			= MTYPE_SPINCONTROL;
+	s_pt_fog_box.generic.x				= 0;
+	s_pt_fog_box.generic.y				= 90;
+	s_pt_fog_box.generic.name			= "fog and light shafts";
+	s_pt_fog_box.generic.callback		= PT_FogFunc;
+	s_pt_fog_box.itemnames				= yesno_names;
+
+	s_pt_water_list.generic.type		= MTYPE_SPINCONTROL;
+	s_pt_water_list.generic.x			= 0;
+	s_pt_water_list.generic.y			= 100;
+	s_pt_water_list.generic.name		= "water";
+	s_pt_water_list.generic.callback	= PT_WaterFunc;
+	s_pt_water_list.itemnames			= water_names;
+
 	PT_SetMenuValues();
 
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_quality_list );
@@ -1551,6 +1629,10 @@ void PathTrace_MenuInit( void )
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_bounces_slider );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_taa_box );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_exposure_slider );
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_tonemap_list );
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_bloom_box );
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_fog_box );
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_water_list );
 }
 
 void PathTrace_MenuDraw (void)
@@ -1561,7 +1643,7 @@ void PathTrace_MenuDraw (void)
 	PT_SetMenuValues();
 	Menu_AdjustCursor( &s_pt_menu, 1 );
 	Menu_Draw( &s_pt_menu );
-	Menu_DrawStringDark( viddef.width / 2 - (int)strlen( note ) * 4, s_pt_menu.y + 84, note );
+	Menu_DrawStringDark( viddef.width / 2 - (int)strlen( note ) * 4, s_pt_menu.y + 124, note );
 }
 
 const char *PathTrace_MenuKey( int key )

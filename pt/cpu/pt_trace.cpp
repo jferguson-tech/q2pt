@@ -31,7 +31,10 @@ bool IsHole(const Tri &t, float u, float v)
 }
 
 // true if nothing stops light between the surface and target
-bool Visible(const Scene &sc, const Surface &s, Vec3 target, Rng &rng)
+// How much of the light from target reaches the surface: 0 if something is
+// in the way, otherwise 1 times whatever rippling liquid on the way does to
+// it, which gathers the light in some places and thins it in others.
+float Visible(const Scene &sc, const Surface &s, Vec3 target, Rng &rng)
 {
 	Ray shadow;
 	shadow.o = s.p + s.ng * kRayOffset;
@@ -39,15 +42,22 @@ bool Visible(const Scene &sc, const Surface &s, Vec3 target, Rng &rng)
 	shadow.tmin = 0.0f;
 	shadow.tmax = 0.999f;
 
+	float through = 1.0f;
 	const auto blocks = [&](const Tri &t, float u, float v)
 	{
 		if (IsHole(t, u, v) || BackOfGlass(t, shadow.d))
 			return false;
-		return t.mat->alpha >= 1.0f || rng.Float() < t.mat->alpha;
+		if (t.mat->alpha >= 1.0f || rng.Float() < t.mat->alpha)
+			return true;
+		if (t.mat->caustic_map)
+			through *= sc.Caustic(*t.mat, t.p0 + t.e1 * u + t.e2 * v);
+		return false;
 	};
 	if (sc.world->bvh.AnyHit(shadow, [&](uint32_t i, float u, float v) { return blocks(sc.world->tris[i], u, v); }))
-		return false;
-	return !sc.frame->bvh.AnyHit(shadow, [&](uint32_t i, float u, float v) { return blocks(sc.frame->tris[i], u, v); });
+		return 0.0f;
+	if (sc.frame->bvh.AnyHit(shadow, [&](uint32_t i, float u, float v) { return blocks(sc.frame->tris[i], u, v); }))
+		return 0.0f;
+	return through;
 }
 
 // ---- GGX microfacet reflection, height correlated Smith shadowing ----
@@ -196,8 +206,40 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 
 	float u, v;
 	TexCoord(tri, hit.u, hit.v, u, v);
+	if (mat.flags & PT_MAT_WARP)
+	{
+		// each coordinate sways with the other, an eighth of a repeat either way
+		const float u0 = u;
+		u += 0.125f * std::sin(v * 8.0f + sc.time);
+		v += 0.125f * std::sin(u0 * 8.0f + sc.time);
+	}
 	u += mat.scroll_u * sc.time;
 	v += mat.scroll_v * sc.time;
+
+	// a simulated surface: the wave picture holds its slopes and height
+	const bool simulated = mat.wave_map && sc.wave_strength > 0.0f && sc.Map(mat.wave_map);
+	float wave_x = 0.0f, wave_y = 0.0f, wave_height = 0.0f;
+	if (simulated)
+	{
+		float wu, wv;
+		Scene::WaveCoord(mat, s.p, wu, wv);
+		uint32_t texel[4];
+		float w[4];
+		sc.Map(mat.wave_map)->Corners(wu, wv, texel, w);
+		for (int k = 0; k < 4; k++)
+		{
+			wave_x += (float)(texel[k] & 0xff) * w[k];
+			wave_y += (float)((texel[k] >> 8) & 0xff) * w[k];
+			wave_height += (float)((texel[k] >> 16) & 0xff) * w[k];
+		}
+		wave_x = (wave_x * (1.0f / 255.0f) - 0.5f) * sc.wave_strength;
+		wave_y = (wave_y * (1.0f / 255.0f) - 0.5f) * sc.wave_strength;
+		wave_height = (wave_height * (1.0f / 255.0f) - 0.5f) * 8.0f * sc.wave_strength;
+		// what the texture stands for lies below the surface, so a tilted
+		// surface shows it shifted, as through a lens
+		u += wave_x * 0.5f;
+		v += wave_y * 0.5f;
+	}
 
 	s.colour = !mat.texture ? Vec3(1, 1, 1) : (smooth ? mat.texture->Smooth(u, v) : Decode(mat.texture->Texel(u, v)));
 	s.roughness = mat.roughness;
@@ -234,7 +276,14 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 		n = Normalize(tri.tu * tx + tri.tv * ty + n * tz);
 		s.roughness = c[3] * (1.0f / 255.0f);
 	}
-	if ((mat.flags & PT_MAT_WAVES) && sc.wave_strength > 0.0f)
+	if (simulated)
+	{
+		// the surface is level, facing up or (seen from below) down
+		n = Normalize(Vec3(-wave_x, -wave_y, 1.0f)) * (n.z < 0.0f ? -1.0f : 1.0f);
+		// crests gather the light in the liquid and troughs spread it
+		s.colour *= std::min(std::max(1.0f + wave_height * 0.35f, 0.6f), 1.8f);
+	}
+	else if ((mat.flags & PT_MAT_WAVES) && sc.wave_strength > 0.0f)
 	{
 		// a few crossing ripples, enough to break up a reflection
 		const float t = sc.time;
@@ -278,8 +327,58 @@ Vec3 Emitted(const Surface &s, bool seen)
 	return (seen && m.emission_seen > 0.0f) ? s.colour * m.emission_seen : m.emission_per_texel * s.colour;
 }
 
+// Light thrown back up by a simulated liquid surface: the dancing patches on
+// walls and ceilings near water. The surface is treated as a mirror for the
+// light just sampled, so its image lies as far below the surface as the
+// light is above, and the waves' gathering of light shapes what comes back.
+// y is the point on the light, e what it would send straight here.
+static void WaterBounce(const Scene &sc, const Surface &s, Vec3 y, Vec3 e, Lit &out, Rng &rng)
+{
+	if (s.medium)
+		return;
+	for (const World::Water &b : sc.world->waters)
+	{
+		if (s.p.z <= b.z + 1.0f || y.z <= b.z + 1.0f || s.p.z - b.z > 512.0f)
+			continue;
+		const Vec3 image(y.x, y.y, 2.0f * b.z - y.z);
+		const Vec3 d = image - s.p;
+		const Vec3 q = s.p + d * ((b.z - s.p.z) / d.z);		// where the path meets the surface
+		if (q.x < b.min_x || q.x > b.max_x || q.y < b.min_y || q.y > b.max_y)
+			continue;
+
+		const float len2 = Dot(d, d);
+		const Vec3 wi = d * (1.0f / std::sqrt(len2));
+		const float m = 1.0f + wi.z;	// 1 - cosine of the angle at the water
+		const float fresnel = 0.02f + 0.98f * m * m * m * m * m;
+		const float gain = fresnel * sc.Caustic(*b.mat, q);
+		if (gain <= 0.001f)
+			continue;
+
+		// e was for the straight path; this one is as long as the way to the image
+		const Vec3 straight = y - s.p;
+		const Lit add = Reflect(s, wi, e * (gain * Dot(straight, straight) / len2));
+		if (Importance(s, add) <= 0.0f)
+			continue;
+
+		// both legs must be clear
+		const Vec3 above = q + Vec3(0.0f, 0.0f, 0.1f);
+		if (Visible(sc, s, above, rng) <= 0.0f)
+			continue;
+		Surface at{};
+		at.medium = true;
+		at.p = above;
+		if (Visible(sc, at, y, rng) <= 0.0f)
+			continue;
+
+		out.diffuse += add.diffuse;
+		out.specular += add.specular;
+		return;		// one body will do
+	}
+}
+
 static Lit DirectLights(const Scene &sc, const Surface &s, Rng &rng, bool first_hit)
 {
+
 	const int candidates = std::max(1, first_hit ? sc.light_samples : sc.light_samples / 2);
 	const World &w = *sc.world;
 	Lit none;
@@ -374,9 +473,17 @@ static Lit DirectLights(const Scene &sc, const Surface &s, Rng &rng, bool first_
 		}
 	}
 
-	if (wsum <= 0.0f || !Visible(sc, s, chosen_y, rng))
+	if (wsum <= 0.0f)
 		return none;
-	return Reflect(s, chosen_wi, chosen_e * (wsum / (candidates * chosen_phat)));
+	chosen_e *= wsum / (candidates * chosen_phat);
+
+	Lit out;
+	const float clear = Visible(sc, s, chosen_y, rng);
+	if (clear > 0.0f)
+		out = Reflect(s, chosen_wi, chosen_e * clear);
+	if (!sc.world->waters.empty())
+		WaterBounce(sc, s, chosen_y, chosen_e, out, rng);
+	return out;
 }
 
 // Light from the sky: a direction is drawn where the sky is bright and the
@@ -459,10 +566,11 @@ Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng)
 		pick -= imp;
 		if (pick <= 0.0f && imp > 0.0f)
 		{
-			if (!Visible(sc, s, l.origin, rng))
+			const float clear = Visible(sc, s, l.origin, rng);
+			if (clear <= 0.0f)
 				return none;
-			f.diffuse *= total / imp;
-			f.specular *= total / imp;
+			f.diffuse *= clear * total / imp;
+			f.specular *= clear * total / imp;
 			return f;
 		}
 	}
@@ -475,10 +583,11 @@ Lit DirectFrameAll(const Scene &sc, const Surface &s, Rng &rng)
 	for (const Light &l : sc.frame->lights)
 	{
 		const Lit f = PointLight(s, l, 1.0f);
-		if (Importance(s, f) > 0.0f && Visible(sc, s, l.origin, rng))
+		const float clear = Importance(s, f) > 0.0f ? Visible(sc, s, l.origin, rng) : 0.0f;
+		if (clear > 0.0f)
 		{
-			sum.diffuse += f.diffuse;
-			sum.specular += f.specular;
+			sum.diffuse += f.diffuse * clear;
+			sum.specular += f.specular * clear;
 		}
 	}
 	return sum;

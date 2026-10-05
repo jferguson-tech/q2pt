@@ -64,6 +64,11 @@ static cvar_t	*pt_reflections;		// 0 none, 1 glass and water, 2 everything shiny
 static cvar_t	*pt_reflection_bounces;	// 0 = as many as pt_bounces
 static cvar_t	*pt_reflection_rate;	// how often rough surfaces get a reflection path
 static cvar_t	*pt_refraction;			// water bends the view
+static cvar_t	*pt_water;				// 0 classic, 1 realistic, 2 simulated
+static cvar_t	*pt_water_cell;			// size of a simulation cell, in map units
+static cvar_t	*pt_water_caustics;		// strength of the light patterns under and beside water
+static cvar_t	*pt_water_height;		// how tall the simulated waves are, 1 = normal
+static cvar_t	*pt_water_damping;		// how fast waves die down, 1 = normal
 static cvar_t	*pt_waves;				// ripple strength on liquids
 
 // materials: scale what rpt_material.c decides
@@ -75,6 +80,8 @@ float	r_skyscale = 2;
 float	r_lampglow = 1.5f;
 float	r_surfacelight = 1, r_pointlight = 1, r_liquidglow = 0.25f;
 float	r_detailglow = 1;
+int		r_watermode = 2;
+float	r_watercell = 8, r_waterwaves = 1, r_watercaustics = 1, r_waterdamping = 1;
 float	r_bumpscale = 1, r_roughscale = 1, r_metalscale = 1;
 
 #define	NUM_PRESETS	4
@@ -145,6 +152,11 @@ void R_InitSettings (void)
 	pt_reflection_rate = ri.Cvar_Get ("pt_reflection_rate", "1", CVAR_ARCHIVE);
 	pt_refraction = ri.Cvar_Get ("pt_refraction", "1", CVAR_ARCHIVE);
 	pt_waves = ri.Cvar_Get ("pt_waves", "1", CVAR_ARCHIVE);
+	pt_water = ri.Cvar_Get ("pt_water", "2", CVAR_ARCHIVE);
+	pt_water_cell = ri.Cvar_Get ("pt_water_cell", "8", CVAR_ARCHIVE);
+	pt_water_caustics = ri.Cvar_Get ("pt_water_caustics", "1", CVAR_ARCHIVE);
+	pt_water_damping = ri.Cvar_Get ("pt_water_damping", "1", CVAR_ARCHIVE);
+	pt_water_height = ri.Cvar_Get ("pt_water_height", "1", CVAR_ARCHIVE);
 
 	pt_bump = ri.Cvar_Get ("pt_bump", "1", CVAR_ARCHIVE);
 	pt_roughness = ri.Cvar_Get ("pt_roughness", "1", CVAR_ARCHIVE);
@@ -156,6 +168,8 @@ void R_InitSettings (void)
 	r_pointlight = pt_point_light->value;
 	r_liquidglow = pt_liquid_glow->value;
 	r_detailglow = pt_detail_glow->value;
+	r_watermode = (int)pt_water->value;
+	r_watercell = pt_water_cell->value < 2 ? 2 : pt_water_cell->value;
 	r_bumpscale = pt_bump->value;
 	r_roughscale = pt_roughness->value;
 	r_metalscale = pt_metallic->value;
@@ -220,6 +234,19 @@ qboolean R_UpdateSettings (void)
 	qboolean	reload = false;
 
 	R_UpdatePreset ();
+
+	// these act on the running simulations
+	r_waterwaves = pt_water_height->value;
+	r_watercaustics = pt_water_caustics->value;
+	r_waterdamping = pt_water_damping->value;
+
+	// these change what the map's liquids are made of
+	if ((int)pt_water->value != r_watermode || (pt_water_cell->value >= 2 && pt_water_cell->value != r_watercell))
+	{
+		r_watermode = (int)pt_water->value;
+		r_watercell = pt_water_cell->value < 2 ? 2 : pt_water_cell->value;
+		reload = true;
+	}
 
 	if (pt_sky->value != r_skyscale || pt_lamp_glow->value != r_lampglow
 		|| pt_surface_light->value != r_surfacelight || pt_point_light->value != r_pointlight

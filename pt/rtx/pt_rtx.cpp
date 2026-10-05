@@ -621,6 +621,10 @@ void TextureDestroy(pt_backend_t *, int)
 {
 }
 
+void TextureUpdate(pt_backend_t *, int, const uint32_t *)
+{
+}
+
 void Record(RtxBackend *s, uint32_t image_index)
 {
 	VkCommandBuffer cmd = s->cmd;
@@ -797,6 +801,7 @@ extern "C" pt_backend_t *pt_rtx_create(const pt_create_t *ci, char *err, int err
 	s->base.load_world = LoadWorld;
 	s->base.texture_create = TextureCreate;
 	s->base.texture_destroy = TextureDestroy;
+	s->base.texture_update = TextureUpdate;
 	s->base.render_view = RenderView;
 	s->base.present = Present;
 	s->base.stats = Stats;

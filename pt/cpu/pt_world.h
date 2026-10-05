@@ -90,6 +90,9 @@ struct Material
 	float			alpha = 1.0f;
 	float			emission_seen = 0.0f;
 	float			scroll_u = 0.0f, scroll_v = 0.0f;
+	int				wave_map = 0, caustic_map = 0;	// handle + 1
+	float			wave_rect[4] = {0, 0, 0, 0};
+	Vec3			absorb;
 	float			roughness = 1.0f;
 	float			metallic = 0.0f;
 	uint32_t		flags = 0;
@@ -173,6 +176,14 @@ struct World
 	float					sky_scale = 1.0f;
 	bool					has_waves = false;
 
+	// a simulated body of liquid: where its surface is and which material carries its maps
+	struct Water
+	{
+		float			min_x, min_y, max_x, max_y, z;
+		const Material	*mat;
+	};
+	std::vector<Water>		waters;
+
 	Vec3 Sky(Vec3 d) const;
 
 	// The sky as a light: a direction drawn in proportion to how bright the
@@ -232,6 +243,40 @@ struct Scene
 	const Tri &TriAt(uint32_t index) const
 	{
 		return (index & kDynamic) ? frame->tris[index & ~kDynamic] : world->tris[index];
+	}
+
+	// textures made with texture_create, by handle
+	const std::vector<std::unique_ptr<Texture>> *handles = nullptr;
+
+	const Texture *Map(int handle_plus_one) const
+	{
+		if (!handles || handle_plus_one <= 0 || handle_plus_one > (int)handles->size())
+			return nullptr;
+		return (*handles)[handle_plus_one - 1].get();
+	}
+
+	// where a point falls on a liquid's maps
+	static void WaveCoord(const Material &m, Vec3 p, float &u, float &v)
+	{
+		u = (p.x - m.wave_rect[0]) * m.wave_rect[2];
+		v = (p.y - m.wave_rect[1]) * m.wave_rect[3];
+	}
+
+	// how much the waves brighten light passing through the surface at p
+	float Caustic(const Material &m, Vec3 p) const
+	{
+		const Texture *t = Map(m.caustic_map);
+		if (!t)
+			return 1.0f;
+		float u, v;
+		WaveCoord(m, p, u, v);
+		if (u < 0.0f || v < 0.0f || u > 1.0f || v > 1.0f)
+			return 1.0f;
+		uint32_t texel[4];
+		float w[4];
+		t->Corners(u, v, texel, w);
+		return ((texel[0] & 0xff) * w[0] + (texel[1] & 0xff) * w[1] + (texel[2] & 0xff) * w[2] + (texel[3] & 0xff) * w[3])
+			* (4.0f / 255.0f);
 	}
 
 	float StyleScale(int style) const
