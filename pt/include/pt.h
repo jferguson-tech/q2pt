@@ -173,6 +173,10 @@ typedef struct pt_view_s
 	int		reflections;		/* 0 none, 1 glass and liquids, 2 every shiny surface */
 	int		reflection_bounces;	/* how far a reflected path is followed; 1 shows
 								   reflected things under direct light only */
+	int		adaptive;			/* up to this many times the paths where the
+								   picture has little to go on: what has just
+								   come into view, or is still noisy. 0 or 1 =
+								   the same number everywhere */
 	float	reflection_rate;	/* scales how often a rough surface gets a
 								   reflection path; 1 = the backend's own choice */
 	int		refraction;			/* liquids bend the view */

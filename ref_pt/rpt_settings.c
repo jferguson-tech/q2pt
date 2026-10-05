@@ -62,6 +62,7 @@ static cvar_t	*pt_detail_glow;			// screens, buttons and indicator lights
 // reflections
 static cvar_t	*pt_reflections;		// 0 none, 1 glass and water, 2 everything shiny
 static cvar_t	*pt_reflection_bounces;	// 0 = as many as pt_bounces
+static cvar_t	*pt_adaptive;			// up to this many times the paths where the picture is new or noisy
 static cvar_t	*pt_reflection_rate;	// how often rough surfaces get a reflection path
 static cvar_t	*pt_refraction;			// water bends the view
 static cvar_t	*pt_normal_flip;			// 1 = hand made normal maps have green pointing up
@@ -103,6 +104,7 @@ static struct
 	{ "pt_reflections",			&pt_reflections,		{ 1, 2, 2, 2 } },
 	{ "pt_reflection_bounces",	&pt_reflection_bounces,	{ 1, 0, 0, 0 } },
 	{ "pt_reflection_rate",		&pt_reflection_rate,	{ 0.5f, 1, 1, 1 } },
+	{ "pt_adaptive",			&pt_adaptive,			{ 1, 2, 4, 4 } },
 };
 
 #define	NUM_PRESET_VARS	(sizeof(presets) / sizeof(presets[0]))
@@ -152,6 +154,7 @@ void R_InitSettings (void)
 	pt_reflections = ri.Cvar_Get ("pt_reflections", "2", CVAR_ARCHIVE);
 	pt_reflection_bounces = ri.Cvar_Get ("pt_reflection_bounces", "0", CVAR_ARCHIVE);
 	pt_reflection_rate = ri.Cvar_Get ("pt_reflection_rate", "1", CVAR_ARCHIVE);
+	pt_adaptive = ri.Cvar_Get ("pt_adaptive", "2", CVAR_ARCHIVE);
 	pt_refraction = ri.Cvar_Get ("pt_refraction", "1", CVAR_ARCHIVE);
 	pt_waves = ri.Cvar_Get ("pt_waves", "1", CVAR_ARCHIVE);
 	pt_water = ri.Cvar_Get ("pt_water", "2", CVAR_ARCHIVE);
@@ -295,6 +298,7 @@ void R_ViewSettings (pt_view_t *view)
 	view->reflections = pt_reflections->value;
 	view->reflection_bounces = pt_reflection_bounces->value;
 	view->reflection_rate = pt_reflection_rate->value;
+	view->adaptive = pt_adaptive->value;
 	view->refraction = pt_refraction->value != 0;
 	view->wave_strength = pt_waves->value;
 
