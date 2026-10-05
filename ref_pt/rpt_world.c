@@ -388,7 +388,9 @@ static int W_LoadFaces (byte *base, int filelen, int modelnum)
 			continue;
 
 		tex = &texinfos[texnum];
-		if (LittleLong (tex->flags) & SURF_NODRAW)
+		// sky is sky whether or not the map says to draw it, as it is to the
+		// other renderers
+		if ((LittleLong (tex->flags) & (SURF_NODRAW|SURF_SKY)) == SURF_NODRAW)
 			continue;
 
 		material = W_TexinfoMaterial (texinfos, numtexinfo, texmat, texnum);
