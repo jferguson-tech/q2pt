@@ -116,7 +116,7 @@ R_InitSettings
 */
 void R_InitSettings (void)
 {
-	pt_stats = ri.Cvar_Get ("pt_stats", "0", CVAR_ARCHIVE);
+	pt_stats = ri.Cvar_Get ("pt_stats", "1", CVAR_ARCHIVE);
 	// 1 surface colour, 2 diffuse light, 3 specular, 4 glass and water layers,
 	// 5 unfiltered extras, 6 normals, 7 history length, 8 layer history length,
 	// 9 seen through water, 10 depth

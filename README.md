@@ -105,7 +105,7 @@ Some console commands and variables:
 | `pt_water 0`-`2` | classic, realistic, simulated |
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
 | `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time |
-| `pt_stats 1` | performance info on screen |
+| `pt_stats 0` | hide the performance info, which is on by default (never shown in offline renders) |
 | `pt_debug 1`-`11` | one part of the picture on its own |
 | `screenshot`, `pt_screenshot [paths]` | the frame as shown, or rendered again at high quality |
 | `record <name>`, `stop` | record a demo (the game's own commands) |
