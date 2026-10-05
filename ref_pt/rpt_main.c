@@ -435,11 +435,6 @@ void R_RenderFrame (refdef_t *fd)
 	// damage flashes, underwater tint and the like
 	Draw_Blend (fd->x, fd->y, fd->width, fd->height, fd->blend);
 
-#ifdef RPT_RTX
-	Draw_String (fd->x + (fd->width - (int)strlen (RPT_LABEL) * 8) / 2, fd->y + fd->height / 3, RPT_LABEL);
-	Draw_String (fd->x + (fd->width - 12 * 8) / 2, fd->y + fd->height / 3 + 12, "no scene yet");
-#endif
-
 	if (pt_stats->value && !R_Offline ())
 		R_DrawStats (fd);
 }

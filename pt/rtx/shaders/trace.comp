@@ -1,0 +1,164 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Jonathan Ferguson
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+// What the eye sees: one ray per pixel into the scene, the surface it meets
+// shaded by its texture and how squarely it faces the eye. The lighting
+// proper comes later.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// same values as PT_MAT_* in pt.h
+const uint MAT_SKY = 1u;
+const uint MAT_ALPHA_TEST = 2u;
+const uint MAT_CAMERA_INVISIBLE = 8u;
+
+struct Tri
+{
+	vec2	uv0, uv1, uv2;
+	uint	material;
+	uint	pad;
+};
+
+struct Material
+{
+	int		texture;		// index into textures, or -1
+	uint	flags;
+	float	alpha;
+	float	roughness;
+	vec4	emission;
+};
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D picture;
+
+// the map (instance 0) and what moves (instance 1), each as three corners
+// per triangle, what goes with each triangle, and its materials
+layout(std430, set = 0, binding = 2) readonly buffer WorldCorners { float v[]; } world_corners;
+layout(std430, set = 0, binding = 3) readonly buffer WorldTris { Tri t[]; } world_tris;
+layout(std430, set = 0, binding = 4) readonly buffer WorldMaterials { Material m[]; } world_materials;
+layout(std430, set = 0, binding = 5) readonly buffer FrameCorners { float v[]; } frame_corners;
+layout(std430, set = 0, binding = 6) readonly buffer FrameTris { Tri t[]; } frame_tris;
+layout(std430, set = 0, binding = 7) readonly buffer FrameMaterials { Material m[]; } frame_materials;
+
+layout(set = 0, binding = 8) uniform sampler2D textures[];
+
+layout(push_constant) uniform Push
+{
+	vec4	origin;		// w: tangent of half the horizontal field of view
+	vec4	forward;	// w: tangent of half the vertical one
+	vec4	right;
+	vec4	up;
+	ivec4	sky_a;		// textures of the sky's faces +X -X +Y -Y,
+	ivec4	sky_b;		// +Z -Z; -1 where there is none
+} pc;
+
+const int MAX_LAYERS = 8;	// see-through surfaces looked through before giving up
+
+vec3 ToLinear(vec3 c)
+{
+	return pow(c, vec3(2.2));
+}
+
+// The sky is a cube of six pictures around the eye. On the face along axis
+// a, with b and c the next two axes in turn, a direction d lands at
+//   u = (d[b] / |d[a]| + 1) / 2,  v = (d[c] / |d[a]| + 1) / 2
+vec3 Sky(vec3 d)
+{
+	const vec3 a = abs(d);
+	int axis = (a.x >= a.y && a.x >= a.z) ? 0 : (a.y >= a.z ? 1 : 2);
+	const int face = axis * 2 + (d[axis] < 0.0 ? 1 : 0);
+	const int tex = face < 4 ? pc.sky_a[face] : pc.sky_b[face - 4];
+	if (tex < 0)
+		return vec3(0.0);
+	const float inv = 1.0 / a[axis];
+	const vec2 uv = vec2(d[(axis + 1) % 3], d[(axis + 2) % 3]) * inv * 0.5 + 0.5;
+	return ToLinear(textureLod(textures[nonuniformEXT(tex)], clamp(uv, 0.002, 0.998), 0.0).rgb);
+}
+
+void main()
+{
+	const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+	const ivec2 size = imageSize(picture);
+	if (pixel.x >= size.x || pixel.y >= size.y)
+		return;
+
+	const vec3 dir = normalize(pc.forward.xyz
+		+ pc.right.xyz * ((2.0 * (pixel.x + 0.5) / size.x - 1.0) * pc.origin.w)
+		+ pc.up.xyz * ((1.0 - 2.0 * (pixel.y + 0.5) / size.y) * pc.forward.w));
+
+	vec3 colour = vec3(0.0);
+	float through = 1.0;	// how much of what lies further on still shows
+	float tmin = 0.0;
+
+	for (int layer = 0; layer < MAX_LAYERS && through > 0.01; layer++)
+	{
+		rayQueryEXT query;
+		rayQueryInitializeEXT(query, scene, gl_RayFlagsOpaqueEXT, 0xff, pc.origin.xyz, tmin, dir, 1.0e30);
+		while (rayQueryProceedEXT(query))
+			;
+		if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT)
+			break;
+
+		const bool moving = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true) != 0;
+		const int prim = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
+		const vec2 bary = rayQueryGetIntersectionBarycentricsEXT(query, true);
+		const float t = rayQueryGetIntersectionTEXT(query, true);
+		// whatever happens next, the ray goes on from just past here
+		tmin = t + max(t, 1.0) * 1.0e-4;
+
+		Tri tri;
+		Material mat;
+		vec3 p0, p1, p2;
+		if (moving)
+		{
+			tri = frame_tris.t[prim];
+			mat = frame_materials.m[tri.material];
+			const int i = prim * 9;
+			p0 = vec3(frame_corners.v[i], frame_corners.v[i + 1], frame_corners.v[i + 2]);
+			p1 = vec3(frame_corners.v[i + 3], frame_corners.v[i + 4], frame_corners.v[i + 5]);
+			p2 = vec3(frame_corners.v[i + 6], frame_corners.v[i + 7], frame_corners.v[i + 8]);
+		}
+		else
+		{
+			tri = world_tris.t[prim];
+			mat = world_materials.m[tri.material];
+			const int i = prim * 9;
+			p0 = vec3(world_corners.v[i], world_corners.v[i + 1], world_corners.v[i + 2]);
+			p1 = vec3(world_corners.v[i + 3], world_corners.v[i + 4], world_corners.v[i + 5]);
+			p2 = vec3(world_corners.v[i + 6], world_corners.v[i + 7], world_corners.v[i + 8]);
+		}
+
+		if ((mat.flags & MAT_SKY) != 0u)
+		{
+			colour += Sky(dir) * through;
+			through = 0.0;
+			break;
+		}
+		if ((mat.flags & MAT_CAMERA_INVISIBLE) != 0u)
+			continue;
+
+		const vec2 uv = tri.uv0 * (1.0 - bary.x - bary.y) + tri.uv1 * bary.x + tri.uv2 * bary.y;
+		vec4 texel = vec4(1.0);
+		if (mat.texture >= 0)
+			texel = textureLod(textures[nonuniformEXT(mat.texture)], uv, 0.0);
+		if ((mat.flags & MAT_ALPHA_TEST) != 0u && texel.a < 0.5)
+			continue;
+
+		vec3 shade = ToLinear(texel.rgb);
+		if (max(mat.emission.r, max(mat.emission.g, mat.emission.b)) <= 0.0)
+		{
+			// not a light: brighter the more squarely it faces the eye
+			const vec3 normal = normalize(cross(p1 - p0, p2 - p0));
+			shade *= 0.15 + 0.85 * abs(dot(normal, dir));
+		}
+
+		const float covers = clamp(mat.alpha, 0.0, 1.0);
+		colour += shade * (through * covers);
+		through *= 1.0 - covers;
+	}
+
+	imageStore(picture, pixel, vec4(pow(colour, vec3(1.0 / 2.2)), 1.0));
+}
