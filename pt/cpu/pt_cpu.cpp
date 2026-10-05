@@ -138,6 +138,8 @@ struct CpuBackend
 	Pixels					cur, prev;
 	std::vector<FilterGeo>	filter_geo;
 	std::vector<FilterLight> filter_a, filter_b;
+	std::vector<Vec3>		hdr;			// this frame's picture before it is steadied
+	std::vector<Vec3>		steady, steady_prev;	// the picture blended over time
 	std::vector<uint32_t>	ldr;			// tone mapped, render sized
 	int						rw = 0, rh = 0;
 	bool					have_history = false;
@@ -241,7 +243,7 @@ Vec3 Demodulate(Vec3 light, Vec3 reflectance)
 }
 
 // Traces one pixel: what the eye sees there, and samples of the light on it
-void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, int x, int y, int samples, int bounces)
+void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, float jy, int x, int y, int samples, int bounces)
 {
 	const size_t i = (size_t)y * s->rw + x;
 	Pixels &px = s->cur;
@@ -250,8 +252,8 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, int x, int y,
 	Ray ray;
 	ray.o = cam.origin;
 	ray.d = Normalize(cam.forward
-		+ cam.right * ((2.0f * (x + 0.5f) / s->rw - 1.0f) * cam.tx)
-		+ cam.up * ((1.0f - 2.0f * (y + 0.5f) / s->rh) * cam.ty));
+		+ cam.right * ((2.0f * (x + 0.5f + jx) / s->rw - 1.0f) * cam.tx)
+		+ cam.up * ((1.0f - 2.0f * (y + 0.5f + jy) / s->rh) * cam.ty));
 	ray.tmin = 0.0f;
 	ray.tmax = FLT_MAX;
 
@@ -611,6 +613,107 @@ void FilterRow(int rw, int rh, const FilterGeo *geo, const FilterLight *in, Filt
 	}
 }
 
+// low discrepancy sequence: successive values fill [0, 1) evenly
+float Halton(uint32_t index, uint32_t base)
+{
+	float f = 1.0f, r = 0.0f;
+	while (index)
+	{
+		f /= base;
+		r += f * (index % base);
+		index /= base;
+	}
+	return r;
+}
+
+// Temporal anti-aliasing. The finished picture is blended with last frame's,
+// found by following each point back to where it was on screen; history that
+// no longer looks like anything nearby is pulled back to what does.
+void Steady(CpuBackend *s, const Camera &cam, const Camera &prev_cam, bool have_history, int y)
+{
+	const int rw = s->rw, rh = s->rh;
+
+	for (int x = 0; x < rw; x++)
+	{
+		const size_t i = (size_t)y * rw + x;
+		const Vec3 c = s->hdr[i];
+		Vec3 out = c;
+
+		if (have_history)
+		{
+			// the sky has no position: use a point far along its ray
+			Vec3 p = s->cur.pos[i];
+			if (s->cur.depth[i] < 0.0f)
+				p = cam.origin + Normalize(cam.forward
+					+ cam.right * ((2.0f * (x + 0.5f) / rw - 1.0f) * cam.tx)
+					+ cam.up * ((1.0f - 2.0f * (y + 0.5f) / rh) * cam.ty)) * 100000.0f;
+
+			const Vec3 v = p - prev_cam.origin;
+			const float z = Dot(v, prev_cam.forward);
+			const float fx = z > 0.01f ? (Dot(v, prev_cam.right) / (z * prev_cam.tx) * 0.5f + 0.5f) * rw - 0.5f : -10.0f;
+			const float fy = z > 0.01f ? (0.5f - Dot(v, prev_cam.up) / (z * prev_cam.ty) * 0.5f) * rh - 0.5f : -10.0f;
+
+			const Vec3 *prev = s->steady_prev.data();
+			const Pixels &was = s->prev;
+			bool found = false;
+			Vec3 h;
+
+			if (fx >= 0.0f && fy >= 0.0f && fx <= rw - 1.0f && fy <= rh - 1.0f)
+			{
+				const int ix = std::min((int)fx, rw - 2 < 0 ? 0 : rw - 2), iy = std::min((int)fy, rh - 2 < 0 ? 0 : rh - 2);
+				const int ix1 = std::min(ix + 1, rw - 1), iy1 = std::min(iy + 1, rh - 1);
+				const float ax = fx - ix, ay = fy - iy;
+
+				// is what was there last frame the same surface?
+				const size_t q = (size_t)(ay < 0.5f ? iy : iy1) * rw + (ax < 0.5f ? ix : ix1);
+				if (s->cur.depth[i] < 0.0f)
+					found = was.depth[q] < 0.0f;
+				else
+					found = was.depth[q] >= 0.0f
+						&& std::fabs(Dot(s->cur.plane[i], was.pos[q] - s->cur.pos[i])) <= 1.0f + s->cur.depth[i] * 0.01f
+						&& Dot(s->cur.plane[i], was.plane[q]) > 0.9f;
+				if (found)
+					h = (prev[(size_t)iy * rw + ix] * (1.0f - ax) + prev[(size_t)iy * rw + ix1] * ax) * (1.0f - ay)
+						+ (prev[(size_t)iy1 * rw + ix] * (1.0f - ax) + prev[(size_t)iy1 * rw + ix1] * ax) * ay;
+			}
+			// something that moves with the eye stays on the same pixel instead
+			if (!found && s->cur.depth[i] >= 0.0f && was.depth[i] > 0.0f
+				&& std::fabs(was.depth[i] - s->cur.depth[i]) < 0.1f * s->cur.depth[i]
+				&& Dot(s->cur.plane[i], was.plane[i]) > 0.8f)
+			{
+				h = prev[i];
+				found = true;
+			}
+
+			if (found)
+			{
+				// what this pixel and its neighbours show now bounds what history may say
+				Vec3 lo = c, hi = c;
+				for (int dy = -1; dy <= 1; dy++)
+				{
+					const int qy = y + dy;
+					if (qy < 0 || qy >= rh)
+						continue;
+					for (int dx = -1; dx <= 1; dx++)
+					{
+						const int qx = x + dx;
+						if (qx < 0 || qx >= rw)
+							continue;
+						const Vec3 q = s->hdr[(size_t)qy * rw + qx];
+						lo = Min(lo, q);
+						hi = Max(hi, q);
+					}
+				}
+				h = Max(lo, Min(hi, h));
+				out = h + (c - h) * 0.12f;
+			}
+		}
+
+		s->steady[i] = out;
+		s->ldr[i] = ToneMap(out);
+	}
+}
+
 void RenderView(pt_backend_t *b, const pt_view_t *view)
 {
 	CpuBackend *s = Self(b);
@@ -648,6 +751,9 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		s->filter_geo.assign(count, FilterGeo());
 		s->filter_a.assign(count, FilterLight());
 		s->filter_b.assign(count, FilterLight());
+		s->hdr.assign(count, Vec3());
+		s->steady.assign(count, Vec3());
+		s->steady_prev.assign(count, Vec3());
 		s->ldr.assign(count, 0);
 		s->have_history = false;
 	}
@@ -680,10 +786,15 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	if (s->world->has_waves)
 		hash = HashBytes(&sc.time, sizeof(sc.time), hash);
 
+	// each frame looks through a slightly different point of every pixel, so
+	// that over time edges are seen from all across it
+	const float jx = Halton(s->frame_index % 16 + 1, 2) - 0.5f;
+	const float jy = Halton(s->frame_index % 16 + 1, 3) - 0.5f;
+
 	s->pool.Run(rh, [&](int y)
 	{
 		for (int x = 0; x < rw; x++)
-			TracePixel(s, sc, cam, x, y, samples, bounces);
+			TracePixel(s, sc, cam, jx, jy, x, y, samples, bounces);
 	});
 	const auto traced = std::chrono::steady_clock::now();
 
@@ -736,9 +847,12 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 			Vec3 c = s->cur.add[i];
 			for (int ch = 0; ch < kChannels; ch++)
 				c += s->cur.albedo[ch][i] * Vec3(in[i].r[ch], in[i].g[ch], in[i].b[ch]);
-			s->ldr[i] = ToneMap(c * exposure);
+			s->hdr[i] = c * exposure;
 		}
 	});
+
+	const bool have_history = s->have_history;
+	s->pool.Run(rh, [&](int y) { Steady(s, cam, prev_cam, have_history, y); });
 
 	// stretch to the view with bilinear filtering
 	const int vw = view->width, vh = view->height;
@@ -772,6 +886,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 
 	// this frame becomes the history the next one looks back at
 	std::swap(s->cur, s->prev);
+	std::swap(s->steady, s->steady_prev);
 	s->prev_camera = cam;
 	s->prev_hash = hash;
 	s->have_history = true;
