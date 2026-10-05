@@ -6,10 +6,12 @@
 // compute shader traces a ray per pixel through them (ray queries) into a
 // picture that the last pass puts on screen under the overlay.
 //
-// So far it shows what the eye sees, simply shaded. The lighting, the
-// denoiser and the rest of what the CPU backend does are still to come.
+// The tracing follows the CPU backend: the same lights, found the same way,
+// the same materials and the same paths, written again as shaders. What
+// comes out is gathered over frames and filtered by further compute passes.
 
 #include "../include/pt.h"
+#include "../cpu/pt_world.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -22,6 +24,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -35,6 +38,15 @@ const uint32_t blit_frag_spv[] =
 ;
 const uint32_t trace_comp_spv[] =
 #include "trace.comp.inc"
+;
+const uint32_t temporal_comp_spv[] =
+#include "temporal.comp.inc"
+;
+const uint32_t atrous_comp_spv[] =
+#include "atrous.comp.inc"
+;
+const uint32_t compose_comp_spv[] =
+#include "compose.comp.inc"
 ;
 
 const uint32_t VENDOR_NVIDIA = 0x10DE;
@@ -54,17 +66,32 @@ struct Push
 	float	has_view;		// there is a traced picture to show in the view
 };
 
-// what the tracing shader is told about the view; see trace.comp
-struct TracePush
+// a few numbers of its own for each compute pass
+struct PassPush
 {
-	float	origin[4];
-	float	forward[4];
-	float	right[4];
-	float	up[4];
-	int32_t	sky[8];
+	int32_t	a, b, c, d;
 };
 
-// one triangle and one material as the shaders read them (std430)
+// What the shaders are told about the frame (std140); see scene.glsl, which
+// says what is in each.
+struct FrameBlock
+{
+	float	origin[4], forward[4], right[4], up[4];
+	float	prev_origin[4], prev_forward[4], prev_right[4], prev_up[4];
+	int32_t	sky_a[4], sky_b[4];
+	float	sky_turn[4], sky_misc[4];
+	int32_t	counts[4], bases[4], grid_dims[4];
+	float	grid_origin[4];
+	int32_t	table_at[4], table_at2[4], settings[4];
+	float	settings_f[4];
+	int32_t	settings2[4];
+	float	medium[4];
+	int32_t	output_i[4];
+	float	output_f[4];
+	int32_t	frame_has[4], size[4];
+};
+
+// one triangle, one material and one light as the shaders read them (std430)
 struct GpuTri
 {
 	float		uv[6];
@@ -79,6 +106,45 @@ struct GpuMaterial
 	float		alpha;
 	float		roughness;
 	float		emission[4];
+	float		emission_per_texel[4];
+	int32_t		normal_texture, emission_map, anim_next, anim_length;
+	float		absorb[4];
+	float		wave_rect[4];
+	float		scroll[2];
+	int32_t		wave_map, caustic_map;
+	uint32_t	bits;
+	uint32_t	pad[3];
+};
+
+struct GpuLight
+{
+	float		origin[3];
+	uint32_t	tri;
+	float		emission[3];
+	float		pdf;
+	float		dir[3];
+	float		cone_cos;
+	int32_t		style;
+	int32_t		pad[3];
+};
+
+const uint32_t kBitEmissive = 1, kBitSampled = 2;	// GpuMaterial::bits
+const int kNumStyles = 256;							// light styles, at the start of the tables
+const uint32_t kNumBindings = 26;
+
+// The pictures kept per pixel between the passes, in the order the shaders'
+// bindings take them; see scene.glsl.
+enum
+{
+	kSurface = 0,	// 2
+	kSeen = 2,
+	kAlbedo = 3,	// 2
+	kNoisy = 5,		// 3
+	kExtra = 8,
+	kKept = 9,		// 6
+	kFilter = 15,	// 6
+	kPicture = 21,
+	kNumTargets
 };
 
 const uint32_t kMaxTextures = 4096;
@@ -98,6 +164,21 @@ struct Texture
 	VkDeviceMemory	memory = VK_NULL_HANDLE;
 	VkImageView		view = VK_NULL_HANDLE;
 	int				width = 0, height = 0;
+	float			average[3] = {1, 1, 1};	// colour, in linear light
+};
+
+struct Target
+{
+	VkImage			image = VK_NULL_HANDLE;
+	VkDeviceMemory	memory = VK_NULL_HANDLE;
+	VkImageView		view = VK_NULL_HANDLE;
+};
+
+// a texture whose new pixels wait to be sent to the card
+struct Pending
+{
+	int				slot;
+	VkDeviceSize	offset;
 };
 
 struct Accel
@@ -109,14 +190,17 @@ struct Accel
 	VkDeviceAddress				address = 0;
 };
 
-// the triangles of the map or of a frame, as the GPU holds them
+// The triangles of the map or of a frame, as the GPU holds them: the solid
+// ones first, then the glass and liquid, each with a structure of its own.
 struct Geometry
 {
 	Buffer		corners;		// 9 floats a triangle
 	Buffer		tris;			// GpuTri
 	Buffer		materials;		// GpuMaterial
-	Accel		blas;
-	uint32_t	num_tris = 0;
+	Buffer		normals;		// 9 floats a triangle; the frame only
+	Buffer		prev;			// where the corners were last frame; the frame only
+	Accel		solid, glass;
+	uint32_t	num_solid = 0, num_glass = 0;
 	uint32_t	room_tris = 0, room_materials = 0;
 };
 
@@ -179,28 +263,60 @@ struct RtxBackend
 	// the scene
 	std::vector<Texture>	textures;			// kMaxTextures slots; the shaders see them all
 	std::vector<int>		world_textures;		// slots the map's textures were given
-	VkSampler				tex_sampler = VK_NULL_HANDLE;
+	VkSampler				tex_sampler = VK_NULL_HANDLE, smooth_sampler = VK_NULL_HANDLE;
 	Texture					blank;				// stands in every slot that holds nothing
 	Geometry				world, frame;
 	bool					world_loaded = false;
+	bool					world_has_waves = false;
 	int32_t					sky[6] = {-1, -1, -1, -1, -1, -1};
 	Accel					tlas;
 	Buffer					instances;
+	uint32_t				num_instances = 0;
 
-	// the traced picture
-	VkImage					trace_image = VK_NULL_HANDLE;
-	VkDeviceMemory			trace_memory = VK_NULL_HANDLE;
-	VkImageView				trace_view = VK_NULL_HANDLE;
+	// lights and the tables for finding them; see LoadWorldNow
+	Buffer					frame_block, world_lights, frame_lights, tables, indices, meter;
+	int						num_world_lights = 0;
+	bool					has_grid = false;
+	float					grid_origin[3] = {0, 0, 0}, grid_inv_cell = 0.0f;
+	int						grid_dims[3] = {0, 0, 0};
+	int						table_light_cdf = 0, table_grid_pdf = 0, table_grid_cdf = 0, table_sky_chance = 0, table_sky_cdf = 0;
+	int						index_grid_light = 0, index_grid_count = 0;
+	int						sky_res = 0;
+	float					sky_total = 0.0f, sky_scale = 1.0f;
+
+	// textures the host has changed, until the next frame takes them
+	Buffer					updates;
+	VkDeviceSize			updates_used = 0;
+	std::vector<Pending>	pending;
+
+	// the passes and the pictures they hand on
+	Target					targets[kNumTargets];
 	VkSampler				trace_sampler = VK_NULL_HANDLE;
 	int						trace_width = 0, trace_height = 0;
 	VkDescriptorSetLayout	trace_dsl = VK_NULL_HANDLE;
 	VkDescriptorPool		trace_dpool = VK_NULL_HANDLE;
 	VkDescriptorSet			trace_dset = VK_NULL_HANDLE;
 	VkPipelineLayout		trace_playout = VK_NULL_HANDLE;
-	VkPipeline				trace_pipeline = VK_NULL_HANDLE;
-	bool					trace_ready = false;	// this frame's view can be traced
+	VkPipeline				trace_pipeline = VK_NULL_HANDLE, temporal_pipeline = VK_NULL_HANDLE;
+	VkPipeline				atrous_pipeline = VK_NULL_HANDLE, compose_pipeline = VK_NULL_HANDLE;
+	int						filter_passes = 0;
+	bool					trace_ready = false;	// there is a picture of this frame's view to show
+	bool					trace_pending = false;	// but it has yet to be traced
+	bool					has_history = false;	// the last frame's pictures can be built on
+	int						parity = 0;				// which of each pair of pictures is this frame's
+	uint32_t				frame_index = 0;
+	uint32_t				prev_hash = 0;
+	float					prev_time = 0.0f;
+	float					auto_exposure = 1.0f, exposure_used = 0.0f;
+	bool					have_exposure = false;
 
-	char		stats[160] = "";
+	// for reading a frame back
+	Buffer					readback;
+	int						view_rect[4] = {0, 0, 0, 0};	// x, y, width, height of this frame's view
+	int						shown[4] = {0, 0, 0, 0};		// and of the one last presented
+	bool					shown_traced = false;
+
+	char		stats[200] = "";
 };
 
 RtxBackend *Self(pt_backend_t *b) { return reinterpret_cast<RtxBackend *>(b); }
@@ -333,6 +449,8 @@ void PickDevice(RtxBackend *s)
 		{
 			vkGetPhysicalDeviceFeatures2(gpu, &feat.f2);
 			if (!feat.as.accelerationStructure || !feat.rq.rayQuery ||
+				!feat.f2.features.shaderStorageImageArrayDynamicIndexing ||
+				!feat.f2.features.shaderSampledImageArrayDynamicIndexing ||
 				!feat.v12.bufferDeviceAddress || !feat.v12.runtimeDescriptorArray ||
 				!feat.v12.shaderSampledImageArrayNonUniformIndexing ||
 				!feat.v13.dynamicRendering || !feat.v13.synchronization2)
@@ -368,6 +486,9 @@ void CreateDevice(RtxBackend *s)
 	feat.v13.synchronization2 = VK_TRUE;
 	feat.as.accelerationStructure = VK_TRUE;
 	feat.rq.rayQuery = VK_TRUE;
+	// the shaders pick among their pictures and textures by number
+	feat.f2.features.shaderStorageImageArrayDynamicIndexing = VK_TRUE;
+	feat.f2.features.shaderSampledImageArrayDynamicIndexing = VK_TRUE;
 	feat.v12.runtimeDescriptorArray = VK_TRUE;
 	feat.v12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 
@@ -934,6 +1055,13 @@ Texture MakeTexture(RtxBackend *s, int width, int height, const uint32_t *pixels
 		staging = MakeBuffer(s, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
 		memcpy(staging.ptr, pixels, (size_t)bytes);
 
+		double sum[3] = {0, 0, 0};
+		for (int i = 0; i < width * height; i++)
+			for (int c = 0; c < 3; c++)
+				sum[c] += pt::g_to_linear[(pixels[i] >> (c * 8)) & 255];
+		for (int c = 0; c < 3; c++)
+			t.average[c] = std::max((float)(sum[c] / ((double)width * height)), 1e-4f);
+
 		VkCommandBuffer cmd = BeginOnce(s);
 		Barrier(cmd, t.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
@@ -961,13 +1089,13 @@ Texture MakeTexture(RtxBackend *s, int width, int height, const uint32_t *pixels
 void ShowTexture(RtxBackend *s, int slot)
 {
 	const Texture &t = s->textures[slot].view ? s->textures[slot] : s->blank;
-	VkDescriptorImageInfo dii{s->tex_sampler, t.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+	VkDescriptorImageInfo dii{VK_NULL_HANDLE, t.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 	VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
 	w.dstSet = s->trace_dset;
 	w.dstBinding = 8;
 	w.dstArrayElement = (uint32_t)slot;
 	w.descriptorCount = 1;
-	w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	w.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 	w.pImageInfo = &dii;
 	vkUpdateDescriptorSets(s->device, 1, &w, 0, nullptr);
 }
@@ -1108,7 +1236,10 @@ void FreeGeometry(RtxBackend *s, Geometry &g)
 	FreeBuffer(s, g.corners);
 	FreeBuffer(s, g.tris);
 	FreeBuffer(s, g.materials);
-	FreeAccel(s, g.blas);
+	FreeBuffer(s, g.normals);
+	FreeBuffer(s, g.prev);
+	FreeAccel(s, g.solid);
+	FreeAccel(s, g.glass);
 	g = Geometry();
 }
 
@@ -1123,13 +1254,22 @@ bool Reserve(RtxBackend *s, Geometry &g, uint32_t tris, uint32_t materials, VkBu
 		vkQueueWaitIdle(s->queue);
 		FreeBuffer(s, g.corners);
 		FreeBuffer(s, g.tris);
+		FreeBuffer(s, g.normals);
+		FreeBuffer(s, g.prev);
 		// what changes every frame is given room to spare, so that it is not
 		// made again for every triangle more
 		g.room_tris = grows ? std::max(tris + tris / 2, 4096u) : std::max(tris, 1u);
-		g.corners = MakeBuffer(s, (VkDeviceSize)g.room_tris * 36,
+		const VkDeviceSize floats = (VkDeviceSize)g.room_tris * 36;
+		g.corners = MakeBuffer(s, floats,
 			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, true);
 		g.tris = MakeBuffer(s, (VkDeviceSize)g.room_tris * sizeof(GpuTri), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
-		MakeAccel(s, g.blas, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+		// only what moves has normals of its own and a place it was before
+		g.normals = MakeBuffer(s, grows ? floats : 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+		g.prev = MakeBuffer(s, grows ? floats : 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+		// either part may turn out to be all of it
+		MakeAccel(s, g.solid, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+			TriangleGeometry(g.corners.address, g.room_tris), g.room_tris, build);
+		MakeAccel(s, g.glass, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
 			TriangleGeometry(g.corners.address, g.room_tris), g.room_tris, build);
 		changed = true;
 	}
@@ -1144,50 +1284,116 @@ bool Reserve(RtxBackend *s, Geometry &g, uint32_t tris, uint32_t materials, VkBu
 	return changed;
 }
 
-// shows the tracing shader the buffers of the map and of the frame
-void ShowGeometry(RtxBackend *s)
+// a buffer that is at least so big; true if it is a new one
+bool Room(RtxBackend *s, Buffer &b, VkDeviceSize bytes, VkBufferUsageFlags usage)
 {
-	const Buffer *buffers[6] = {&s->world.corners, &s->world.tris, &s->world.materials,
-		&s->frame.corners, &s->frame.tris, &s->frame.materials};
-	VkDescriptorBufferInfo info[6];
-	VkWriteDescriptorSet w[6];
-	uint32_t n = 0;
-	for (uint32_t i = 0; i < 6; i++)
-	{
-		if (!buffers[i]->buffer)
-			continue;
-		info[n] = {buffers[i]->buffer, 0, VK_WHOLE_SIZE};
-		w[n] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-		w[n].dstSet = s->trace_dset;
-		w[n].dstBinding = 2 + i;
-		w[n].descriptorCount = 1;
-		w[n].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		w[n].pBufferInfo = &info[n];
-		n++;
-	}
-	vkUpdateDescriptorSets(s->device, n, w, 0, nullptr);
+	if (b.buffer && b.size >= bytes)
+		return false;
+	vkQueueWaitIdle(s->queue);
+	FreeBuffer(s, b);
+	b = MakeBuffer(s, bytes + bytes / 2, usage, true);
+	return true;
 }
 
-void SetMaterial(const RtxBackend *s, GpuMaterial &out, const pt_material_t &in, int texture_slot)
+// Glass, water and the like are met from one side only: seen from behind
+// they are not there. They are kept apart so that the card can do that.
+bool OneSided(const pt_material_t &m)
 {
-	out.texture = (texture_slot >= 0 && texture_slot < (int)kMaxTextures && s->textures[texture_slot].view) ? texture_slot : -1;
+	return m.alpha < 1.0f && !(m.flags & (PT_MAT_BLACK | PT_MAT_EMIT_TEXTURE));
+}
+
+float Clamp01(float v)
+{
+	return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+}
+
+// A material as the shaders read it. slot() turns the numbers the host
+// gave its textures into slots; handles are slots already.
+template <class F>
+void SetMaterial(const RtxBackend *s, GpuMaterial &out, const pt_material_t &in, F slot)
+{
+	const auto used = [&](int t) { return (t >= 0 && t < (int)kMaxTextures && s->textures[t].view) ? t : -1; };
+
+	memset(&out, 0, sizeof(out));
+	out.texture = used(slot(in.texture));
+	out.normal_texture = used(slot(in.normal_texture));
+	out.emission_map = used(slot(in.emission_texture - 1));
+	out.wave_map = used(in.wave_map - 1);			// these two are handles
+	out.caustic_map = used(in.caustic_map - 1);
 	out.flags = in.flags;
 	out.alpha = in.alpha;
-	out.roughness = in.roughness;
-	out.emission[0] = in.emission[0];
-	out.emission[1] = in.emission[1];
-	out.emission[2] = in.emission[2];
-	out.emission[3] = 0.0f;
+	out.roughness = Clamp01(in.roughness);
+	out.anim_next = -1;
+	out.anim_length = 1;
+
+	const bool emissive = std::max(in.emission[0], std::max(in.emission[1], in.emission[2])) > 0.0f && !(in.flags & PT_MAT_SKY);
+	for (int i = 0; i < 3; i++)
+	{
+		out.emission[i] = in.emission[i];
+		// the texture's own colour is taken out, so that a light gives off
+		// what the map says it does whatever its picture
+		out.emission_per_texel[i] = in.emission[i];
+		if (out.texture >= 0 && !(in.flags & PT_MAT_EMIT_TEXTURE))
+			out.emission_per_texel[i] = in.emission[i] / s->textures[out.texture].average[i];
+		out.absorb[i] = in.absorb[i];
+	}
+	out.emission[3] = in.emission_seen;
+	out.emission_per_texel[3] = Clamp01(in.metallic);
+	for (int i = 0; i < 4; i++)
+		out.wave_rect[i] = in.wave_rect[i];
+	out.scroll[0] = in.scroll[0];
+	out.scroll[1] = in.scroll[1];
+	if (emissive)
+		out.bits |= kBitEmissive;
+	// glowing detail is too dim and too patchy to be worth sampling as a light
+	if (emissive && !(in.flags & PT_MAT_EMIT_BRIGHT) && out.emission_map < 0)
+		out.bits |= kBitSampled;
 }
 
-// ------------------------------------------------------ the traced picture
+// ------------------------------------------------------------ descriptors
 
-// the last pass shows it in the view
+void WriteBuffer(RtxBackend *s, uint32_t binding, const Buffer &b, VkDescriptorType type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+{
+	if (!b.buffer)
+		return;
+	VkDescriptorBufferInfo info{b.buffer, 0, VK_WHOLE_SIZE};
+	VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+	w.dstSet = s->trace_dset;
+	w.dstBinding = binding;
+	w.descriptorCount = 1;
+	w.descriptorType = type;
+	w.pBufferInfo = &info;
+	vkUpdateDescriptorSets(s->device, 1, &w, 0, nullptr);
+}
+
+// shows the shaders every buffer of the map and of the frame
+void ShowBuffers(RtxBackend *s)
+{
+	WriteBuffer(s, 1, s->frame_block, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+	WriteBuffer(s, 2, s->world.corners);
+	WriteBuffer(s, 3, s->world.tris);
+	WriteBuffer(s, 4, s->world.materials);
+	WriteBuffer(s, 5, s->frame.corners);
+	WriteBuffer(s, 6, s->frame.tris);
+	WriteBuffer(s, 7, s->frame.materials);
+	WriteBuffer(s, 11, s->world_lights);
+	WriteBuffer(s, 12, s->frame_lights);
+	WriteBuffer(s, 13, s->tables);
+	WriteBuffer(s, 14, s->indices);
+	WriteBuffer(s, 15, s->frame.normals);
+	WriteBuffer(s, 16, s->frame.prev);
+	WriteBuffer(s, 25, s->meter);
+}
+
+// ------------------------------------------------- the pictures in between
+
+// the last pass shows the finished picture in the view
 void ShowTracePicture(RtxBackend *s)
 {
-	if (!s->dset || !s->trace_view)
+	const Target &picture = s->targets[kPicture];
+	if (!s->dset || !picture.view)
 		return;
-	VkDescriptorImageInfo dii{s->trace_sampler, s->trace_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+	VkDescriptorImageInfo dii{s->trace_sampler, picture.view, VK_IMAGE_LAYOUT_GENERAL};
 	VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
 	w.dstSet = s->dset;
 	w.dstBinding = 1;
@@ -1197,73 +1403,112 @@ void ShowTracePicture(RtxBackend *s)
 	vkUpdateDescriptorSets(s->device, 1, &w, 0, nullptr);
 }
 
-void FreeTracePicture(RtxBackend *s)
+void FreeTargets(RtxBackend *s)
 {
-	if (s->trace_view) vkDestroyImageView(s->device, s->trace_view, nullptr);
-	if (s->trace_image) vkDestroyImage(s->device, s->trace_image, nullptr);
-	if (s->trace_memory) vkFreeMemory(s->device, s->trace_memory, nullptr);
-	s->trace_view = VK_NULL_HANDLE;
-	s->trace_image = VK_NULL_HANDLE;
-	s->trace_memory = VK_NULL_HANDLE;
+	for (Target &t : s->targets)
+	{
+		if (t.view) vkDestroyImageView(s->device, t.view, nullptr);
+		if (t.image) vkDestroyImage(s->device, t.image, nullptr);
+		if (t.memory) vkFreeMemory(s->device, t.memory, nullptr);
+		t = Target();
+	}
 }
 
-void MakeTracePicture(RtxBackend *s, int width, int height)
+// Everything kept per pixel, at the size the picture is traced at. They
+// stay in the one layout all passes can use.
+void MakeTargets(RtxBackend *s, int width, int height)
 {
 	vkQueueWaitIdle(s->queue);
-	FreeTracePicture(s);
+	FreeTargets(s);
 	s->trace_width = width;
 	s->trace_height = height;
+	s->has_history = false;
 
-	VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-	ici.imageType = VK_IMAGE_TYPE_2D;
-	ici.format = VK_FORMAT_R8G8B8A8_UNORM;
-	ici.extent = {(uint32_t)width, (uint32_t)height, 1};
-	ici.mipLevels = 1;
-	ici.arrayLayers = 1;
-	ici.samples = VK_SAMPLE_COUNT_1_BIT;
-	ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-	ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-	ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	Check(vkCreateImage(s->device, &ici, nullptr, &s->trace_image), "vkCreateImage");
+	for (int i = 0; i < kNumTargets; i++)
+	{
+		Target &t = s->targets[i];
+		const VkFormat format = i == kSeen ? VK_FORMAT_R32G32B32A32_SFLOAT
+			: (i == kPicture ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R16G16B16A16_SFLOAT);
 
-	VkMemoryRequirements mr;
-	vkGetImageMemoryRequirements(s->device, s->trace_image, &mr);
-	VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-	mai.allocationSize = mr.size;
-	mai.memoryTypeIndex = FindMemoryType(s, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-	Check(vkAllocateMemory(s->device, &mai, nullptr, &s->trace_memory), "vkAllocateMemory");
-	Check(vkBindImageMemory(s->device, s->trace_image, s->trace_memory, 0), "vkBindImageMemory");
+		VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+		ici.imageType = VK_IMAGE_TYPE_2D;
+		ici.format = format;
+		ici.extent = {(uint32_t)width, (uint32_t)height, 1};
+		ici.mipLevels = 1;
+		ici.arrayLayers = 1;
+		ici.samples = VK_SAMPLE_COUNT_1_BIT;
+		ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+		ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		Check(vkCreateImage(s->device, &ici, nullptr, &t.image), "vkCreateImage");
 
-	VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-	vci.image = s->trace_image;
-	vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-	vci.format = VK_FORMAT_R8G8B8A8_UNORM;
-	vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-	Check(vkCreateImageView(s->device, &vci, nullptr, &s->trace_view), "vkCreateImageView");
+		VkMemoryRequirements mr;
+		vkGetImageMemoryRequirements(s->device, t.image, &mr);
+		VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+		mai.allocationSize = mr.size;
+		mai.memoryTypeIndex = FindMemoryType(s, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		Check(vkAllocateMemory(s->device, &mai, nullptr, &t.memory), "vkAllocateMemory");
+		Check(vkBindImageMemory(s->device, t.image, t.memory, 0), "vkBindImageMemory");
 
-	// between frames it is always ready to be shown
+		VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+		vci.image = t.image;
+		vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		vci.format = format;
+		vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+		Check(vkCreateImageView(s->device, &vci, nullptr, &t.view), "vkCreateImageView");
+	}
+
 	VkCommandBuffer cmd = BeginOnce(s);
-	Barrier(cmd, s->trace_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
-		VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	for (const Target &t : s->targets)
+		Barrier(cmd, t.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+			VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+			VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 	EndOnce(s);
 
-	VkDescriptorImageInfo dii{VK_NULL_HANDLE, s->trace_view, VK_IMAGE_LAYOUT_GENERAL};
-	VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-	w.dstSet = s->trace_dset;
-	w.dstBinding = 1;
-	w.descriptorCount = 1;
-	w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	w.pImageInfo = &dii;
-	vkUpdateDescriptorSets(s->device, 1, &w, 0, nullptr);
+	// which pictures go in which binding, in the order of the Target list
+	const struct { uint32_t binding, first, count; } groups[] = {
+		{17, kSurface, 2}, {18, kSeen, 1}, {19, kAlbedo, 2}, {20, kNoisy, 3},
+		{21, kExtra, 1}, {22, kKept, 6}, {23, kFilter, 6}, {24, kPicture, 1},
+	};
+	VkDescriptorImageInfo info[kNumTargets];
+	for (const auto &g : groups)
+	{
+		for (uint32_t i = 0; i < g.count; i++)
+			info[i] = {VK_NULL_HANDLE, s->targets[g.first + i].view, VK_IMAGE_LAYOUT_GENERAL};
+		VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+		w.dstSet = s->trace_dset;
+		w.dstBinding = g.binding;
+		w.descriptorCount = g.count;
+		w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		w.pImageInfo = info;
+		vkUpdateDescriptorSets(s->device, 1, &w, 0, nullptr);
+	}
 	ShowTracePicture(s);
 }
 
 // ------------------------------------------------------------------ scene
 
+VkPipeline MakeComputePipeline(RtxBackend *s, const uint32_t *code, size_t bytes)
+{
+	VkShaderModule module = CreateShader(s, code, bytes);
+	VkComputePipelineCreateInfo cpci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+	cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+	cpci.stage.module = module;
+	cpci.stage.pName = "main";
+	cpci.layout = s->trace_playout;
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	const VkResult result = vkCreateComputePipelines(s->device, VK_NULL_HANDLE, 1, &cpci, nullptr, &pipeline);
+	vkDestroyShaderModule(s->device, module, nullptr);
+	Check(result, "vkCreateComputePipelines");
+	return pipeline;
+}
+
 // everything the tracer needs that does not depend on the map
 void CreateScene(RtxBackend *s)
 {
+	pt::InitColourTables();
+
 	VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
 	sci.magFilter = VK_FILTER_NEAREST;
 	sci.minFilter = VK_FILTER_NEAREST;
@@ -1273,37 +1518,49 @@ void CreateScene(RtxBackend *s)
 
 	sci.magFilter = VK_FILTER_LINEAR;
 	sci.minFilter = VK_FILTER_LINEAR;
+	Check(vkCreateSampler(s->device, &sci, nullptr, &s->smooth_sampler), "vkCreateSampler");
+
 	sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 	Check(vkCreateSampler(s->device, &sci, nullptr, &s->trace_sampler), "vkCreateSampler");
 
-	// 0 the scene, 1 the picture, 2-7 the map's and the frame's buffers, 8 the textures
-	VkDescriptorSetLayoutBinding bind[9]{};
-	for (uint32_t i = 0; i < 9; i++)
+	// see scene.glsl for what each binding is
+	VkDescriptorSetLayoutBinding bind[kNumBindings]{};
+	for (uint32_t i = 0; i < kNumBindings; i++)
 	{
 		bind[i].binding = i;
 		bind[i].descriptorCount = 1;
 		bind[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-		bind[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		bind[i].descriptorType = i >= 17 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	}
 	bind[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-	bind[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	bind[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bind[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	bind[8].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 	bind[8].descriptorCount = kMaxTextures;
+	bind[9].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+	bind[10].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+	bind[17].descriptorCount = 2;
+	bind[19].descriptorCount = 2;
+	bind[20].descriptorCount = 3;
+	bind[22].descriptorCount = 6;
+	bind[23].descriptorCount = 6;
+	bind[25].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
 	VkDescriptorSetLayoutCreateInfo dlci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-	dlci.bindingCount = 9;
+	dlci.bindingCount = kNumBindings;
 	dlci.pBindings = bind;
 	Check(vkCreateDescriptorSetLayout(s->device, &dlci, nullptr, &s->trace_dsl), "vkCreateDescriptorSetLayout");
 
 	const VkDescriptorPoolSize sizes[] = {
 		{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
-		{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
-		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6},
-		{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures},
+		{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16},
+		{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kMaxTextures},
+		{VK_DESCRIPTOR_TYPE_SAMPLER, 2},
+		{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kNumTargets},
 	};
 	VkDescriptorPoolCreateInfo dpci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
 	dpci.maxSets = 1;
-	dpci.poolSizeCount = 4;
+	dpci.poolSizeCount = sizeof(sizes) / sizeof(sizes[0]);
 	dpci.pPoolSizes = sizes;
 	Check(vkCreateDescriptorPool(s->device, &dpci, nullptr, &s->trace_dpool), "vkCreateDescriptorPool");
 
@@ -1313,7 +1570,8 @@ void CreateScene(RtxBackend *s)
 	dsai.pSetLayouts = &s->trace_dsl;
 	Check(vkAllocateDescriptorSets(s->device, &dsai, &s->trace_dset), "vkAllocateDescriptorSets");
 
-	VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TracePush)};
+	// each pass may be told a few numbers of its own
+	VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PassPush)};
 	VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
 	plci.setLayoutCount = 1;
 	plci.pSetLayouts = &s->trace_dsl;
@@ -1321,37 +1579,46 @@ void CreateScene(RtxBackend *s)
 	plci.pPushConstantRanges = &pcr;
 	Check(vkCreatePipelineLayout(s->device, &plci, nullptr, &s->trace_playout), "vkCreatePipelineLayout");
 
-	VkShaderModule module = CreateShader(s, trace_comp_spv, sizeof(trace_comp_spv));
-	VkComputePipelineCreateInfo cpci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-	cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-	cpci.stage.module = module;
-	cpci.stage.pName = "main";
-	cpci.layout = s->trace_playout;
-	const VkResult result = vkCreateComputePipelines(s->device, VK_NULL_HANDLE, 1, &cpci, nullptr, &s->trace_pipeline);
-	vkDestroyShaderModule(s->device, module, nullptr);
-	Check(result, "vkCreateComputePipelines");
+	s->trace_pipeline = MakeComputePipeline(s, trace_comp_spv, sizeof(trace_comp_spv));
+	s->temporal_pipeline = MakeComputePipeline(s, temporal_comp_spv, sizeof(temporal_comp_spv));
+	s->atrous_pipeline = MakeComputePipeline(s, atrous_comp_spv, sizeof(atrous_comp_spv));
+	s->compose_pipeline = MakeComputePipeline(s, compose_comp_spv, sizeof(compose_comp_spv));
 
 	// every texture slot shows something from the start
 	const uint32_t white = 0xffffffffu;
 	s->blank = MakeTexture(s, 1, 1, &white);
 	{
 		std::vector<VkDescriptorImageInfo> all(kMaxTextures,
-			VkDescriptorImageInfo{s->tex_sampler, s->blank.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+			VkDescriptorImageInfo{VK_NULL_HANDLE, s->blank.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
 		VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
 		w.dstSet = s->trace_dset;
 		w.dstBinding = 8;
 		w.descriptorCount = kMaxTextures;
-		w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		w.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 		w.pImageInfo = all.data();
 		vkUpdateDescriptorSets(s->device, 1, &w, 0, nullptr);
+
+		const VkDescriptorImageInfo samplers[2] = {
+			{s->tex_sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED},
+			{s->smooth_sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED},
+		};
+		for (uint32_t i = 0; i < 2; i++)
+		{
+			VkWriteDescriptorSet ws{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+			ws.dstSet = s->trace_dset;
+			ws.dstBinding = 9 + i;
+			ws.descriptorCount = 1;
+			ws.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+			ws.pImageInfo = &samplers[i];
+			vkUpdateDescriptorSets(s->device, 1, &ws, 0, nullptr);
+		}
 	}
 
-	// the two instances: the map and what moves
-	s->instances = MakeBuffer(s, 2 * sizeof(VkAccelerationStructureInstanceKHR),
+	// the instances: the map, its glass, what moves, its glass
+	s->instances = MakeBuffer(s, 4 * sizeof(VkAccelerationStructureInstanceKHR),
 		VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, true);
 	MakeAccel(s, s->tlas, VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-		InstanceGeometry(s->instances.address), 2, kFrameBuild);
+		InstanceGeometry(s->instances.address), 4, kFrameBuild);
 	{
 		VkWriteDescriptorSetAccelerationStructureKHR as{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
 		as.accelerationStructureCount = 1;
@@ -1366,10 +1633,17 @@ void CreateScene(RtxBackend *s)
 	}
 
 	// something in every binding before there is a map
+	s->frame_block = MakeBuffer(s, sizeof(FrameBlock), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true);
+	s->world_lights = MakeBuffer(s, sizeof(GpuLight), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+	s->frame_lights = MakeBuffer(s, 64 * sizeof(GpuLight), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+	s->tables = MakeBuffer(s, kNumStyles * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+	s->indices = MakeBuffer(s, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+	s->meter = MakeBuffer(s, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+	memset(s->meter.ptr, 0, 64);
 	Reserve(s, s->world, 1, 1, kWorldBuild, false);
 	Reserve(s, s->frame, 1, 1, kFrameBuild, true);
-	ShowGeometry(s);
-	MakeTracePicture(s, s->width, s->height);
+	ShowBuffers(s);
+	MakeTargets(s, s->width, s->height);
 }
 
 void DestroyScene(RtxBackend *s)
@@ -1378,15 +1652,26 @@ void DestroyScene(RtxBackend *s)
 	FreeGeometry(s, s->frame);
 	FreeAccel(s, s->tlas);
 	FreeBuffer(s, s->instances);
+	FreeBuffer(s, s->frame_block);
+	FreeBuffer(s, s->world_lights);
+	FreeBuffer(s, s->frame_lights);
+	FreeBuffer(s, s->tables);
+	FreeBuffer(s, s->indices);
+	FreeBuffer(s, s->meter);
+	FreeBuffer(s, s->updates);
+	FreeBuffer(s, s->readback);
 	for (Texture &t : s->textures)
 		FreeTexture(s, t);
 	FreeTexture(s, s->blank);
-	FreeTracePicture(s);
-	if (s->trace_pipeline) vkDestroyPipeline(s->device, s->trace_pipeline, nullptr);
+	FreeTargets(s);
+	for (VkPipeline p : {s->trace_pipeline, s->temporal_pipeline, s->atrous_pipeline, s->compose_pipeline})
+		if (p)
+			vkDestroyPipeline(s->device, p, nullptr);
 	if (s->trace_playout) vkDestroyPipelineLayout(s->device, s->trace_playout, nullptr);
 	if (s->trace_dpool) vkDestroyDescriptorPool(s->device, s->trace_dpool, nullptr);
 	if (s->trace_dsl) vkDestroyDescriptorSetLayout(s->device, s->trace_dsl, nullptr);
 	if (s->trace_sampler) vkDestroySampler(s->device, s->trace_sampler, nullptr);
+	if (s->smooth_sampler) vkDestroySampler(s->device, s->smooth_sampler, nullptr);
 	if (s->tex_sampler) vkDestroySampler(s->device, s->tex_sampler, nullptr);
 }
 
@@ -1396,6 +1681,7 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 
 	// the map before this one
 	s->world_loaded = false;
+	s->has_history = false;
 	for (int slot : s->world_textures)
 		if (slot >= 0)
 		{
@@ -1417,49 +1703,218 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 		return (texture >= 0 && texture < in->num_textures) ? s->world_textures[texture] : -1;
 	};
 
-	Reserve(s, s->world, (uint32_t)in->num_triangles, (uint32_t)std::max(in->num_materials, 1), kWorldBuild, false);
-	ShowGeometry(s);
+	const uint32_t num_tris = (uint32_t)in->num_triangles;
+	Reserve(s, s->world, num_tris, (uint32_t)std::max(in->num_materials, 1), kWorldBuild, false);
+
+	// solid triangles first, then the glass; lights are told where theirs went
+	const auto material_of = [&](uint32_t t)
+	{
+		return (in->tri_materials && (int)in->tri_materials[t] < in->num_materials) ? in->tri_materials[t] : 0u;
+	};
+	std::vector<uint32_t> place(num_tris);
+	uint32_t num_solid = 0;
+	for (uint32_t t = 0; t < num_tris; t++)
+		if (in->num_materials <= 0 || !OneSided(in->materials[material_of(t)]))
+			place[t] = num_solid++;
+	uint32_t next = num_solid;
+	for (uint32_t t = 0; t < num_tris; t++)
+		if (in->num_materials > 0 && OneSided(in->materials[material_of(t)]))
+			place[t] = next++;
 
 	float *corners = static_cast<float *>(s->world.corners.ptr);
 	GpuTri *tris = static_cast<GpuTri *>(s->world.tris.ptr);
-	for (int t = 0; t < in->num_triangles; t++)
+	for (uint32_t t = 0; t < num_tris; t++)
 	{
-		tris[t].pad = 0;
-		tris[t].material = (in->tri_materials && (int)in->tri_materials[t] < in->num_materials) ? in->tri_materials[t] : 0;
+		GpuTri &out = tris[place[t]];
+		out.pad = 0;
+		out.material = material_of(t);
 		for (int k = 0; k < 3; k++)
 		{
 			const uint32_t v = in->indices[t * 3 + k];
-			memcpy(&corners[t * 9 + k * 3], &in->positions[v * 3], 12);
-			tris[t].uv[k * 2] = in->uvs ? in->uvs[v * 2] : 0.0f;
-			tris[t].uv[k * 2 + 1] = in->uvs ? in->uvs[v * 2 + 1] : 0.0f;
+			memcpy(&corners[place[t] * 9 + k * 3], &in->positions[v * 3], 12);
+			out.uv[k * 2] = in->uvs ? in->uvs[v * 2] : 0.0f;
+			out.uv[k * 2 + 1] = in->uvs ? in->uvs[v * 2 + 1] : 0.0f;
 		}
 	}
 
 	GpuMaterial *materials = static_cast<GpuMaterial *>(s->world.materials.ptr);
 	if (in->num_materials <= 0)
-		materials[0] = GpuMaterial{-1, 0, 1.0f, 1.0f, {0, 0, 0, 0}};
+	{
+		const pt_material_t plain{};
+		SetMaterial(s, materials[0], plain, [](int) { return -1; });
+		materials[0].alpha = 1.0f;
+		materials[0].roughness = 1.0f;
+	}
+	s->world_has_waves = false;
 	for (int i = 0; i < in->num_materials; i++)
-		SetMaterial(s, materials[i], in->materials[i], slot(in->materials[i].texture));
+	{
+		SetMaterial(s, materials[i], in->materials[i], slot);
+		const int then = in->materials[i].anim_next;
+		if (then >= 0 && then < in->num_materials && then != i)
+			materials[i].anim_next = then;
+		if (in->materials[i].flags & PT_MAT_WAVES)
+			s->world_has_waves = true;
+	}
+	for (int i = 0; i < in->num_materials; i++)
+	{
+		// animations loop; count the steps until this one comes round again
+		int length = 1;
+		for (int n = materials[i].anim_next; n >= 0 && n != i && length < 64; n = materials[n].anim_next)
+			length++;
+		materials[i].anim_length = length;
+	}
 
-	s->world.num_tris = (uint32_t)in->num_triangles;
+	// The lights, where to look for them from each part of the map, and the
+	// sky as a light: worked out by the same code the CPU backend uses.
+	const std::unique_ptr<pt::World> w = pt::BuildWorld(in);
+	const pt::LightGrid &grid = w->grid;
+	const size_t num_lights = w->lights.size();
+	const size_t cells = grid.count.size();
+	const size_t sky_cells = w->sky_cdf.size();
+
+	Room(s, s->world_lights, std::max<size_t>(num_lights, 1) * sizeof(GpuLight), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+	GpuLight *lights = static_cast<GpuLight *>(s->world_lights.ptr);
+	for (size_t i = 0; i < num_lights; i++)
+	{
+		const pt::Light &l = w->lights[i];
+		GpuLight &out = lights[i];
+		memset(&out, 0, sizeof(out));
+		out.tri = l.tri == ~0u ? ~0u : place[l.tri];
+		out.pdf = l.pdf;
+		out.cone_cos = l.cone_cos;
+		out.style = l.style;
+		for (int a = 0; a < 3; a++)
+		{
+			out.origin[a] = l.origin[a];
+			out.emission[a] = l.emission[a];
+			out.dir[a] = l.dir[a];
+		}
+	}
+
+	// tables: the light styles, then whatever the frame block says is where
+	s->table_light_cdf = kNumStyles;
+	s->table_grid_pdf = s->table_light_cdf + (int)num_lights;
+	s->table_grid_cdf = s->table_grid_pdf + (int)grid.pdf.size();
+	s->table_sky_chance = s->table_grid_cdf + (int)grid.cdf.size();
+	s->table_sky_cdf = s->table_sky_chance + (int)w->sky_chance.size();
+	const size_t num_floats = (size_t)s->table_sky_cdf + sky_cells;
+	Room(s, s->tables, num_floats * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+	float *tables = static_cast<float *>(s->tables.ptr);
+	for (int i = 0; i < kNumStyles; i++)
+		tables[i] = 1.0f;
+	const auto put = [&](int at, const std::vector<float> &v)
+	{
+		if (!v.empty())
+			memcpy(&tables[at], v.data(), v.size() * sizeof(float));
+	};
+	put(s->table_light_cdf, w->light_cdf);
+	put(s->table_grid_pdf, grid.pdf);
+	put(s->table_grid_cdf, grid.cdf);
+	put(s->table_sky_chance, w->sky_chance);
+	put(s->table_sky_cdf, w->sky_cdf);
+
+	s->index_grid_light = 0;
+	s->index_grid_count = (int)grid.light.size();
+	Room(s, s->indices, std::max<size_t>(grid.light.size() + cells, 1) * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+	uint32_t *index = static_cast<uint32_t *>(s->indices.ptr);
+	for (size_t i = 0; i < grid.light.size(); i++)
+		index[i] = grid.light[i];
+	for (size_t i = 0; i < cells; i++)
+		index[grid.light.size() + i] = grid.count[i];
+
+	s->num_world_lights = (int)num_lights;
+	s->has_grid = cells > 0 && w->sky_chance.size() == cells;
+	for (int a = 0; a < 3; a++)
+	{
+		s->grid_origin[a] = grid.origin[a];
+		s->grid_dims[a] = grid.dims[a];
+	}
+	s->grid_inv_cell = grid.inv_cell;
+	s->sky_res = sky_cells ? w->sky_res : 0;
+	s->sky_total = w->sky_total;
+	s->sky_scale = w->sky_scale;
+	ShowBuffers(s);
+
+	s->world.num_solid = num_solid;
+	s->world.num_glass = num_tris - num_solid;
 	VkCommandBuffer cmd = BeginOnce(s);
-	BuildAccel(s, cmd, s->world.blas, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-		TriangleGeometry(s->world.corners.address, s->world.num_tris), s->world.num_tris, kWorldBuild);
+	if (s->world.num_solid)
+		BuildAccel(s, cmd, s->world.solid, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+			TriangleGeometry(s->world.corners.address, s->world.num_solid), s->world.num_solid, kWorldBuild);
+	if (s->world.num_glass)
+		BuildAccel(s, cmd, s->world.glass, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+			TriangleGeometry(s->world.corners.address + (VkDeviceAddress)s->world.num_solid * 36, s->world.num_glass),
+			s->world.num_glass, kWorldBuild);
 	EndOnce(s);
 
 	for (int f = 0; f < 6; f++)
 		s->sky[f] = slot(in->sky_textures[f]);
 	s->world_loaded = true;
-	Logf(s, "RTX path tracer: %d triangles, %d materials, %d textures on the card\n",
-		in->num_triangles, in->num_materials, in->num_textures);
+	Logf(s, "RTX path tracer: %d triangles (%u of them glass or liquid), %d materials, %d textures, %d lights on the card\n",
+		in->num_triangles, s->world.num_glass, in->num_materials, in->num_textures, (int)num_lights);
+}
+
+uint32_t HashBytes(const void *data, size_t bytes, uint32_t h)
+{
+	const uint8_t *p = static_cast<const uint8_t *>(data);
+	for (size_t i = 0; i < bytes; i++)
+		h = (h ^ p[i]) * 16777619u;
+	return h;
+}
+
+const float kTypicalTarget = 0.0054f;	// the brightness the exposure aims the typical pixel at
+
+// The eye adapts: measured on the last frame's picture, and followed over
+// about a second so that it does not pump.
+void AdaptExposure(RtxBackend *s, const pt_view_t *view)
+{
+	uint32_t *meter = static_cast<uint32_t *>(s->meter.ptr);
+	const uint32_t sum = meter[0], count = meter[1];
+	meter[0] = meter[1] = 0;
+	if (!count || s->exposure_used <= 0.0f)
+		return;
+
+	const float typical = std::exp((float)sum / (256.0f * count) - 16.0f) / s->exposure_used;
+	if (typical <= 0.0f)
+		return;
+	const float want = std::min(16.0f, std::max(0.125f, kTypicalTarget / typical));
+	const float dt = view->time - s->prev_time;
+	if (!s->have_exposure || dt < 0.0f || dt > 1.0f)
+		s->auto_exposure = want;
+	else
+		s->auto_exposure += (want - s->auto_exposure) * (1.0f - std::exp(-dt * 2.5f));
+	s->have_exposure = true;
+}
+
+void RecordUpdates(RtxBackend *s, VkCommandBuffer cmd);
+void RecordTrace(RtxBackend *s, VkCommandBuffer cmd);
+
+// Traces a view that is waiting to be, at once instead of as part of the
+// frame that shows it: when its picture is wanted before then, or another
+// view is about to take its place (the passes of a screenshot).
+void TraceNow(RtxBackend *s)
+{
+	if (!s->trace_pending)
+		return;
+	VkCommandBuffer cmd = BeginOnce(s);
+	if (!s->pending.empty())
+		RecordUpdates(s, cmd);
+	RecordTrace(s, cmd);
+	EndOnce(s);
+	s->trace_pending = false;
 }
 
 // what moves this frame, and the view: all the tracer needs to be told
 void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 {
+	TraceNow(s);
 	s->view = *view;
 	s->has_view = true;
 	s->trace_ready = false;
+	s->view_rect[0] = view->x;
+	s->view_rect[1] = view->y;
+	s->view_rect[2] = view->width;
+	s->view_rect[3] = view->height;
 	s->stats[0] = 0;
 	if (!s->world_loaded || view->width <= 0 || view->height <= 0)
 		return;
@@ -1471,89 +1926,330 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	const int rw = std::max(1, (int)(view->width * scale + 0.5f));
 	const int rh = std::max(1, (int)(view->height * scale + 0.5f));
 	if (rw != s->trace_width || rh != s->trace_height)
-		MakeTracePicture(s, rw, rh);
+		MakeTargets(s, rw, rh);
+	if (view->restart)
+		s->has_history = false;
 
+	// ---- what moves
 	const pt_scene_t *scene = view->scene;
 	const uint32_t n = (scene && scene->positions && scene->num_triangles > 0) ? (uint32_t)scene->num_triangles : 0;
 	const uint32_t num_materials = (scene && scene->num_materials > 0) ? (uint32_t)scene->num_materials : 0;
-	if (Reserve(s, s->frame, n, std::max(num_materials, 1u), kFrameBuild, true))
-		ShowGeometry(s);
+	const uint32_t num_lights = (scene && scene->lights && scene->num_lights > 0) ? (uint32_t)scene->num_lights : 0;
+	bool changed = Reserve(s, s->frame, n, std::max(num_materials, 1u), kFrameBuild, true);
+	changed |= Room(s, s->frame_lights, std::max(num_lights, 1u) * sizeof(GpuLight), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+	if (changed)
+		ShowBuffers(s);
 
+	GpuMaterial *materials = static_cast<GpuMaterial *>(s->frame.materials.ptr);
+	{
+		const pt_material_t plain{};
+		SetMaterial(s, materials[0], plain, [](int) { return -1; });
+		materials[0].alpha = 1.0f;
+		materials[0].roughness = 1.0f;
+	}
+	for (uint32_t i = 0; i < num_materials; i++)
+		SetMaterial(s, materials[i], scene->materials[i], [](int handle) { return handle; });
+
+	// solid triangles first, then the glass
+	uint32_t hash = 2166136261u;
+	uint32_t num_solid = 0;
 	if (n)
 	{
-		memcpy(s->frame.corners.ptr, scene->positions, (size_t)n * 36);
+		const auto material_of = [&](uint32_t t)
+		{
+			return (scene->tri_materials && scene->tri_materials[t] < num_materials) ? scene->tri_materials[t] : 0u;
+		};
+		float *corners = static_cast<float *>(s->frame.corners.ptr);
+		float *normals = static_cast<float *>(s->frame.normals.ptr);
+		float *prev = static_cast<float *>(s->frame.prev.ptr);
 		GpuTri *tris = static_cast<GpuTri *>(s->frame.tris.ptr);
+
+		for (uint32_t t = 0; t < n; t++)
+			if (!num_materials || !OneSided(scene->materials[material_of(t)]))
+				num_solid++;
+		uint32_t at_solid = 0, at_glass = num_solid;
 		for (uint32_t t = 0; t < n; t++)
 		{
+			const uint32_t m = material_of(t);
+			const uint32_t to = (!num_materials || !OneSided(scene->materials[m])) ? at_solid++ : at_glass++;
+			memcpy(&corners[to * 9], &scene->positions[t * 9], 36);
+			if (scene->normals)
+				memcpy(&normals[to * 9], &scene->normals[t * 9], 36);
+			if (scene->prev_positions)
+				memcpy(&prev[to * 9], &scene->prev_positions[t * 9], 36);
 			if (scene->uvs)
-				memcpy(tris[t].uv, &scene->uvs[t * 6], 24);
+				memcpy(tris[to].uv, &scene->uvs[t * 6], 24);
 			else
-				memset(tris[t].uv, 0, 24);
-			tris[t].material = (scene->tri_materials && scene->tri_materials[t] < num_materials) ? scene->tri_materials[t] : 0;
-			tris[t].pad = 0;
+				memset(tris[to].uv, 0, 24);
+			tris[to].material = m;
+			tris[to].pad = 0;
+		}
+		hash = HashBytes(scene->positions, (size_t)n * 36, hash);
+	}
+	s->frame.num_solid = num_solid;
+	s->frame.num_glass = n - num_solid;
+
+	GpuLight *lights = static_cast<GpuLight *>(s->frame_lights.ptr);
+	for (uint32_t i = 0; i < num_lights; i++)
+	{
+		memset(&lights[i], 0, sizeof(GpuLight));
+		lights[i].tri = ~0u;
+		for (int a = 0; a < 3; a++)
+		{
+			lights[i].origin[a] = scene->lights[i].origin[a];
+			lights[i].emission[a] = scene->lights[i].intensity[a];
 		}
 	}
-	GpuMaterial *materials = static_cast<GpuMaterial *>(s->frame.materials.ptr);
-	materials[0] = GpuMaterial{-1, 0, 1.0f, 1.0f, {0, 0, 0, 0}};
-	for (uint32_t i = 0; i < num_materials; i++)
-		SetMaterial(s, materials[i], scene->materials[i], scene->materials[i].texture);	// already a slot
-	s->frame.num_tris = n;
+	if (num_lights)
+		hash = HashBytes(scene->lights, num_lights * sizeof(pt_point_light_t), hash);
 
+	// ---- the instances: the map, its glass, what moves, its glass
 	VkAccelerationStructureInstanceKHR *inst = static_cast<VkAccelerationStructureInstanceKHR *>(s->instances.ptr);
-	memset(inst, 0, 2 * sizeof(*inst));
-	for (int i = 0; i < 2; i++)
+	const struct { const Accel *blas; uint32_t count; } parts[4] = {
+		{&s->world.solid, s->world.num_solid}, {&s->world.glass, s->world.num_glass},
+		{&s->frame.solid, s->frame.num_solid}, {&s->frame.glass, s->frame.num_glass},
+	};
+	s->num_instances = 0;
+	for (uint32_t i = 0; i < 4; i++)
 	{
-		inst[i].transform.matrix[0][0] = inst[i].transform.matrix[1][1] = inst[i].transform.matrix[2][2] = 1.0f;
-		inst[i].instanceCustomIndex = (uint32_t)i;		// the shader tells them apart by this
-		inst[i].mask = 0xff;
-		inst[i].flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-		inst[i].accelerationStructureReference = i == 0 ? s->world.blas.address : s->frame.blas.address;
+		if (!parts[i].count)
+			continue;
+		VkAccelerationStructureInstanceKHR &out = inst[s->num_instances++];
+		memset(&out, 0, sizeof(out));
+		out.transform.matrix[0][0] = out.transform.matrix[1][1] = out.transform.matrix[2][2] = 1.0f;
+		out.instanceCustomIndex = i;		// the shaders tell them apart by this
+		out.mask = 0xff;
+		// rays are told to pass through the backs of triangles; only glass heeds that
+		out.flags = (i & 1) ? VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR
+			: VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+		out.accelerationStructureReference = parts[i].blas->address;
 	}
 
-	s->trace_ready = true;
-	snprintf(s->stats, sizeof(s->stats), "%dx%d|%u + %u triangles|no lighting yet", rw, rh, s->world.num_tris, n);
-}
+	// ---- the view
+	AdaptExposure(s, view);
 
-// traces the view into the picture; part of the frame's commands
-void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
-{
-	if (s->frame.num_tris)
-	{
-		BuildAccel(s, cmd, s->frame.blas, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-			TriangleGeometry(s->frame.corners.address, s->frame.num_tris), s->frame.num_tris, kFrameBuild);
-		AfterBuild(cmd, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
-	}
-	BuildAccel(s, cmd, s->tlas, VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-		InstanceGeometry(s->instances.address), s->frame.num_tris ? 2 : 1, kFrameBuild);
-	AfterBuild(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
-
-	// all of it is written afresh, so what it held need not be kept
-	Barrier(cmd, s->trace_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-		VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_NONE,
-		VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-
-	const pt_view_t &v = s->view;
-	TracePush push{};
+	FrameBlock &f = *static_cast<FrameBlock *>(s->frame_block.ptr);
+	FrameBlock was = f;
+	memset(&f, 0, sizeof(f));
 	for (int i = 0; i < 3; i++)
 	{
-		push.origin[i] = v.origin[i];
-		push.forward[i] = v.forward[i];
-		push.right[i] = v.right[i];
-		push.up[i] = v.up[i];
+		f.origin[i] = view->origin[i];
+		f.forward[i] = view->forward[i];
+		f.right[i] = view->right[i];
+		f.up[i] = view->up[i];
+		f.sky_turn[i] = 0.0f;
+		f.grid_origin[i] = s->grid_origin[i];
+		f.grid_dims[i] = s->grid_dims[i];
+		f.medium[i] = view->medium_absorb[i];
 	}
-	push.origin[3] = std::tan(v.fov_x * 0.5f * 3.14159265f / 180.0f);
-	push.forward[3] = std::tan(v.fov_y * 0.5f * 3.14159265f / 180.0f);
-	for (int i = 0; i < 8; i++)
-		push.sky[i] = i < 6 ? s->sky[i] : -1;
+	f.origin[3] = std::tan(view->fov_x * 0.5f * 3.14159265f / 180.0f);
+	f.forward[3] = std::tan(view->fov_y * 0.5f * 3.14159265f / 180.0f);
+	const bool same_camera = s->has_history && !memcmp(f.origin, was.origin, 16 * sizeof(float));
+	memcpy(f.prev_origin, was.origin, 16 * sizeof(float));		// origin, forward, right, up
 
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s->trace_pipeline);
+	for (int i = 0; i < 4; i++)
+	{
+		f.sky_a[i] = s->sky[i];
+		f.sky_b[i] = i < 2 ? s->sky[4 + i] : -1;
+	}
+	{
+		// the sky box turns about an axis
+		float axis[3] = {view->sky_axis[0], view->sky_axis[1], view->sky_axis[2]};
+		const float len = std::sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+		float angle = 0.0f;
+		if (len > 0.0f && view->sky_angle != 0.0f)
+		{
+			for (float &a : axis)
+				a /= len;
+			angle = view->sky_angle * 3.14159265f / 180.0f;
+		}
+		else
+		{
+			axis[0] = axis[1] = 0.0f;
+			axis[2] = 1.0f;
+		}
+		f.sky_turn[0] = axis[0];
+		f.sky_turn[1] = axis[1];
+		f.sky_turn[2] = axis[2];
+		f.sky_turn[3] = std::sin(angle);
+		f.sky_misc[0] = std::cos(angle);
+		hash = HashBytes(&angle, sizeof(angle), hash);
+	}
+	f.sky_misc[1] = s->sky_scale;
+	f.sky_misc[2] = s->sky_total;
+	f.sky_misc[3] = view->time;
+
+	s->frame_index++;
+	f.counts[0] = s->num_world_lights;
+	f.counts[1] = (int32_t)num_lights;
+	f.counts[2] = (int32_t)s->frame_index;
+	f.counts[3] = view->anim_frame;
+	f.bases[1] = (int32_t)s->world.num_solid;
+	f.bases[3] = (int32_t)s->frame.num_solid;
+	f.grid_dims[3] = s->has_grid ? 1 : 0;
+	f.grid_origin[3] = s->grid_inv_cell;
+	f.table_at[0] = s->table_light_cdf;
+	f.table_at[1] = s->table_grid_pdf;
+	f.table_at[2] = s->table_grid_cdf;
+	f.table_at[3] = s->table_sky_chance;
+	f.table_at2[0] = s->table_sky_cdf;
+	f.table_at2[1] = s->sky_res;
+	f.table_at2[2] = s->index_grid_light;
+	f.table_at2[3] = s->index_grid_count;
+
+	const int bounces = std::max(0, view->bounces);
+	const int paths = std::min(std::max(1, view->samples), 64);
+	f.settings[0] = bounces;
+	f.settings[1] = view->light_samples > 0 ? std::min(view->light_samples, 64) : 8;
+	f.settings[2] = view->reflections;
+	f.settings[3] = std::max(1, view->reflection_bounces > 0 ? view->reflection_bounces : bounces);
+	f.settings_f[0] = view->firefly_clamp > 0.0f ? view->firefly_clamp : 40.0f;
+	f.settings_f[1] = std::max(0.0f, view->reflection_rate);
+	f.settings_f[2] = std::max(0.0f, view->wave_strength);
+	f.settings_f[3] = view->fog ? std::min(std::max(view->fog_density, 0.0f), 0.05f) : 0.0f;
+	f.settings2[0] = view->refraction != 0;
+	f.settings2[1] = view->texture_filter != 0;
+	f.settings2[2] = paths;
+	f.settings2[3] = view->debug;
+
+	s->exposure_used = view->debug ? 1.0f : view->exposure * (view->auto_exposure ? s->auto_exposure : 1.0f);
+	f.medium[3] = s->exposure_used;
+	s->filter_passes = std::min(std::max(view->denoise, 0), 4);
+	f.output_i[0] = view->tonemap;
+	f.output_i[1] = s->filter_passes;
+	f.output_i[2] = std::min(std::max(view->history, 1), 512);
+	f.output_i[3] = s->has_history ? 1 : 0;
+	f.output_f[0] = view->saturation;
+	f.output_f[1] = view->contrast;
+	f.output_f[2] = view->bloom;
+
+	// the light styles, which flicker
+	float *tables = static_cast<float *>(s->tables.ptr);
+	for (int i = 0; i < kNumStyles; i++)
+		tables[i] = (view->light_styles && i < view->num_light_styles) ? view->light_styles[i] : 1.0f;
+	hash = HashBytes(tables, kNumStyles * sizeof(float), hash);
+
+	// everything outside the camera that changes the picture
+	hash = HashBytes(&view->anim_frame, sizeof(view->anim_frame), hash);
+	hash = HashBytes(f.settings, sizeof(f.settings) + sizeof(f.settings_f) + sizeof(f.settings2), hash);
+	hash = HashBytes(&view->exposure, sizeof(view->exposure), hash);
+	if (s->world_has_waves || s->pending.size())
+		hash = HashBytes(&view->time, sizeof(view->time), hash);
+	// with nothing changing the average may run on and converge
+	const bool still = same_camera && hash == s->prev_hash;
+	s->prev_hash = hash;
+	f.output_f[3] = still ? 1.0f : 0.0f;
+
+	s->parity ^= 1;
+	f.frame_has[0] = (scene && scene->normals) ? 1 : 0;
+	f.frame_has[1] = (scene && scene->prev_positions) ? 1 : 0;
+	f.frame_has[2] = s->parity;
+	f.size[0] = rw;
+	f.size[1] = rh;
+
+	s->prev_time = view->time;
+	s->trace_ready = true;
+	s->trace_pending = true;
+	snprintf(s->stats, sizeof(s->stats), "%dx%d %dspp %db|%u + %u triangles, %d + %u lights|exp %.2f%s",
+		rw, rh, paths, bounces, s->world.num_solid + s->world.num_glass, n, s->num_world_lights, num_lights,
+		s->exposure_used, still ? " still" : "");
+}
+
+// what one pass has written, the next may read
+void BetweenPasses(VkCommandBuffer cmd, VkPipelineStageFlags2 next_stage, VkAccessFlags2 next_access)
+{
+	VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+	b.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+	b.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+	b.dstStageMask = next_stage;
+	b.dstAccessMask = next_access;
+	VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+	di.memoryBarrierCount = 1;
+	di.pMemoryBarriers = &b;
+	vkCmdPipelineBarrier2(cmd, &di);
+}
+
+// pictures the host has changed since the last frame (the wave maps of
+// simulated water): bring the card's copies up to date
+void RecordUpdates(RtxBackend *s, VkCommandBuffer cmd)
+{
+	for (const Pending &p : s->pending)
+	{
+		const Texture &t = s->textures[p.slot];
+		if (!t.image)
+			continue;
+		Barrier(cmd, t.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+			VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+		VkBufferImageCopy region{};
+		region.bufferOffset = p.offset;
+		region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+		region.imageExtent = {(uint32_t)t.width, (uint32_t)t.height, 1};
+		vkCmdCopyBufferToImage(cmd, s->updates.buffer, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+		Barrier(cmd, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+			VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	}
+	s->pending.clear();
+	s->updates_used = 0;
+}
+
+// traces the view and makes the picture of it; part of the frame's commands
+void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
+{
+	// the acceleration structures of what moves, then the one over everything
+	const struct { const Accel *blas; VkDeviceAddress corners; uint32_t count; } parts[2] = {
+		{&s->frame.solid, s->frame.corners.address, s->frame.num_solid},
+		{&s->frame.glass, s->frame.corners.address + (VkDeviceAddress)s->frame.num_solid * 36, s->frame.num_glass},
+	};
+	bool built = false;
+	for (const auto &p : parts)
+	{
+		if (!p.count)
+			continue;
+		BuildAccel(s, cmd, *p.blas, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+			TriangleGeometry(p.corners, p.count), p.count, kFrameBuild);
+		built = true;
+	}
+	if (built)
+		AfterBuild(cmd, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
+	BuildAccel(s, cmd, s->tlas, VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+		InstanceGeometry(s->instances.address), s->num_instances, kFrameBuild);
+	AfterBuild(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+
+	const uint32_t gx = ((uint32_t)s->trace_width + 7) / 8, gy = ((uint32_t)s->trace_height + 7) / 8;
+	const VkAccessFlags2 rw = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s->trace_playout, 0, 1, &s->trace_dset, 0, nullptr);
-	vkCmdPushConstants(cmd, s->trace_playout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-	vkCmdDispatch(cmd, ((uint32_t)s->trace_width + 7) / 8, ((uint32_t)s->trace_height + 7) / 8, 1);
+	const auto run = [&](VkPipeline pipeline, int a, int b, int c)
+	{
+		const PassPush push{a, b, c, 0};
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+		vkCmdPushConstants(cmd, s->trace_playout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+		vkCmdDispatch(cmd, gx, gy, 1);
+	};
 
-	Barrier(cmd, s->trace_image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-		VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-		VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	// a ray and its paths for every pixel
+	run(s->trace_pipeline, 0, 0, 0);
+	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
+
+	// gathered with what earlier frames saw
+	run(s->temporal_pipeline, 0, 0, 0);
+	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
+
+	// filtered, each pass reading what the one before wrote
+	int source = 0;
+	for (int i = 0; i < s->filter_passes; i++)
+	{
+		run(s->atrous_pipeline, source, i & 1, 1 << i);
+		BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
+		source = 1 + (i & 1);
+	}
+
+	// and put together for the screen
+	run(s->compose_pipeline, source, 0, 0);
+	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+	s->has_history = true;
 }
 
 // -------------------------------------------------- the backend's entries
@@ -1612,15 +2308,114 @@ void TextureDestroy(pt_backend_t *b, int handle)
 	RemoveTexture(Self(b), handle);
 }
 
-// Nothing reads the pictures that change (the wave maps of simulated water)
-// yet, so there is nothing to bring up to date.
-void TextureUpdate(pt_backend_t *, int, const uint32_t *)
+// New pixels for a texture. They are kept until the next frame is drawn and
+// go to the card as part of it.
+void TextureUpdate(pt_backend_t *b, int handle, const uint32_t *pixels)
 {
+	RtxBackend *s = Self(b);
+	if (handle < 0 || handle >= (int)kMaxTextures || !s->textures[handle].image || !pixels)
+		return;
+	try
+	{
+		const Texture &t = s->textures[handle];
+		const VkDeviceSize bytes = (VkDeviceSize)t.width * t.height * 4;
+		// the card may still be copying from here for the last frame
+		if (s->pending.empty())
+			vkWaitForFences(s->device, 1, &s->fence, VK_TRUE, UINT64_MAX);
+		if (!s->updates.buffer || s->updates_used + bytes > s->updates.size)
+		{
+			if (!s->pending.empty())
+				return;		// no room left this frame; the next will do
+			vkQueueWaitIdle(s->queue);
+			FreeBuffer(s, s->updates);
+			s->updates = MakeBuffer(s, std::max<VkDeviceSize>(bytes * 8, 1 << 20), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+		}
+		memcpy(static_cast<uint8_t *>(s->updates.ptr) + s->updates_used, pixels, (size_t)bytes);
+		s->pending.push_back(Pending{handle, s->updates_used});
+		s->updates_used += bytes;
+	}
+	catch (const Fail &f)
+	{
+		Logf(s, "RTX path tracer: %s\n", f.msg.c_str());
+	}
 }
 
-int ReadPixels(pt_backend_t *, uint32_t *, int)
+// The picture last presented, put together again here: the traced picture
+// stretched over the view as the last pass stretches it, and the overlay.
+int ReadPixels(pt_backend_t *b, uint32_t *pixels, int with_overlay)
 {
-	return 0;
+	RtxBackend *s = Self(b);
+	const Target &picture = s->targets[kPicture];
+	if (!picture.image)
+		return 0;
+	try
+	{
+		TraceNow(s);
+		const int tw = s->trace_width, th = s->trace_height;
+		const VkDeviceSize bytes = (VkDeviceSize)tw * th * 4;
+		vkQueueWaitIdle(s->queue);
+		if (!s->readback.buffer || s->readback.size < bytes)
+		{
+			FreeBuffer(s, s->readback);
+			s->readback = MakeBuffer(s, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+		}
+		VkCommandBuffer cmd = BeginOnce(s);
+		VkBufferImageCopy region{};
+		region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+		region.imageExtent = {(uint32_t)tw, (uint32_t)th, 1};
+		vkCmdCopyImageToBuffer(cmd, picture.image, VK_IMAGE_LAYOUT_GENERAL, s->readback.buffer, 1, &region);
+		EndOnce(s);
+
+		const uint32_t *traced = static_cast<const uint32_t *>(s->readback.ptr);
+		const uint32_t *overlay = static_cast<const uint32_t *>(s->staging_ptr);
+		// a view made since the last frame was shown can be read already
+		const int *rect = s->has_view ? s->view_rect : s->shown;
+		const bool traced_now = s->has_view ? s->trace_ready : s->shown_traced;
+		for (int y = 0; y < s->height; y++)
+		{
+			for (int x = 0; x < s->width; x++)
+			{
+				uint32_t c = 0xff000000u;
+				if (traced_now && x >= rect[0] && y >= rect[1] && x < rect[0] + rect[2] && y < rect[1] + rect[3])
+				{
+					// between the four nearest, as the card's sampler does it
+					const float fx = (x + 0.5f - rect[0]) * tw / rect[2] - 0.5f;
+					const float fy = (y + 0.5f - rect[1]) * th / rect[3] - 0.5f;
+					const int x0 = std::min(std::max((int)std::floor(fx), 0), tw - 1), x1 = std::min(x0 + 1, tw - 1);
+					const int y0 = std::min(std::max((int)std::floor(fy), 0), th - 1), y1 = std::min(y0 + 1, th - 1);
+					const float ax = std::min(std::max(fx - x0, 0.0f), 1.0f), ay = std::min(std::max(fy - y0, 0.0f), 1.0f);
+					const uint32_t p[4] = {traced[y0 * tw + x0], traced[y0 * tw + x1], traced[y1 * tw + x0], traced[y1 * tw + x1]};
+					c = 0xff000000u;
+					for (int ch = 0; ch < 3; ch++)
+					{
+						const float top = ((p[0] >> (ch * 8)) & 255) * (1.0f - ax) + ((p[1] >> (ch * 8)) & 255) * ax;
+						const float bottom = ((p[2] >> (ch * 8)) & 255) * (1.0f - ax) + ((p[3] >> (ch * 8)) & 255) * ax;
+						c |= (uint32_t)(top * (1.0f - ay) + bottom * ay + 0.5f) << (ch * 8);
+					}
+				}
+				if (with_overlay)
+				{
+					// premultiplied: its colour, plus what it leaves of the view
+					const uint32_t o = overlay[(size_t)y * s->width + x];
+					const uint32_t keep = 255 - (o >> 24);
+					uint32_t out = 0xff000000u;
+					for (int ch = 0; ch < 3; ch++)
+					{
+						const uint32_t v = ((o >> (ch * 8)) & 255) + (((c >> (ch * 8)) & 255) * keep + 127) / 255;
+						out |= std::min(v, 255u) << (ch * 8);
+					}
+					c = out;
+				}
+				pixels[(size_t)y * s->width + x] = c;
+			}
+		}
+	}
+	catch (const Fail &f)
+	{
+		Logf(s, "RTX path tracer: %s\n", f.msg.c_str());
+		return 0;
+	}
+	return 1;
 }
 
 void Record(RtxBackend *s, uint32_t image_index)
@@ -1646,8 +2441,13 @@ void Record(RtxBackend *s, uint32_t image_index)
 		VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 	s->ov_initialized = true;
 
-	if (s->trace_ready)
+	if (!s->pending.empty())
+		RecordUpdates(s, cmd);
+	if (s->trace_pending)
+	{
 		RecordTrace(s, cmd);
+		s->trace_pending = false;
+	}
 
 	Barrier(cmd, s->swap_images[image_index], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_NONE,
@@ -1761,8 +2561,11 @@ void Present(pt_backend_t *b, const uint32_t *overlay)
 		// nothing useful to do mid-frame; say so and keep the game alive
 		Logf(s, "RTX path tracer: %s\n", f.msg.c_str());
 	}
+	memcpy(s->shown, s->view_rect, sizeof(s->shown));
+	s->shown_traced = s->has_view && s->trace_ready;
 	s->has_view = false;
 	s->trace_ready = false;
+	s->trace_pending = false;
 }
 
 void Destroy(pt_backend_t *b)
