@@ -55,6 +55,7 @@ static cvar_t	*pt_lamp_glow;			// how bright lamp fixtures look to the eye
 static cvar_t	*pt_surface_light;		// scales the light from glowing surfaces
 static cvar_t	*pt_point_light;			// scales the map's point lights
 static cvar_t	*pt_liquid_glow;			// glowing slime and lava light whole rooms; this reins them in
+static cvar_t	*pt_detail_glow;			// screens, buttons and indicator lights
 
 // reflections
 static cvar_t	*pt_reflections;		// 0 none, 1 glass and water, 2 everything shiny
@@ -71,6 +72,7 @@ static cvar_t	*pt_metallic;
 float	r_skyscale = 2;
 float	r_lampglow = 1.5f;
 float	r_surfacelight = 1, r_pointlight = 1, r_liquidglow = 0.25f;
+float	r_detailglow = 1;
 float	r_bumpscale = 1, r_roughscale = 1, r_metalscale = 1;
 
 #define	NUM_PRESETS	4
@@ -132,6 +134,7 @@ void R_InitSettings (void)
 	pt_surface_light = ri.Cvar_Get ("pt_surface_light", "1", CVAR_ARCHIVE);
 	pt_point_light = ri.Cvar_Get ("pt_point_light", "1", CVAR_ARCHIVE);
 	pt_liquid_glow = ri.Cvar_Get ("pt_liquid_glow", "0.25", CVAR_ARCHIVE);
+	pt_detail_glow = ri.Cvar_Get ("pt_detail_glow", "1", CVAR_ARCHIVE);
 
 	pt_reflections = ri.Cvar_Get ("pt_reflections", "2", CVAR_ARCHIVE);
 	pt_reflection_bounces = ri.Cvar_Get ("pt_reflection_bounces", "0", CVAR_ARCHIVE);
@@ -148,6 +151,7 @@ void R_InitSettings (void)
 	r_surfacelight = pt_surface_light->value;
 	r_pointlight = pt_point_light->value;
 	r_liquidglow = pt_liquid_glow->value;
+	r_detailglow = pt_detail_glow->value;
 	r_bumpscale = pt_bump->value;
 	r_roughscale = pt_roughness->value;
 	r_metalscale = pt_metallic->value;
@@ -215,8 +219,9 @@ qboolean R_UpdateSettings (void)
 
 	if (pt_sky->value != r_skyscale || pt_lamp_glow->value != r_lampglow
 		|| pt_surface_light->value != r_surfacelight || pt_point_light->value != r_pointlight
-		|| pt_liquid_glow->value != r_liquidglow)
+		|| pt_liquid_glow->value != r_liquidglow || pt_detail_glow->value != r_detailglow)
 	{
+		r_detailglow = pt_detail_glow->value;
 		r_skyscale = pt_sky->value;
 		r_lampglow = pt_lamp_glow->value;
 		r_surfacelight = pt_surface_light->value;

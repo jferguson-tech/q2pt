@@ -49,8 +49,8 @@ static const struct
 	{ "wndow window wndw brwind glass", { 0.08f, 0.0f, 0.2f } },
 	{ "rock mine cindr cinder cindb geowal sand mud grass brick marble flesh blood dirt stone drag crys pyramid mont rrock", { 0.90f, 0.0f, 1.0f } },
 	{ "lava", { 0.70f, 0.0f, 1.2f } },
-	{ "comp mon sign num arrow keypad but btn swt exit location caution banner lever", { 0.30f, 0.0f, 0.6f } },
-	{ "light lite baselt wslt wstlt redlt ctylt pallt minlt grlt rlight tlight citlit geolit prwlt lsrlt lzr glo", { 0.35f, 0.1f, 0.5f } },
+	{ "comp mon sign num arrow keypad but btn swt exit location caution banner lever", { 0.30f, 0.0f, 0.6f, 1.0f } },
+	{ "light lite baselt wslt wstlt redlt ctylt pallt minlt grlt rlight tlight citlit geolit prwlt lsrlt lzr glo", { 0.35f, 0.1f, 0.5f, 1.5f } },
 	{ "grate grat wire cable pip duc", { 0.40f, 0.7f, 0.9f } },
 	{ "floor flr flor stairs plat", { 0.45f, 0.4f, 0.7f } },
 	{ "metal met mtl metl mach support supprt door dr belt tram train turret lead thinm troof slot notch pilr pillar "
@@ -202,7 +202,7 @@ void R_MaterialInfo (const char *name, matinfo_t *info)
 R_InitMaterials
 
 Reads pt_materials.txt if there is one. Each line is
-	<path with * wildcards> <roughness> <metallic> <bump>
+	<path with * wildcards> <roughness> <metallic> <bump> [glow]
 and anything after # is a comment. Earlier lines win.
 ===============
 */
@@ -234,8 +234,9 @@ void R_InitMaterials (void)
 		if (mat_numuserrules == MAX_MATRULES)
 			break;
 		rule = &mat_userrules[mat_numuserrules];
-		if (sscanf (line, "%47s %f %f %f", rule->pattern, &rule->info.roughness,
-			&rule->info.metallic, &rule->info.bump) == 4)
+		rule->info.glow = 0;		// optional fifth column
+		if (sscanf (line, "%47s %f %f %f %f", rule->pattern, &rule->info.roughness,
+			&rule->info.metallic, &rule->info.bump, &rule->info.glow) >= 4)
 		{
 			strlwr (rule->pattern);
 			mat_numuserrules++;

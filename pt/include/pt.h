@@ -34,6 +34,8 @@ vertices appear counter clockwise.
 #define PT_MAT_CAMERA_INVISIBLE	8u	/* not seen directly, still lights and shadows */
 #define PT_MAT_BLACK			16u	/* reflects nothing; it can still emit */
 #define PT_MAT_WAVES			32u	/* a liquid surface: its normal ripples over time */
+#define PT_MAT_EMIT_BRIGHT		64u	/* only the texture's bright texels emit: screens,
+									   buttons, indicator lights */
 
 typedef struct pt_texture_s
 {
@@ -61,6 +63,7 @@ typedef struct pt_material_s
 								   alpha replaces roughness */
 	int			anim_next;		/* world only: the material shown one animation
 								   step later, or -1 */
+	float		scroll[2];		/* texture repeats per second it slides by, in u and v */
 	uint32_t	flags;
 } pt_material_t;
 
@@ -69,6 +72,9 @@ typedef struct pt_point_light_s
 	float		origin[3];
 	float		intensity[3];	/* radiant intensity; irradiance is this * cos / d^2 */
 	int			style;			/* world only: index into the view's light_styles */
+	float		direction[3];	/* world only: a spotlight shines along this (unit) ... */
+	float		cone_cos;		/* ... within the cone with this cosine of its half
+								   angle; 0 = shines all round */
 } pt_point_light_t;
 
 typedef struct pt_world_s
@@ -135,6 +141,8 @@ typedef struct pt_view_s
 	const float	*light_styles;			/* brightness of each world light style, 1 = normal */
 	int			num_light_styles;
 	int			anim_frame;				/* which step animated materials are on */
+	float		sky_axis[3];			/* the sky turns about this (unit) axis ... */
+	float		sky_angle;				/* ... by this many degrees */
 
 	/* quality settings; a backend may ignore what it has no use for */
 	float	scale;			/* internal resolution as a fraction of the view */

@@ -138,7 +138,7 @@ static int W_AddMaterial (texinfo_t *tex)
 	matinfo_t		info;
 	int				i, flags, value;
 
-	flags = LittleLong (tex->flags) & (SURF_LIGHT|SURF_SKY|SURF_WARP|SURF_TRANS33|SURF_TRANS66);
+	flags = LittleLong (tex->flags) & (SURF_LIGHT|SURF_SKY|SURF_WARP|SURF_TRANS33|SURF_TRANS66|SURF_FLOWING);
 	value = (flags & SURF_LIGHT) ? LittleLong (tex->value) : 0;
 
 	Com_sprintf (name, sizeof(name), "textures/%.32s.wal", tex->texture);
@@ -180,6 +180,15 @@ static int W_AddMaterial (texinfo_t *tex)
 		info.bump = 0;
 	}
 	mat->roughness = info.roughness;
+	if (flags & SURF_FLOWING)
+		mat->scroll[0] = -1.0f / 40;	// one repeat every 40 seconds, as ref_gl scrolls it
+	// screens, buttons and indicator lights that the map did not make into
+	// lights still glow where their picture is bright
+	if (info.glow > 0 && value <= 0 && !(flags & (SURF_SKY|SURF_WARP)))
+	{
+		mat->flags |= PT_MAT_EMIT_BRIGHT;
+		mat->emission[0] = mat->emission[1] = mat->emission[2] = info.glow * r_detailglow;
+	}
 	mat->metallic = info.metallic;
 	if (image && info.bump > 0 && !(flags & SURF_SKY))
 		mat->normal_texture = W_AddTexture (image->width, image->height,
@@ -392,84 +401,169 @@ static int W_LoadFaces (byte *base, int filelen, int modelnum)
 	return nummodels;
 }
 
+#define	MAX_LIGHT_TARGETS	1024
+
+typedef struct
+{
+	char	name[32];
+	vec3_t	origin;
+} lighttarget_t;
+
 /*
 ===============
 W_LoadLights
 
-The map's point light entities
+The map's point light entities. A light that names a target, or is given a
+cone, is a spotlight, as the light compiler had it.
 ===============
 */
 static void W_LoadLights (byte *base, int filelen)
 {
+	static lighttarget_t	targets[MAX_LIGHT_TARGETS];
 	char	*entstring, *data, *token;
-	char	key[MAX_KEY], classname[64];
-	vec3_t	origin, color;
-	float	light;
-	int		len, i, style;
-	qboolean hasorigin;
+	char	key[MAX_KEY], classname[64], target[32], targetname[32];
+	vec3_t	origin, color, dir;
+	float	light, cone, angle;
+	int		len, i, pass, style, numtargets;
+	qboolean hasorigin, hascone, hasangle, spot;
+	pt_point_light_t	*out;
 
 	data = W_Lump (base, filelen, LUMP_ENTITIES, 1, &len);
 	entstring = malloc (len + 1);
 	memcpy (entstring, data, len);
 	entstring[len] = 0;
 
-	data = entstring;
-	for (;;)
+	numtargets = 0;
+
+	// first everything that can be pointed at, then the lights
+	for (pass=0 ; pass<2 ; pass++)
 	{
-		token = COM_Parse (&data);
-		if (!data || token[0] != '{')
-			break;
-
-		classname[0] = 0;
-		VectorClear (origin);
-		color[0] = color[1] = color[2] = 1;
-		light = 300;
-		style = 0;
-		hasorigin = false;
-
+		data = entstring;
 		for (;;)
 		{
 			token = COM_Parse (&data);
-			if (!data || token[0] == '}')
-				break;
-			strncpy (key, token, sizeof(key)-1);
-			key[sizeof(key)-1] = 0;
-
-			token = COM_Parse (&data);
-			if (!data)
+			if (!data || token[0] != '{')
 				break;
 
-			if (!strcmp (key, "classname"))
+			classname[0] = target[0] = targetname[0] = 0;
+			VectorClear (origin);
+			color[0] = color[1] = color[2] = 1;
+			light = 300;
+			style = 0;
+			cone = 10;
+			angle = 0;
+			hasorigin = hascone = hasangle = false;
+
+			for (;;)
 			{
-				strncpy (classname, token, sizeof(classname)-1);
-				classname[sizeof(classname)-1] = 0;
+				token = COM_Parse (&data);
+				if (!data || token[0] == '}')
+					break;
+				strncpy (key, token, sizeof(key)-1);
+				key[sizeof(key)-1] = 0;
+
+				token = COM_Parse (&data);
+				if (!data)
+					break;
+
+				if (!strcmp (key, "classname"))
+				{
+					strncpy (classname, token, sizeof(classname)-1);
+					classname[sizeof(classname)-1] = 0;
+				}
+				else if (!strcmp (key, "target"))
+				{
+					strncpy (target, token, sizeof(target)-1);
+					target[sizeof(target)-1] = 0;
+				}
+				else if (!strcmp (key, "targetname"))
+				{
+					strncpy (targetname, token, sizeof(targetname)-1);
+					targetname[sizeof(targetname)-1] = 0;
+				}
+				else if (!strcmp (key, "origin"))
+					hasorigin = sscanf (token, "%f %f %f", &origin[0], &origin[1], &origin[2]) == 3;
+				else if (!strcmp (key, "light") || !strcmp (key, "_light"))
+					light = atof (token);
+				else if (!strcmp (key, "_color"))
+					sscanf (token, "%f %f %f", &color[0], &color[1], &color[2]);
+				else if (!strcmp (key, "style") || !strcmp (key, "_style"))
+					style = atoi (token);
+				else if (!strcmp (key, "_cone"))
+				{
+					cone = atof (token);
+					hascone = true;
+				}
+				else if (!strcmp (key, "angle"))
+				{
+					angle = atof (token);
+					hasangle = true;
+				}
 			}
-			else if (!strcmp (key, "origin"))
-				hasorigin = sscanf (token, "%f %f %f", &origin[0], &origin[1], &origin[2]) == 3;
-			else if (!strcmp (key, "light") || !strcmp (key, "_light"))
-				light = atof (token);
-			else if (!strcmp (key, "_color"))
-				sscanf (token, "%f %f %f", &color[0], &color[1], &color[2]);
-			else if (!strcmp (key, "style") || !strcmp (key, "_style"))
-				style = atoi (token);
-		}
 
-		if (strcmp (classname, "light") || !hasorigin || light <= 0)
-			continue;
+			if (pass == 0)
+			{
+				if (targetname[0] && hasorigin && numtargets < MAX_LIGHT_TARGETS)
+				{
+					strcpy (targets[numtargets].name, targetname);
+					VectorCopy (origin, targets[numtargets].origin);
+					numtargets++;
+				}
+				continue;
+			}
 
-		if (w_numlights == w_maxlights)
-		{
-			w_maxlights = w_maxlights ? w_maxlights * 2 : 256;
-			w_lights = realloc (w_lights, w_maxlights * sizeof(*w_lights));
+			if (strcmp (classname, "light") || !hasorigin || light <= 0)
+				continue;
+
+			// which way a spotlight points
+			spot = false;
+			if (target[0])
+			{
+				for (i=0 ; i<numtargets ; i++)
+				{
+					if (!strcmp (targets[i].name, target))
+					{
+						VectorSubtract (targets[i].origin, origin, dir);
+						spot = VectorNormalize (dir) > 0;
+						break;
+					}
+				}
+			}
+			else if (hascone && hasangle)
+			{
+				if (angle == -1)			// up
+					VectorSet (dir, 0, 0, 1);
+				else if (angle == -2)		// down
+					VectorSet (dir, 0, 0, -1);
+				else
+					VectorSet (dir, cos (angle * (M_PI / 180)), sin (angle * (M_PI / 180)), 0);
+				spot = true;
+			}
+
+			if (w_numlights == w_maxlights)
+			{
+				w_maxlights = w_maxlights ? w_maxlights * 2 : 256;
+				w_lights = realloc (w_lights, w_maxlights * sizeof(*w_lights));
+			}
+			out = &w_lights[w_numlights++];
+			memset (out, 0, sizeof(*out));
+			for (i=0 ; i<3 ; i++)
+			{
+				out->origin[i] = origin[i];
+				out->intensity[i] = color[i] * POINT_LIGHT_INTENSITY (light) * r_pointlight;
+			}
+			// flickering and switchable lights follow their light style
+			out->style = (style > 0 && style < MAX_LIGHTSTYLES) ? style : 0;
+			if (spot)
+			{
+				if (cone < 1)
+					cone = 1;
+				if (cone > 89)
+					cone = 89;
+				VectorCopy (dir, out->direction);
+				out->cone_cos = cos (cone * (M_PI / 180));
+			}
 		}
-		for (i=0 ; i<3 ; i++)
-		{
-			w_lights[w_numlights].origin[i] = origin[i];
-			w_lights[w_numlights].intensity[i] = color[i] * POINT_LIGHT_INTENSITY (light) * r_pointlight;
-		}
-		// flickering and switchable lights follow their light style
-		w_lights[w_numlights].style = (style > 0 && style < MAX_LIGHTSTYLES) ? style : 0;
-		w_numlights++;
 	}
 
 	free (entstring);

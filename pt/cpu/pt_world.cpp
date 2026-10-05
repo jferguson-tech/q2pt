@@ -42,6 +42,8 @@ void Material::Set(const pt_material_t &src, const Texture *tex, const Texture *
 	emission = Vec3(src.emission);
 	alpha = src.alpha;
 	emission_seen = src.emission_seen;
+	scroll_u = src.scroll[0];
+	scroll_v = src.scroll[1];
 	roughness = src.roughness < 0.0f ? 0.0f : (src.roughness > 1.0f ? 1.0f : src.roughness);
 	metallic = src.metallic < 0.0f ? 0.0f : (src.metallic > 1.0f ? 1.0f : src.metallic);
 	flags = src.flags;
@@ -166,6 +168,141 @@ void BuildLightGrid(World &w, const std::vector<float> &power)
 
 } // namespace
 
+Vec3 World::SampleSky(Rng &rng, float &pdf) const
+{
+	pdf = 0.0f;
+	if (sky_cdf.empty() || sky_total <= 0.0f)
+		return Vec3(0, 0, 1);
+
+	const size_t pick = std::min((size_t)(std::upper_bound(sky_cdf.begin(), sky_cdf.end(), rng.Float()) - sky_cdf.begin()),
+		sky_cdf.size() - 1);
+	const int face = (int)(pick / ((size_t)sky_res * sky_res));
+	const int texel = (int)(pick % ((size_t)sky_res * sky_res));
+	const float u = (texel % sky_res + rng.Float()) / sky_res, v = (texel / sky_res + rng.Float()) / sky_res;
+
+	const int a = face / 2, b = (a + 1) % 3, c = (a + 2) % 3;
+	Vec3 d;
+	d[a] = (face & 1) ? -1.0f : 1.0f;
+	d[b] = 2.0f * u - 1.0f;
+	d[c] = 2.0f * v - 1.0f;
+	d = Normalize(d);
+
+	// texels were weighted by luminance times solid angle, so per unit solid
+	// angle the chance is just the luminance over its integral
+	pdf = Luminance(Sky(d)) / sky_total;
+	return d;
+}
+
+namespace {
+
+void BuildSkyLight(World &w)
+{
+	w.sky_cdf.clear();
+	w.sky_total = 0.0f;
+	w.sky_res = 0;
+	for (int f = 0; f < 6; f++)
+		if (w.sky[f] < 0)
+			return;
+
+	const int res = 64;
+	w.sky_res = res;
+	w.sky_cdf.resize((size_t)6 * res * res);
+	double total = 0.0;
+	for (int f = 0; f < 6; f++)
+	{
+		const int a = f / 2, b = (a + 1) % 3, c = (a + 2) % 3;
+		for (int y = 0; y < res; y++)
+		{
+			for (int x = 0; x < res; x++)
+			{
+				Vec3 d;
+				d[a] = (f & 1) ? -1.0f : 1.0f;
+				d[b] = 2.0f * (x + 0.5f) / res - 1.0f;
+				d[c] = 2.0f * (y + 0.5f) / res - 1.0f;
+				const float len2 = Dot(d, d);
+				const float solid = (4.0f / (res * res)) / (len2 * std::sqrt(len2));
+				total += Luminance(w.Sky(Normalize(d))) * solid;
+				w.sky_cdf[((size_t)f * res + y) * res + x] = (float)total;
+			}
+		}
+	}
+	if (total <= 0.0)
+	{
+		w.sky_cdf.clear();
+		return;
+	}
+	for (float &v : w.sky_cdf)
+		v = (float)(v / total);
+	w.sky_cdf.back() = 1.0f;
+	w.sky_total = (float)total;
+}
+
+// From each light grid cell, how much of the sky's light gets in. Indoors
+// that is none, and looking for it there every time would be a waste.
+void BuildSkyChance(World &w)
+{
+	w.sky_chance.clear();
+	const LightGrid &g = w.grid;
+	if (w.sky_cdf.empty() || g.count.empty())
+		return;
+
+	const size_t cells = (size_t)g.dims[0] * g.dims[1] * g.dims[2];
+	w.sky_chance.assign(cells, 0.0f);
+	const float cell = 1.0f / g.inv_cell;
+	Rng rng(12345);
+
+	for (size_t ci = 0; ci < cells; ci++)
+	{
+		const size_t cx = ci % g.dims[0], cy = (ci / g.dims[0]) % g.dims[1], cz = ci / ((size_t)g.dims[0] * g.dims[1]);
+		int reached = 0;
+		const int points = 5, dirs = 6;
+		for (int p = 0; p < points; p++)
+		{
+			const Vec3 at = g.origin + Vec3(cx + (p ? rng.Float() : 0.5f), cy + (p ? rng.Float() : 0.5f),
+				cz + (p ? rng.Float() : 0.5f)) * cell;
+			for (int k = 0; k < dirs; k++)
+			{
+				float pdf;
+				Ray ray;
+				ray.o = at;
+				ray.d = w.SampleSky(rng, pdf);
+				ray.tmin = 0.0f;
+				ray.tmax = FLT_MAX;
+				Hit hit;
+				// glass and water let the sky through
+				if (w.bvh.IntersectIf(ray, hit, [&](uint32_t t, float, float) { return w.tris[t].mat->alpha >= 1.0f; })
+					&& (w.tris[hit.tri].mat->flags & PT_MAT_SKY))
+					reached++;
+			}
+		}
+		const float fraction = (float)reached / (points * dirs);
+		w.sky_chance[ci] = fraction > 0.0f ? std::min(1.0f, std::max(0.25f, fraction * 4.0f)) : 0.0f;
+	}
+
+	// a cell next to one that sees the sky may well see some too
+	std::vector<float> spread(w.sky_chance);
+	for (size_t ci = 0; ci < cells; ci++)
+	{
+		if (w.sky_chance[ci] > 0.0f)
+			continue;
+		const int cx = (int)(ci % g.dims[0]), cy = (int)((ci / g.dims[0]) % g.dims[1]), cz = (int)(ci / ((size_t)g.dims[0] * g.dims[1]));
+		float best = 0.0f;
+		for (int dz = -1; dz <= 1; dz++)
+			for (int dy = -1; dy <= 1; dy++)
+				for (int dx = -1; dx <= 1; dx++)
+				{
+					const int x = cx + dx, y = cy + dy, z = cz + dz;
+					if (x < 0 || y < 0 || z < 0 || x >= g.dims[0] || y >= g.dims[1] || z >= g.dims[2])
+						continue;
+					best = std::max(best, w.sky_chance[((size_t)z * g.dims[1] + y) * g.dims[0] + x]);
+				}
+		spread[ci] = best > 0.0f ? 0.1f : 0.0f;
+	}
+	w.sky_chance.swap(spread);
+}
+
+} // namespace
+
 std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 {
 	std::unique_ptr<World> w(new World);
@@ -181,7 +318,8 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 	{
 		Material &m = w->materials[i];
 		m.Set(in->materials[i], texture(in->materials[i].texture), texture(in->materials[i].normal_texture));
-		m.sampled = m.emissive;
+		// glowing detail is too dim and too patchy to be worth sampling as a light
+		m.sampled = m.emissive && !(m.flags & PT_MAT_EMIT_BRIGHT);
 		if (m.flags & PT_MAT_WAVES)
 			w->has_waves = true;
 	}
@@ -223,7 +361,7 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 	for (int i = 0; i < in->num_triangles; i++)
 	{
 		const Tri &t = w->tris[i];
-		if (!t.mat->emissive || t.area <= 1e-6f)
+		if (!t.mat->sampled || t.area <= 1e-6f)
 			continue;
 		Light l;
 		l.tri = (uint32_t)i;
@@ -231,6 +369,7 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 		l.emission = t.mat->emission;
 		l.pdf = 0;
 		l.style = 0;
+		l.cone_cos = 0.0f;
 		w->lights.push_back(l);
 		power.push_back(Luminance(t.mat->emission) * t.area * kPi);
 	}
@@ -242,6 +381,8 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 		l.emission = Vec3(in->lights[i].intensity);
 		l.pdf = 0;
 		l.style = in->lights[i].style;
+		l.dir = Vec3(in->lights[i].direction);
+		l.cone_cos = in->lights[i].cone_cos;
 		const float p = Luminance(l.emission) * 4.0f * kPi;
 		if (p <= 0.0f)
 			continue;
@@ -267,6 +408,8 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 	for (int i = 0; i < 6; i++)
 		w->sky[i] = (in->sky_textures[i] >= 0 && in->sky_textures[i] < in->num_textures) ? in->sky_textures[i] : -1;
 	w->sky_scale = in->sky_scale;
+	BuildSkyLight(*w);
+	BuildSkyChance(*w);
 	return w;
 }
 
@@ -327,6 +470,8 @@ void BuildFrame(Frame &f, const pt_scene_t *in, const std::vector<std::unique_pt
 			l.emission = Vec3(in->lights[i].intensity);
 			l.pdf = 0;
 			l.style = 0;
+			l.cone_cos = 0.0f;
+		l.cone_cos = 0.0f;
 			if (Luminance(l.emission) > 0.0f)
 				f.lights.push_back(l);
 		}

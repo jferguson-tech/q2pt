@@ -190,6 +190,8 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 
 	float u, v;
 	TexCoord(tri, hit.u, hit.v, u, v);
+	u += mat.scroll_u * sc.time;
+	v += mat.scroll_v * sc.time;
 
 	s.colour = !mat.texture ? Vec3(1, 1, 1) : (smooth ? mat.texture->Smooth(u, v) : Decode(mat.texture->Texel(u, v)));
 	s.roughness = mat.roughness;
@@ -260,10 +262,17 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 Vec3 Emitted(const Surface &s, bool seen)
 {
 	const Material &m = *s.mat;
+	if (m.flags & PT_MAT_EMIT_BRIGHT)
+	{
+		// the lit parts of a screen or a button: bright texels glow, dark ones do not
+		const float level = (MaxComponent(s.colour) - 0.12f) * (1.0f / 0.3f);
+		const float t = level < 0.0f ? 0.0f : (level > 1.0f ? 1.0f : level);
+		return m.emission * s.colour * (t * t * (3.0f - 2.0f * t));
+	}
 	return (seen && m.emission_seen > 0.0f) ? s.colour * m.emission_seen : m.emission_per_texel * s.colour;
 }
 
-Lit DirectWorld(const Scene &sc, const Surface &s, Rng &rng, bool first_hit)
+static Lit DirectLights(const Scene &sc, const Surface &s, Rng &rng, bool first_hit)
 {
 	const int candidates = std::max(1, first_hit ? sc.light_samples : sc.light_samples / 2);
 	const World &w = *sc.world;
@@ -330,6 +339,8 @@ Lit DirectWorld(const Scene &sc, const Surface &s, Rng &rng, bool first_hit)
 		if (dist2 <= 1e-6f)
 			continue;
 		const Vec3 wi = d * (1.0f / std::sqrt(dist2));
+		if (l.cone_cos > 0.0f && l.tri == ~0u && -Dot(wi, l.dir) < l.cone_cos)
+			continue;		// outside the spotlight's cone
 		const float nol = Dot(s.n, wi);
 		if (nol <= 0.0f)
 			continue;
@@ -360,6 +371,52 @@ Lit DirectWorld(const Scene &sc, const Surface &s, Rng &rng, bool first_hit)
 	if (wsum <= 0.0f || !Visible(sc, s, chosen_y, rng))
 		return none;
 	return Reflect(s, chosen_wi, chosen_e * (wsum / (candidates * chosen_phat)));
+}
+
+// Light from the sky: a direction is drawn where the sky is bright and the
+// light counts if nothing solid is in the way. Only tried as often as the
+// sky can be seen from around here at all.
+static Lit DirectSky(const Scene &sc, const Surface &s, Rng &rng)
+{
+	const World &w = *sc.world;
+	Lit none;
+	if (w.sky_cdf.empty())
+		return none;
+
+	float chance = 1.0f;
+	if (!w.sky_chance.empty())
+		chance = w.sky_chance[w.grid.Cell(s.p)];
+	if (chance <= 0.0f || rng.Float() >= chance)
+		return none;
+
+	float pdf;
+	const Vec3 sky_dir = w.SampleSky(rng, pdf);
+	if (pdf <= 0.0f)
+		return none;
+	const Vec3 wi = sc.FromSky(sky_dir);
+	if (Dot(s.n, wi) <= 0.0f || Dot(s.ng, wi) <= 0.0f)
+		return none;
+
+	Ray ray;
+	ray.o = s.p + s.ng * kRayOffset;
+	ray.d = wi;
+	ray.tmin = 0.0f;
+	ray.tmax = FLT_MAX;
+	Hit hit;
+	const Tri *tri;
+	if (!Closest(sc, ray, rng, false, true, hit, tri) || !(tri->mat->flags & PT_MAT_SKY))
+		return none;
+
+	return Reflect(s, wi, w.Sky(sky_dir) * (1.0f / (pdf * chance)));
+}
+
+Lit DirectWorld(const Scene &sc, const Surface &s, Rng &rng, bool first_hit)
+{
+	Lit lit = DirectLights(sc, s, rng, first_hit);
+	const Lit sky = DirectSky(sc, s, rng);
+	lit.diffuse += sky.diffuse;
+	lit.specular += sky.specular;
+	return lit;
 }
 
 Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng)
@@ -484,7 +541,8 @@ Vec3 Radiance(const Scene &sc, Ray ray, Rng &rng, bool camera, bool count_emitte
 			reached = nullptr;
 		}
 		if (tri->mat->flags & PT_MAT_SKY)
-			return radiance + throughput * sc.world->Sky(ray.d);
+			return (camera || count_emitters || sc.world->sky_cdf.empty())
+				? radiance + throughput * sc.Sky(ray.d) : radiance;
 
 		Surface s;
 		MakeSurface(sc, *tri, hit, ray, s);

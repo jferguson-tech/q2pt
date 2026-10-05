@@ -47,6 +47,8 @@ static cvar_t	*pt_rtx_disable;
 static char		r_skyname[MAX_QPATH];
 static char		r_worldname[MAX_QPATH];
 static qboolean	r_worlddirty;
+static float		r_skyrotate;
+static vec3_t		r_skyaxis;
 
 
 //=============================================================================
@@ -324,6 +326,8 @@ void R_SetSky (char *name, float rotate, vec3_t axis)
 		r_worlddirty = true;
 	strncpy (r_skyname, name, sizeof(r_skyname)-1);
 	r_skyname[sizeof(r_skyname)-1] = 0;
+	r_skyrotate = rotate;
+	VectorCopy (axis, r_skyaxis);
 }
 
 //=============================================================================
@@ -393,6 +397,8 @@ void R_RenderFrame (refdef_t *fd)
 	view.light_styles = styles;
 	view.num_light_styles = MAX_LIGHTSTYLES;
 	view.anim_frame = (int)(fd->time * 2);
+	VectorCopy (r_skyaxis, view.sky_axis);
+	view.sky_angle = fd->time * r_skyrotate;
 	rpt.backend->render_view (rpt.backend, &view);
 
 	// damage flashes, underwater tint and the like

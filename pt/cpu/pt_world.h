@@ -89,6 +89,7 @@ struct Material
 	Vec3			emission_per_texel;	// multiply by the texel to get emitted radiance
 	float			alpha = 1.0f;
 	float			emission_seen = 0.0f;
+	float			scroll_u = 0.0f, scroll_v = 0.0f;
 	float			roughness = 1.0f;
 	float			metallic = 0.0f;
 	uint32_t		flags = 0;
@@ -128,6 +129,8 @@ struct Light
 	Vec3		emission;	// radiance for triangles, intensity for points
 	float		pdf;		// chance of being picked map wide
 	int			style;		// point lights: which light style scales it
+	Vec3		dir;		// spotlights: where it points
+	float		cone_cos;	// and how wide; 0 = all round
 };
 
 // For each cell of a coarse grid, the lights that matter most there. Sampling
@@ -171,6 +174,17 @@ struct World
 	bool					has_waves = false;
 
 	Vec3 Sky(Vec3 d) const;
+
+	// The sky as a light: a direction drawn in proportion to how bright the
+	// sky is there, and the chance per unit solid angle of drawing it. Both
+	// are in the sky's own frame, before any turning.
+	std::vector<float>		sky_cdf;		// over 6 faces of sky_res * sky_res texels
+	int						sky_res = 0;
+	float					sky_total = 0.0f;	// integral of luminance over the sphere
+	Vec3 SampleSky(Rng &rng, float &pdf) const;
+
+	// per light grid cell, how often it is worth looking for the sky from there
+	std::vector<float>		sky_chance;
 };
 
 // what the host hands over each frame
@@ -191,6 +205,17 @@ struct Scene
 	int			num_light_styles = 0;
 	int			anim_frame = 0;
 	float		time = 0.0f;
+
+	// the sky box turns about an axis
+	Vec3		sky_axis{0, 0, 1};
+	float		sky_sin = 0.0f, sky_cos = 1.0f;
+
+	Vec3 Turn(Vec3 v, float s) const	// about sky_axis, by the angle whose sine is s
+	{
+		return v * sky_cos + Cross(sky_axis, v) * s + sky_axis * (Dot(sky_axis, v) * (1.0f - sky_cos));
+	}
+	Vec3 Sky(Vec3 world_dir) const { return world->Sky(Turn(world_dir, -sky_sin)); }
+	Vec3 FromSky(Vec3 sky_dir) const { return Turn(sky_dir, sky_sin); }
 
 	// settings, see pt_view_t
 	int			light_samples = 8;

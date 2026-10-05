@@ -57,6 +57,7 @@ typedef struct
 	float	roughness;	// 0 mirror - 1 matte
 	float	metallic;	// 0 - 1
 	float	bump;		// how deep the picture's detail is taken to be; 0 = flat
+	float	glow;		// how strongly the bright parts of the picture light up; 0 = not at all
 } matinfo_t;
 
 typedef enum
@@ -153,6 +154,7 @@ extern	cvar_t	*pt_stats;
 extern	cvar_t	*pt_debug;
 extern	float	r_skyscale, r_lampglow;
 extern	float	r_surfacelight, r_pointlight, r_liquidglow;
+extern	float	r_detailglow;
 extern	float	r_bumpscale, r_roughscale, r_metalscale;
 
 void	R_InitSettings (void);

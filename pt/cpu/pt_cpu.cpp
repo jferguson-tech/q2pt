@@ -369,7 +369,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 			break;
 		if (tri->mat->flags & PT_MAT_SKY)
 		{
-			sky = sc.world->Sky(ray.d) * through;
+			sky = sc.Sky(ray.d) * through;
 			break;
 		}
 		MakeSurface(sc, *tri, hit, ray, surf, sc.filter_textures);
@@ -1233,6 +1233,16 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	sc.num_light_styles = view->light_styles ? view->num_light_styles : 0;
 	sc.anim_frame = view->anim_frame < 0 ? 0 : view->anim_frame;
 	sc.time = view->time;
+	{
+		const Vec3 axis(view->sky_axis);
+		const float angle = view->sky_angle * (kPi / 180.0f);
+		if (Dot(axis, axis) > 0.5f && angle != 0.0f)
+		{
+			sc.sky_axis = Normalize(axis);
+			sc.sky_sin = std::sin(angle);
+			sc.sky_cos = std::cos(angle);
+		}
+	}
 	sc.light_samples = view->light_samples > 0 ? std::min(view->light_samples, 64) : 8;
 	sc.max_sample = view->firefly_clamp > 0.0f ? view->firefly_clamp : 40.0f;
 	sc.wave_strength = std::max(0.0f, view->wave_strength);
@@ -1261,6 +1271,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	}
 	if (s->world->has_waves)
 		hash = HashBytes(&sc.time, sizeof(sc.time), hash);
+	hash = HashBytes(&sc.sky_sin, sizeof(sc.sky_sin), hash);
 
 	// each frame looks through a slightly different point of every pixel, so
 	// that over time edges are seen from all across it
