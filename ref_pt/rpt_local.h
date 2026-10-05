@@ -210,3 +210,4 @@ void	R_ShutdownModels (void);
 // rpt_scene.c
 //
 void	R_BuildScene (refdef_t *fd, pt_scene_t *scene);
+void	R_SceneShutdown (void);
