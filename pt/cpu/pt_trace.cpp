@@ -84,6 +84,11 @@ Vec3 SpecularTimesCos(const Surface &s, Vec3 wi)
 Lit Reflect(const Surface &s, Vec3 wi, Vec3 e)
 {
 	Lit out;
+	if (s.medium)
+	{
+		out.diffuse = e;		// air has no facing
+		return out;
+	}
 	const float nol = Dot(s.n, wi);
 	if (nol <= 0.0f)
 		return out;
@@ -183,6 +188,7 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	const Material &mat = tri.mat->At(sc.anim_frame);
 	s.tri = &tri;
 	s.mat = &mat;
+	s.medium = false;
 	s.p = ray.o + ray.d * hit.t;
 	s.wo = -ray.d;
 	s.front = Dot(tri.n, ray.d) < 0.0f;
@@ -341,7 +347,7 @@ static Lit DirectLights(const Scene &sc, const Surface &s, Rng &rng, bool first_
 		const Vec3 wi = d * (1.0f / std::sqrt(dist2));
 		if (l.cone_cos > 0.0f && l.tri == ~0u && -Dot(wi, l.dir) < l.cone_cos)
 			continue;		// outside the spotlight's cone
-		const float nol = Dot(s.n, wi);
+		const float nol = s.medium ? 1.0f : Dot(s.n, wi);
 		if (nol <= 0.0f)
 			continue;
 		float geom = 1.0f / dist2;
@@ -394,7 +400,7 @@ static Lit DirectSky(const Scene &sc, const Surface &s, Rng &rng)
 	if (pdf <= 0.0f)
 		return none;
 	const Vec3 wi = sc.FromSky(sky_dir);
-	if (Dot(s.n, wi) <= 0.0f || Dot(s.ng, wi) <= 0.0f)
+	if (!s.medium && (Dot(s.n, wi) <= 0.0f || Dot(s.ng, wi) <= 0.0f))
 		return none;
 
 	Ray ray;
@@ -419,8 +425,20 @@ Lit DirectWorld(const Scene &sc, const Surface &s, Rng &rng, bool first_hit)
 	return lit;
 }
 
+Vec3 DirectMedium(const Scene &sc, Vec3 p, Rng &rng)
+{
+	Surface s{};
+	s.medium = true;
+	s.p = p;
+	s.kd = Vec3(1, 1, 1);
+	s.light_sampled_spec = false;
+	const Lit world = DirectWorld(sc, s, rng, false), frame = DirectFrameOne(sc, s, rng);
+	return world.diffuse + frame.diffuse;
+}
+
 Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng)
 {
+
 	const std::vector<Light> &lights = sc.frame->lights;
 	Lit none;
 	if (lights.empty())

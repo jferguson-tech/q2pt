@@ -227,6 +227,7 @@ struct Scene
 	int			reflection_bounces = 3;
 	float		reflection_rate = 1.0f;
 	bool		refraction = true;
+	float		fog_density = 0.0f;		// 0 = clear air
 
 	const Tri &TriAt(uint32_t index) const
 	{

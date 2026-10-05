@@ -50,6 +50,8 @@ static cvar_t	*pt_samples;			// paths per pixel per frame
 static cvar_t	*pt_bounces;			// bounces of indirect light
 static cvar_t	*pt_light_samples;		// lights weighed per shading point
 static cvar_t	*pt_firefly_clamp;		// brightest a single path may be
+static cvar_t	*pt_fog;					// haze and light shafts
+static cvar_t	*pt_fog_density;
 static cvar_t	*pt_sky;				// sky brightness
 static cvar_t	*pt_lamp_glow;			// how bright lamp fixtures look to the eye
 static cvar_t	*pt_surface_light;		// scales the light from glowing surfaces
@@ -129,6 +131,8 @@ void R_InitSettings (void)
 	pt_bounces = ri.Cvar_Get ("pt_bounces", "3", CVAR_ARCHIVE);
 	pt_light_samples = ri.Cvar_Get ("pt_light_samples", "8", CVAR_ARCHIVE);
 	pt_firefly_clamp = ri.Cvar_Get ("pt_firefly_clamp", "40", CVAR_ARCHIVE);
+	pt_fog = ri.Cvar_Get ("pt_fog", "1", CVAR_ARCHIVE);
+	pt_fog_density = ri.Cvar_Get ("pt_fog_density", "0.0004", CVAR_ARCHIVE);
 	pt_sky = ri.Cvar_Get ("pt_sky", "2", CVAR_ARCHIVE);
 	pt_lamp_glow = ri.Cvar_Get ("pt_lamp_glow", "1.5", CVAR_ARCHIVE);
 	pt_surface_light = ri.Cvar_Get ("pt_surface_light", "1", CVAR_ARCHIVE);
@@ -276,4 +280,6 @@ void R_ViewSettings (pt_view_t *view)
 	view->saturation = pt_saturation->value;
 	view->contrast = pt_contrast->value;
 	view->bloom = pt_bloom->value;
+	view->fog = pt_fog->value != 0;
+	view->fog_density = pt_fog_density->value;
 }

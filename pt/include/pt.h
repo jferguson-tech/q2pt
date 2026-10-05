@@ -178,6 +178,8 @@ typedef struct pt_view_s
 	int		tonemap;			/* 0 filmic, 1 neutral, 2 clipped */
 	float	saturation;			/* 1 = unchanged */
 	float	contrast;			/* 1 = unchanged */
+	int		fog;				/* light scattering in the air: haze and light shafts */
+	float	fog_density;		/* share of light scattered per unit of distance */
 	float	bloom;				/* glow around what is brighter than white; 0 = none */
 } pt_view_t;
 

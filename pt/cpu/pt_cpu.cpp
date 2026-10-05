@@ -33,7 +33,8 @@ const float kMinDemodulate = 0.02f;		// reflectance floor when lighting is divid
 
 // kOver: light from see-through layers in front of the surface, which has no
 // reflectance of its own to be multiplied by
-enum { kDiffuse, kSpecular, kOver, kChannels };
+// kFog: light scattered towards the eye by the air in front of the surface
+enum { kDiffuse, kSpecular, kOver, kFog, kChannels };
 
 uint8_t g_to_display[4097];
 
@@ -541,6 +542,29 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 	if (mat.emissive && surf.front)
 		px.add[i] += Emitted(surf, true) * through;
 
+	// Air that scatters light: some of what the surface sends is lost on the
+	// way, and the air itself glows where light falls through it, which is
+	// what shows as shafts. One point along the way is sampled per frame.
+	if (sc.fog_density > 0.0f)
+	{
+		const float reach = have_layer ? first_layer_depth : hit.t;		// the straight part of the view
+		const float at = rng.Float() * reach;
+		const Vec3 lit = DirectMedium(sc, cam.origin + eye_dir * at, rng);
+		const Vec3 glow = ClampSample(lit * (sc.fog_density * (0.25f * kInvPi) * std::exp(-sc.fog_density * at) * reach),
+			sc.max_sample);
+		const float glow_lum = Luminance(glow);
+		px.albedo[kFog][i] = Vec3(1, 1, 1);
+		px.light[kFog][i] = glow;
+		px.m1[kFog][i] = glow_lum;
+		px.m2[kFog][i] = glow_lum * glow_lum;
+
+		const float kept = std::exp(-sc.fog_density * px.depth[i]);
+		px.albedo[kDiffuse][i] *= kept;
+		px.albedo[kSpecular][i] *= kept;
+		px.albedo[kOver][i] *= kept;
+		px.add[i] *= kept;
+	}
+
 	// a specular path costs as much as a diffuse one; where the lobe reflects
 	// little, take it only some of the time
 	const float spec_chance = (!has_specular || sc.reflections < 2) ? 0.0f
@@ -927,7 +951,7 @@ void FilterRow(int rw, int rh, const FilterGeo *geo, const FilterLight *in, Filt
 		}
 
 		// how big a brightness difference is still taken for noise, per channel
-		const __m128 tolerance = _mm_setr_ps(4.0f, 1.0f + 3.0f * g.roughness, 0.75f, 1.0f);
+		const __m128 tolerance = _mm_setr_ps(4.0f, 1.0f + 3.0f * g.roughness, 0.75f, 6.0f);
 		const __m128 inv_lum = _mm_div_ps(one, _mm_add_ps(_mm_mul_ps(tolerance, sigma), _mm_set1_ps(1e-3f)));
 		const float inv_plane = 1.0f / (1.0f + g.depth * 0.004f);
 
@@ -1341,6 +1365,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	sc.reflection_bounces = std::max(1, view->reflection_bounces > 0 ? view->reflection_bounces : bounces);
 	sc.reflection_rate = std::max(0.0f, view->reflection_rate);
 	sc.refraction = view->refraction != 0;
+	sc.fog_density = view->fog ? std::min(std::max(view->fog_density, 0.0f), 0.05f) : 0.0f;
 	if (bounces < 1)
 		sc.reflections = 0;		// no bounces at all means none off mirrors either
 	s->moving_history = (float)std::min(std::max(view->history, 1), 512);
@@ -1356,7 +1381,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	{
 		const float settings[] = {(float)samples, (float)sc.light_samples, sc.max_sample, sc.wave_strength,
 			(float)sc.filter_textures, (float)sc.reflections, (float)sc.reflection_bounces, sc.reflection_rate,
-			(float)sc.refraction, view->exposure};
+			(float)sc.refraction, view->exposure, sc.fog_density};
 		hash = HashBytes(settings, sizeof(settings), hash);
 	}
 	if (s->world->has_waves)
@@ -1444,6 +1469,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 			case 8: c = Vec3(std::min(s->cur.over_length[i], 32.0f) / 64.0f); break;
 			case 9: c = Vec3(s->cur.bent[i] ? 0.5f : 0.05f); break;
 			case 10: c = Vec3(s->cur.depth[i] * 0.002f); break;
+			case 11: c = Vec3(in[i].r[kFog], in[i].g[kFog], in[i].b[kFog]); break;
 			default: break;
 			}
 			s->hdr[i] = c * exposure;

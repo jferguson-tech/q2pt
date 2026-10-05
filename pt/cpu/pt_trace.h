@@ -30,6 +30,7 @@ struct Surface
 	float			roughness;
 	float			alpha;		// GGX width, roughness squared
 	bool			light_sampled_spec;
+	bool			medium;		// not a surface at all but a point in the air: no facing, scatters evenly
 
 	// how much the specular lobe reflects in total towards wo, roughly
 	Vec3 SpecularAlbedo() const;
@@ -70,6 +71,10 @@ Lit DirectWorld(const Scene &sc, const Surface &s, Rng &rng, bool first_hit);
 // the frame's point lights: one chosen, or all of them
 Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng);
 Lit DirectFrameAll(const Scene &sc, const Surface &s, Rng &rng);
+
+// light arriving at a point in the air from one sampled light and the sky,
+// as irradiance on a surface facing it
+Vec3 DirectMedium(const Scene &sc, Vec3 p, Rng &rng);
 
 Vec3 SampleDiffuse(const Surface &s, Rng &rng);
 // returns false if the sample is unusable; weight is what the lobe reflects of it
