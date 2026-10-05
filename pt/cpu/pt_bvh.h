@@ -21,8 +21,9 @@ struct Hit
 	uint32_t	tri;		// index as given to Build
 };
 
-// Bounding volume hierarchy over a triangle soup. Each node holds the boxes
-// of both its children, so one SSE test decides which of them a ray enters.
+// Bounding volume hierarchy over a triangle soup. Each node has up to four
+// children and holds their boxes, so one SSE test decides which of them a
+// ray enters, and a ray passes through half as many nodes as with two.
 class Bvh
 {
 public:
@@ -48,13 +49,16 @@ public:
 	bool AnyHit(const Ray &ray, F blocks) const;
 
 private:
+	static const uint32_t kNone = ~0u;
 	struct Node
 	{
-		// per axis: child 0 min, child 1 min, child 0 max, child 1 max
-		float		bx[4], by[4], bz[4];
-		uint32_t	child[2];	// inner: node index. leaf: first triangle
-		uint32_t	count[2];	// triangles in a leaf, 0 for an inner node
+		// the children's boxes, one child per lane. An unused lane has a
+		// box at infinity that no ray reaches.
+		float		lox[4], loy[4], loz[4], hix[4], hiy[4], hiz[4];
+		uint32_t	child[4];	// inner: node index. leaf: first triangle. unused: kNone
+		uint32_t	count[4];	// triangles in a leaf, 0 for an inner node
 	};
+	struct Node2;				// what the builder makes first: two children to a node
 	struct Tri
 	{
 		Vec3		p0, e1, e2;
@@ -66,9 +70,10 @@ private:
 		uint32_t	index, count;
 	};
 
-	Ref BuildNode(BuildPrim *prims, uint32_t first, uint32_t count, float *lo, float *hi);
+	Ref BuildNode(std::vector<Node2> &out, BuildPrim *prims, uint32_t first, uint32_t count, float *lo, float *hi);
+	uint32_t Collapse(const std::vector<Node2> &src, uint32_t index);
 
-	// which children the ray enters before tmax, as a 2 bit mask, and where
+	// which children the ray enters before tmax, as a 4 bit mask, and where
 	struct RayPack
 	{
 		__m128	ox, oy, oz, ix, iy, iz, tmin;
@@ -87,19 +92,18 @@ private:
 
 inline int Bvh::HitChildren(const Node &n, const RayPack &r, float tmax, float *tnear)
 {
-	const __m128 tx = _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(n.bx), r.ox), r.ix);
-	const __m128 ty = _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(n.by), r.oy), r.iy);
-	const __m128 tz = _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(n.bz), r.oz), r.iz);
-	// swap the min and max halves so each lane sees both of its slab's planes
-	const __m128 sx = _mm_shuffle_ps(tx, tx, _MM_SHUFFLE(1, 0, 3, 2));
-	const __m128 sy = _mm_shuffle_ps(ty, ty, _MM_SHUFFLE(1, 0, 3, 2));
-	const __m128 sz = _mm_shuffle_ps(tz, tz, _MM_SHUFFLE(1, 0, 3, 2));
-	const __m128 enter = _mm_max_ps(_mm_max_ps(_mm_min_ps(tx, sx), _mm_min_ps(ty, sy)),
-		_mm_max_ps(_mm_min_ps(tz, sz), r.tmin));
-	const __m128 leave = _mm_min_ps(_mm_min_ps(_mm_max_ps(tx, sx), _mm_max_ps(ty, sy)),
-		_mm_min_ps(_mm_max_ps(tz, sz), _mm_set1_ps(tmax)));
-	_mm_storel_pi((__m64 *)tnear, enter);
-	return _mm_movemask_ps(_mm_cmple_ps(enter, leave)) & 3;
+	const __m128 x0 = _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(n.lox), r.ox), r.ix);
+	const __m128 x1 = _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(n.hix), r.ox), r.ix);
+	const __m128 y0 = _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(n.loy), r.oy), r.iy);
+	const __m128 y1 = _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(n.hiy), r.oy), r.iy);
+	const __m128 z0 = _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(n.loz), r.oz), r.iz);
+	const __m128 z1 = _mm_mul_ps(_mm_sub_ps(_mm_loadu_ps(n.hiz), r.oz), r.iz);
+	const __m128 enter = _mm_max_ps(_mm_max_ps(_mm_min_ps(x0, x1), _mm_min_ps(y0, y1)),
+		_mm_max_ps(_mm_min_ps(z0, z1), r.tmin));
+	const __m128 leave = _mm_min_ps(_mm_min_ps(_mm_max_ps(x0, x1), _mm_max_ps(y0, y1)),
+		_mm_min_ps(_mm_max_ps(z0, z1), _mm_set1_ps(tmax)));
+	_mm_storeu_ps(tnear, enter);
+	return _mm_movemask_ps(_mm_cmple_ps(enter, leave));
 }
 
 // Moller-Trumbore
@@ -128,9 +132,12 @@ bool Bvh::IntersectIf(const Ray &ray, Hit &hit, F accept) const
 	if (nodes_.empty())
 		return false;
 
+	// the lowest set bit of a 4 bit mask
+	static const uint8_t kFirst[16] = {0, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0};
+
 	const RayPack pack(ray);
 	struct Entry { uint32_t node; float tnear; };
-	Entry stack[64];
+	Entry stack[128];
 	int sp = 0;
 	uint32_t ni = 0;
 	float tmax = ray.tmax;
@@ -139,17 +146,22 @@ bool Bvh::IntersectIf(const Ray &ray, Hit &hit, F accept) const
 	for (;;)
 	{
 		const Node &n = nodes_[ni];
-		float tnear[2];
-		const int mask = HitChildren(n, pack, tmax, tnear);
+		float tnear[4];
+		int mask = HitChildren(n, pack, tmax, tnear);
 
-		// nearer child first, so a hit in it can rule the other out
-		const int first = (mask == 3 && tnear[1] < tnear[0]) ? 1 : 0;
-		uint32_t next = ~0u;
-		for (int k = 0; k < 2; k++)
+		// nearest child first, so that a hit in it can rule the others out
+		Entry inner[4];
+		int num_inner = 0;
+		while (mask)
 		{
-			const int c = first ^ k;
-			if (!(mask & (1 << c)) || tnear[c] >= tmax)
-				continue;
+			int c = kFirst[mask];
+			for (int rest = mask & (mask - 1); rest; rest &= rest - 1)
+				if (tnear[kFirst[rest]] < tnear[c])
+					c = kFirst[rest];
+			mask &= ~(1 << c);
+			if (tnear[c] >= tmax)
+				break;		// and so are all the others
+
 			if (n.count[c])
 			{
 				for (uint32_t i = 0; i < n.count[c]; i++)
@@ -167,15 +179,17 @@ bool Bvh::IntersectIf(const Ray &ray, Hit &hit, F accept) const
 					}
 				}
 			}
-			else if (next == ~0u)
-				next = n.child[c];
-			else
-				stack[sp++] = {n.child[c], tnear[c]};
+			else if (n.child[c] != kNone)
+				inner[num_inner++] = {n.child[c], tnear[c]};
 		}
 
-		if (next != ~0u)
+		if (num_inner && inner[0].tnear < tmax)
 		{
-			ni = next;
+			// into the nearest; the rest wait, the farthest at the bottom
+			for (int k = num_inner - 1; k > 0; k--)
+				if (sp < 128)
+					stack[sp++] = inner[k];
+			ni = inner[0].node;
 			continue;
 		}
 		for (;;)
@@ -199,18 +213,18 @@ bool Bvh::AnyHit(const Ray &ray, F blocks) const
 		return false;
 
 	const RayPack pack(ray);
-	uint32_t stack[64];
+	uint32_t stack[128];
 	int sp = 0;
 	uint32_t ni = 0;
 
 	for (;;)
 	{
 		const Node &n = nodes_[ni];
-		float tnear[2];
+		float tnear[4];
 		const int mask = HitChildren(n, pack, ray.tmax, tnear);
 
 		bool descend = false;
-		for (int c = 0; c < 2; c++)
+		for (int c = 0; c < 4; c++)
 		{
 			if (!(mask & (1 << c)))
 				continue;
@@ -224,8 +238,13 @@ bool Bvh::AnyHit(const Ray &ray, F blocks) const
 						return true;
 				}
 			}
+			else if (n.child[c] == kNone)
+				continue;
 			else if (descend)
-				stack[sp++] = n.child[c];
+			{
+				if (sp < 128)
+					stack[sp++] = n.child[c];
+			}
 			else
 			{
 				ni = n.child[c];

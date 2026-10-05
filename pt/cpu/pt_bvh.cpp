@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <limits>
 
 namespace pt {
 
@@ -28,6 +29,14 @@ const int kBins = 16;
 const uint32_t kLeafSize = 4;
 
 } // namespace
+
+struct Bvh::Node2
+{
+	// per axis: child 0 min, child 1 min, child 0 max, child 1 max
+	float		bx[4], by[4], bz[4];
+	uint32_t	child[2];	// inner: node index. leaf: first triangle
+	uint32_t	count[2];	// triangles in a leaf, 0 for an inner node
+};
 
 struct Bvh::BuildPrim
 {
@@ -54,25 +63,29 @@ void Bvh::Build(const Vec3 *verts, uint32_t num_tris)
 		p.index = i;
 	}
 
-	nodes_.reserve(num_tris);
+	std::vector<Node2> pairs;
+	pairs.reserve(num_tris);
 	float lo[3], hi[3];
-	const Ref top = BuildNode(prims.data(), 0, num_tris, lo, hi);
+	const Ref top = BuildNode(pairs, prims.data(), 0, num_tris, lo, hi);
 	if (top.count)
 	{
 		// everything fitted in one leaf: hang it off a root whose other child is empty
-		Node root{};
+		Node2 root{};
 		for (int a = 0; a < 3; a++)
 		{
 			float *b = a == 0 ? root.bx : (a == 1 ? root.by : root.bz);
 			b[0] = lo[a];
 			b[2] = hi[a];
-			b[1] = FLT_MAX;
-			b[3] = -FLT_MAX;
+			b[1] = b[3] = std::numeric_limits<float>::infinity();
 		}
 		root.child[0] = top.index;
 		root.count[0] = top.count;
-		nodes_.push_back(root);
+		root.child[1] = kNone;
+		pairs.push_back(root);
 	}
+
+	nodes_.reserve(pairs.size() / 2 + 1);
+	Collapse(pairs, 0);
 
 	tris_.resize(num_tris);
 	for (uint32_t i = 0; i < num_tris; i++)
@@ -87,7 +100,7 @@ void Bvh::Build(const Vec3 *verts, uint32_t num_tris)
 
 // Binned surface area heuristic. Returns a leaf, or the node made for an
 // inner split, and the bounds of everything under it.
-Bvh::Ref Bvh::BuildNode(BuildPrim *prims, uint32_t first, uint32_t count, float *lo, float *hi)
+Bvh::Ref Bvh::BuildNode(std::vector<Node2> &out, BuildPrim *prims, uint32_t first, uint32_t count, float *lo, float *hi)
 {
 	Box bounds, cbounds;
 	for (uint32_t i = 0; i < count; i++)
@@ -172,14 +185,14 @@ Bvh::Ref Bvh::BuildNode(BuildPrim *prims, uint32_t first, uint32_t count, float 
 			[axis](const BuildPrim &a, const BuildPrim &b) { return a.centroid[axis] < b.centroid[axis]; });
 	}
 
-	const uint32_t node = (uint32_t)nodes_.size();
-	nodes_.emplace_back();
+	const uint32_t node = (uint32_t)out.size();
+	out.emplace_back();
 
 	float clo[2][3], chi[2][3];
-	const Ref left = BuildNode(prims, first, mid - first, clo[0], chi[0]);
-	const Ref right = BuildNode(prims, mid, first + count - mid, clo[1], chi[1]);
+	const Ref left = BuildNode(out, prims, first, mid - first, clo[0], chi[0]);
+	const Ref right = BuildNode(out, prims, mid, first + count - mid, clo[1], chi[1]);
 
-	Node &n = nodes_[node];
+	Node2 &n = out[node];
 	for (int c = 0; c < 2; c++)
 	{
 		n.bx[c] = clo[c][0]; n.bx[c + 2] = chi[c][0];
@@ -191,6 +204,86 @@ Bvh::Ref Bvh::BuildNode(BuildPrim *prims, uint32_t first, uint32_t count, float 
 	n.child[1] = right.index;
 	n.count[1] = right.count;
 	return Ref{node, 0};
+}
+
+// Makes the node with four children that stands for src[index] and all
+// under it. Grandchildren move up beside their parent's sibling: the largest
+// inner child is replaced by its own two until there are four, or only
+// leaves are left.
+uint32_t Bvh::Collapse(const std::vector<Node2> &src, uint32_t index)
+{
+	struct Item
+	{
+		float		lo[3], hi[3];
+		uint32_t	child, count;
+	};
+	Item items[4];
+	int num = 0;
+
+	const auto take = [&](const Node2 &s, int c)
+	{
+		if (!s.count[c] && s.child[c] == kNone)
+			return;
+		Item &it = items[num++];
+		it.lo[0] = s.bx[c]; it.hi[0] = s.bx[c + 2];
+		it.lo[1] = s.by[c]; it.hi[1] = s.by[c + 2];
+		it.lo[2] = s.bz[c]; it.hi[2] = s.bz[c + 2];
+		it.child = s.child[c];
+		it.count = s.count[c];
+	};
+	take(src[index], 0);
+	take(src[index], 1);
+
+	while (num < 4)
+	{
+		int widest = -1;
+		float area = -1.0f;
+		for (int k = 0; k < num; k++)
+		{
+			if (items[k].count)
+				continue;
+			const float ex = items[k].hi[0] - items[k].lo[0], ey = items[k].hi[1] - items[k].lo[1],
+				ez = items[k].hi[2] - items[k].lo[2];
+			const float a = ex * ey + ey * ez + ez * ex;
+			if (a > area)
+			{
+				area = a;
+				widest = k;
+			}
+		}
+		if (widest < 0)
+			break;
+		const Node2 &s = src[items[widest].child];
+		items[widest] = items[--num];
+		take(s, 0);
+		take(s, 1);
+	}
+
+	const uint32_t node = (uint32_t)nodes_.size();
+	nodes_.emplace_back();
+	{
+		Node &n = nodes_[node];
+		const float inf = std::numeric_limits<float>::infinity();
+		for (int k = 0; k < 4; k++)
+		{
+			const bool used = k < num;
+			n.lox[k] = used ? items[k].lo[0] : inf; n.hix[k] = used ? items[k].hi[0] : inf;
+			n.loy[k] = used ? items[k].lo[1] : inf; n.hiy[k] = used ? items[k].hi[1] : inf;
+			n.loz[k] = used ? items[k].lo[2] : inf; n.hiz[k] = used ? items[k].hi[2] : inf;
+			n.child[k] = used ? items[k].child : kNone;
+			n.count[k] = used ? items[k].count : 0;
+		}
+	}
+	// the nodes move as more are added, so each child is filled in by index
+	for (int k = 0; k < num; k++)
+	{
+		if (!items[k].count)
+		{
+			const uint32_t c = Collapse(src, items[k].child);
+			nodes_[node].child[k] = c;
+		}
+	}
+	return node;
 }
 
 } // namespace pt
