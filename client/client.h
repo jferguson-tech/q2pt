@@ -513,6 +513,15 @@ void CL_ParseClientinfo (int player);
 void CL_Download_f (void);
 
 //
+// cl_render.c
+//
+void CL_InitRender (void);
+void CL_RenderFrame (void);
+qboolean CL_RenderBusy (void);
+void CL_RenderStop (void);
+qboolean CL_RenderStart (char *demo, int fps, int paths);
+
+//
 // cl_view.c
 //
 extern	int			gun_frame;

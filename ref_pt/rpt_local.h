@@ -176,6 +176,16 @@ int		R_ShotPasses (pt_view_t *view);
 void	R_ShotFinish (void);
 
 //
+// rpt_offline.c
+//
+void	R_InitOffline (void);
+void	R_ShutdownOffline (void);
+qboolean R_Offline (void);
+void	R_OfflineSettings (pt_view_t *view);
+void	R_OfflineRender (refdef_t *fd, pt_view_t *view);
+void	R_OfflineFinish (void);
+
+//
 // rpt_water.c
 //
 void	R_WaterReset (void);

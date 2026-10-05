@@ -40,7 +40,7 @@ set(SHARED_SRC game/q_shared.c)
 add_executable(quake2 WIN32
 	client/cl_cin.c client/cl_ents.c client/cl_fx.c client/cl_input.c
 	client/cl_inv.c client/cl_main.c client/cl_newfx.c client/cl_parse.c
-	client/cl_pred.c client/cl_scrn.c client/cl_tent.c client/cl_view.c
+	client/cl_pred.c client/cl_render.c client/cl_scrn.c client/cl_tent.c client/cl_view.c
 	client/console.c client/keys.c client/menu.c client/qmenu.c
 	client/snd_dma.c client/snd_mem.c client/snd_mix.c client/x86.c
 	qcommon/cmd.c qcommon/cmodel.c qcommon/common.c qcommon/crc.c
@@ -97,7 +97,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(REF_PT_SRC
 	ref_pt/rpt_main.c ref_pt/rpt_image.c ref_pt/rpt_draw.c ref_pt/rpt_world.c
 	ref_pt/rpt_model.c ref_pt/rpt_scene.c ref_pt/rpt_material.c ref_pt/rpt_settings.c
-	ref_pt/rpt_water.c ref_pt/rpt_shot.c pt/water/pt_water.c
+	ref_pt/rpt_water.c ref_pt/rpt_shot.c ref_pt/rpt_offline.c
+	pt/water/pt_water.c pt/png/pt_png.c
 	win32/q_shwin.c ${SHARED_SRC} ref_pt/ref_pt.def)
 
 add_library(pt_cpu STATIC pt/cpu/pt_cpu.cpp pt/cpu/pt_bvh.cpp pt/cpu/pt_world.cpp pt/cpu/pt_trace.cpp)

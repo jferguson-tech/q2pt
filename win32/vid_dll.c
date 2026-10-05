@@ -675,6 +675,19 @@ qboolean VID_LoadRefresh( char *name )
 
 /*
 ============
+VID_SetTitle
+
+The window's title bar, for showing progress where it is not in the picture
+============
+*/
+void VID_SetTitle (char *title)
+{
+	if (cl_hwnd)
+		SetWindowText (cl_hwnd, title ? title : "Quake 2");
+}
+
+/*
+============
 VID_CheckChanges
 
 This function gets called once just before drawing each frame, and it's sole purpose in life

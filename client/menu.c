@@ -1410,6 +1410,9 @@ static menulist_s		s_pt_bloom_box;
 static menulist_s		s_pt_fog_box;
 static menulist_s		s_pt_water_list;
 static menulist_s		s_pt_stats_box;
+static menuaction_s		s_pt_render_action;
+
+void M_Menu_RenderDemo_f (void);
 
 #define	PT_QUALITY_CUSTOM	4
 
@@ -1472,6 +1475,11 @@ static void PT_WaterFunc( void *unused )
 static void PT_StatsFunc( void *unused )
 {
 	Cvar_SetValue( "pt_stats", s_pt_stats_box.curvalue );
+}
+
+static void PT_RenderFunc( void *unused )
+{
+	M_Menu_RenderDemo_f();
 }
 
 /*
@@ -1636,6 +1644,12 @@ void PathTrace_MenuInit( void )
 	s_pt_stats_box.generic.callback		= PT_StatsFunc;
 	s_pt_stats_box.itemnames			= yesno_names;
 
+	s_pt_render_action.generic.type		= MTYPE_ACTION;
+	s_pt_render_action.generic.x		= 0;
+	s_pt_render_action.generic.y		= 130;
+	s_pt_render_action.generic.name		= "render a demo";
+	s_pt_render_action.generic.callback	= PT_RenderFunc;
+
 	PT_SetMenuValues();
 
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_quality_list );
@@ -1649,6 +1663,7 @@ void PathTrace_MenuInit( void )
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_fog_box );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_water_list );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_stats_box );
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_render_action );
 }
 
 void PathTrace_MenuDraw (void)
@@ -1659,7 +1674,7 @@ void PathTrace_MenuDraw (void)
 	PT_SetMenuValues();
 	Menu_AdjustCursor( &s_pt_menu, 1 );
 	Menu_Draw( &s_pt_menu );
-	Menu_DrawStringDark( viddef.width / 2 - (int)strlen( note ) * 4, s_pt_menu.y + 134, note );
+	Menu_DrawStringDark( viddef.width / 2 - (int)strlen( note ) * 4, s_pt_menu.y + 154, note );
 }
 
 const char *PathTrace_MenuKey( int key )
@@ -1671,6 +1686,214 @@ void M_Menu_PathTrace_f (void)
 {
 	PathTrace_MenuInit();
 	M_PushMenu ( PathTrace_MenuDraw, PathTrace_MenuKey );
+}
+
+/*
+=======================================================================
+
+RENDER DEMO MENU
+
+Picks a recorded demo and how well to render it, and starts pt_render.
+
+=======================================================================
+*/
+
+#define	MAX_RENDER_DEMOS	128
+
+static menuframework_s	s_render_menu;
+
+static menulist_s		s_render_demo_list;
+static menulist_s		s_render_fps_list;
+static menulist_s		s_render_paths_list;
+static menulist_s		s_render_blur_list;
+static menulist_s		s_render_hud_box;
+static menuaction_s		s_render_start_action;
+
+static char		s_render_names[MAX_RENDER_DEMOS][MAX_QPATH];
+static char		*s_render_nameptrs[MAX_RENDER_DEMOS + 1];
+static int		s_render_numdemos;
+
+static const int	s_render_fps[] = { 24, 30, 60 };
+static const int	s_render_paths[] = { 16, 32, 64, 128, 256, 512 };
+
+static void Render_BlurFunc( void *unused )
+{
+	Cvar_SetValue( "pt_render_blur", s_render_blur_list.curvalue * 0.5f );
+}
+
+static void Render_HudFunc( void *unused )
+{
+	Cvar_SetValue( "pt_render_hud", s_render_hud_box.curvalue );
+}
+
+static void Render_StartFunc( void *unused )
+{
+	if ( !s_render_numdemos )
+		return;
+	Cvar_SetValue( "pt_render_fps", s_render_fps[s_render_fps_list.curvalue] );
+	Cvar_SetValue( "pt_render_paths", s_render_paths[s_render_paths_list.curvalue] );
+	CL_RenderStart( s_render_names[s_render_demo_list.curvalue],
+		s_render_fps[s_render_fps_list.curvalue], s_render_paths[s_render_paths_list.curvalue] );
+}
+
+void RenderDemo_MenuInit( void )
+{
+	static const char *none_names[] =
+	{
+		"none recorded",
+		0
+	};
+	static const char *fps_names[] =
+	{
+		"24",
+		"30",
+		"60",
+		0
+	};
+	static const char *paths_names[] =
+	{
+		"16  draft",
+		"32",
+		"64",
+		"128",
+		"256",
+		"512 slowest",
+		0
+	};
+	static const char *blur_names[] =
+	{
+		"off",
+		"half",
+		"full",
+		0
+	};
+	static const char *yesno_names[] =
+	{
+		"no",
+		"yes",
+		0
+	};
+	char	findname[MAX_OSPATH];
+	char	*s, *base, *dot;
+	int		i, value;
+
+	// what was last picked is remembered
+	Cvar_Get( "pt_render_fps", "60", CVAR_ARCHIVE );
+	Cvar_Get( "pt_render_paths", "64", CVAR_ARCHIVE );
+	Cvar_Get( "pt_render_blur", "0", CVAR_ARCHIVE );
+	Cvar_Get( "pt_render_hud", "1", CVAR_ARCHIVE );
+
+	// the demos recorded so far
+	s_render_numdemos = 0;
+	Com_sprintf( findname, sizeof(findname), "%s/demos/*.dm2", FS_Gamedir() );
+	for ( s = Sys_FindFirst( findname, 0, 0 ) ; s && s_render_numdemos < MAX_RENDER_DEMOS ; s = Sys_FindNext( 0, 0 ) )
+	{
+		base = strrchr( s, '/' );
+		if ( strrchr( s, '\\' ) > base )
+			base = strrchr( s, '\\' );
+		base = base ? base + 1 : s;
+		if ( strlen( base ) >= MAX_QPATH )
+			continue;
+		strcpy( s_render_names[s_render_numdemos], base );
+		dot = strrchr( s_render_names[s_render_numdemos], '.' );
+		if ( dot )
+			*dot = 0;
+		s_render_nameptrs[s_render_numdemos] = s_render_names[s_render_numdemos];
+		s_render_numdemos++;
+	}
+	Sys_FindClose();
+	s_render_nameptrs[s_render_numdemos] = 0;
+
+	s_render_menu.x = viddef.width / 2;
+	s_render_menu.y = viddef.height / 2 - 58;
+	s_render_menu.nitems = 0;
+
+	s_render_demo_list.generic.type		= MTYPE_SPINCONTROL;
+	s_render_demo_list.generic.x		= 0;
+	s_render_demo_list.generic.y		= 0;
+	s_render_demo_list.generic.name		= "demo";
+	s_render_demo_list.itemnames		= s_render_numdemos ? (const char **)s_render_nameptrs : none_names;
+	s_render_demo_list.curvalue			= 0;
+
+	s_render_fps_list.generic.type		= MTYPE_SPINCONTROL;
+	s_render_fps_list.generic.x			= 0;
+	s_render_fps_list.generic.y			= 20;
+	s_render_fps_list.generic.name		= "frames a second";
+	s_render_fps_list.itemnames			= fps_names;
+	s_render_fps_list.curvalue			= 2;
+	value = (int)Cvar_VariableValue( "pt_render_fps" );
+	for ( i = 0 ; i < 3 ; i++ )
+		if ( s_render_fps[i] == value )
+			s_render_fps_list.curvalue = i;
+
+	s_render_paths_list.generic.type	= MTYPE_SPINCONTROL;
+	s_render_paths_list.generic.x		= 0;
+	s_render_paths_list.generic.y		= 30;
+	s_render_paths_list.generic.name	= "paths a pixel";
+	s_render_paths_list.itemnames		= paths_names;
+	s_render_paths_list.curvalue		= 2;
+	value = (int)Cvar_VariableValue( "pt_render_paths" );
+	for ( i = 0 ; i < 6 ; i++ )
+		if ( s_render_paths[i] == value )
+			s_render_paths_list.curvalue = i;
+
+	s_render_blur_list.generic.type		= MTYPE_SPINCONTROL;
+	s_render_blur_list.generic.x		= 0;
+	s_render_blur_list.generic.y		= 40;
+	s_render_blur_list.generic.name		= "motion blur";
+	s_render_blur_list.generic.callback	= Render_BlurFunc;
+	s_render_blur_list.itemnames		= blur_names;
+	s_render_blur_list.curvalue			= (int)( ClampCvar( 0, 1, Cvar_VariableValue( "pt_render_blur" ) ) * 2 + 0.5f );
+
+	s_render_hud_box.generic.type		= MTYPE_SPINCONTROL;
+	s_render_hud_box.generic.x			= 0;
+	s_render_hud_box.generic.y			= 50;
+	s_render_hud_box.generic.name		= "status bar";
+	s_render_hud_box.generic.callback	= Render_HudFunc;
+	s_render_hud_box.itemnames			= yesno_names;
+	s_render_hud_box.curvalue			= Cvar_VariableValue( "pt_render_hud" ) != 0;
+
+	s_render_start_action.generic.type	= MTYPE_ACTION;
+	s_render_start_action.generic.x		= 0;
+	s_render_start_action.generic.y		= 70;
+	s_render_start_action.generic.name	= "start rendering";
+	s_render_start_action.generic.callback = Render_StartFunc;
+
+	Menu_AddItem( &s_render_menu, ( void * ) &s_render_demo_list );
+	Menu_AddItem( &s_render_menu, ( void * ) &s_render_fps_list );
+	Menu_AddItem( &s_render_menu, ( void * ) &s_render_paths_list );
+	Menu_AddItem( &s_render_menu, ( void * ) &s_render_blur_list );
+	Menu_AddItem( &s_render_menu, ( void * ) &s_render_hud_box );
+	Menu_AddItem( &s_render_menu, ( void * ) &s_render_start_action );
+}
+
+void RenderDemo_MenuDraw (void)
+{
+	static const char	*notes[] =
+	{
+		"record a demo in the console: record <name>, then stop",
+		"frames, sound and render.bat go to render/<demo>",
+		"esc stops a render; progress is in the title bar",
+		0
+	};
+	int		i;
+
+	M_Banner( "m_banner_video" );
+	Menu_AdjustCursor( &s_render_menu, 1 );
+	Menu_Draw( &s_render_menu );
+	for ( i = 0 ; notes[i] ; i++ )
+		Menu_DrawStringDark( viddef.width / 2 - (int)strlen( notes[i] ) * 4, s_render_menu.y + 94 + i * 10, notes[i] );
+}
+
+const char *RenderDemo_MenuKey( int key )
+{
+	return Default_MenuKey( &s_render_menu, key );
+}
+
+void M_Menu_RenderDemo_f (void)
+{
+	RenderDemo_MenuInit();
+	M_PushMenu ( RenderDemo_MenuDraw, RenderDemo_MenuKey );
 }
 
 /*
@@ -4249,6 +4472,7 @@ void M_Init (void)
 	Cmd_AddCommand ("menu_multiplayer", M_Menu_Multiplayer_f );
 	Cmd_AddCommand ("menu_video", M_Menu_Video_f);
 	Cmd_AddCommand ("menu_pathtrace", M_Menu_PathTrace_f);
+	Cmd_AddCommand ("menu_renderdemo", M_Menu_RenderDemo_f);
 	Cmd_AddCommand ("menu_options", M_Menu_Options_f);
 		Cmd_AddCommand ("menu_keys", M_Menu_Keys_f);
 	Cmd_AddCommand ("menu_quit", M_Menu_Quit_f);

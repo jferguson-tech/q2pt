@@ -150,6 +150,12 @@ void S_TransferPaintBuffer(int endtime)
 	int		val;
 	unsigned long *pbuf;
 
+	if (S_Capturing ())
+	{	// to a file, not the card
+		S_CaptureWrite (paintbuffer, endtime - paintedtime);
+		return;
+	}
+
 	pbuf = (unsigned long *)dma.buffer;
 
 	if (s_testsound->value)

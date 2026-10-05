@@ -1109,6 +1109,106 @@ void GetSoundtime(void)
 }
 
 
+/*
+===============================================================================
+
+Capture: for rendering a demo offline. While it is on nothing goes to the
+sound card. Instead each frame mixes exactly the samples that belong to it
+and they are written to a WAV file, so the sound keeps step with the
+pictures however long those take to make.
+
+===============================================================================
+*/
+
+static FILE	*capture_file;
+static int	capture_bytes;
+static int	capture_step;		// sample pairs to mix on the next update
+
+static void S_CaptureHeader (void)
+{
+	unsigned char	h[44];
+	int				rate = dma.speed;
+
+#define	PUT32(p, v)	((p)[0] = (v) & 255, (p)[1] = ((v) >> 8) & 255, (p)[2] = ((v) >> 16) & 255, (p)[3] = ((v) >> 24) & 255)
+	memcpy (h, "RIFF", 4);
+	PUT32 (h + 4, capture_bytes + 36);
+	memcpy (h + 8, "WAVEfmt ", 8);
+	PUT32 (h + 16, 16);
+	h[20] = 1; h[21] = 0;		// PCM
+	h[22] = 2; h[23] = 0;		// stereo
+	PUT32 (h + 24, rate);
+	PUT32 (h + 28, rate * 4);
+	h[32] = 4; h[33] = 0;		// bytes per sample pair
+	h[34] = 16; h[35] = 0;		// bits
+	memcpy (h + 36, "data", 4);
+	PUT32 (h + 40, capture_bytes);
+#undef PUT32
+	fseek (capture_file, 0, SEEK_SET);
+	fwrite (h, 1, 44, capture_file);
+}
+
+qboolean S_CaptureStart (char *path)
+{
+	if (!sound_started || capture_file)
+		return false;
+	capture_file = fopen (path, "wb");
+	if (!capture_file)
+		return false;
+	capture_bytes = 0;
+	capture_step = 0;
+	S_CaptureHeader ();
+	S_ClearBuffer ();		// or the card goes on playing what it last had
+	return true;
+}
+
+qboolean S_Capturing (void)
+{
+	return capture_file != NULL;
+}
+
+/*
+Frame number `frame` of a film of `fps` frames a second is about to be made:
+its share of the sound is whatever takes the total up to the end of it.
+*/
+void S_CaptureStep (int frame, int fps)
+{
+	if (!capture_file || fps <= 0)
+		return;
+	capture_step = (int)(((double)frame + 1) * dma.speed / fps) - (int)((double)frame * dma.speed / fps);
+}
+
+// called by the mixer in place of handing the samples to the card
+void S_CaptureWrite (portable_samplepair_t *samples, int count)
+{
+	short	out[2];
+	int		i, val;
+
+	if (!capture_file)
+		return;
+	for (i=0 ; i<count ; i++)
+	{
+		val = samples[i].left >> 8;
+		out[0] = val > 0x7fff ? 0x7fff : (val < -0x8000 ? -0x8000 : val);
+		val = samples[i].right >> 8;
+		out[1] = val > 0x7fff ? 0x7fff : (val < -0x8000 ? -0x8000 : val);
+		fwrite (out, 1, 4, capture_file);
+	}
+	capture_bytes += count * 4;
+}
+
+void S_CaptureStop (void)
+{
+	if (!capture_file)
+		return;
+	S_CaptureHeader ();		// now that the length is known
+	fclose (capture_file);
+	capture_file = NULL;
+
+	// the card's clock went its own way meanwhile: start again from it
+	S_StopAllSounds ();
+	paintedtime = 0;
+}
+
 void S_Update_(void)
 {
 	unsigned        endtime;
@@ -1116,6 +1216,17 @@ void S_Update_(void)
 
 	if (!sound_started)
 		return;
+
+	if (capture_file)
+	{
+		if (capture_step > 0)
+		{
+			soundtime = paintedtime;
+			S_PaintChannels (paintedtime + capture_step);
+			capture_step = 0;
+		}
+		return;
+	}
 
 	SNDDMA_BeginPainting ();
 

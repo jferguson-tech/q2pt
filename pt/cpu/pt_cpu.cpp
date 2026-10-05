@@ -169,6 +169,7 @@ struct CpuBackend
 	std::vector<uint32_t>	ldr;			// tone mapped, render sized
 	int						rw = 0, rh = 0;
 	bool					have_history = false;
+	bool					have_exposure = false;	// auto_exposure has been measured at least once
 	bool					antialiased = false;	// last frame was
 	float					jitter_x = 0.0f, jitter_y = 0.0f;	// this frame's offset within the pixel
 	float					moving_history = 32.0f;	// frames of lighting kept while anything changes
@@ -1392,6 +1393,11 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		s->ldr.assign(count, 0);
 		s->have_history = false;
 	}
+	if (view->restart)
+	{
+		s->have_history = false;
+		s->antialiased = false;
+	}
 
 	BuildFrame(s->frame, view->scene, s->textures);
 	const auto built = std::chrono::steady_clock::now();
@@ -1552,10 +1558,11 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		{
 			const float want = std::min(16.0f, std::max(0.125f, kTypicalTarget / typical));
 			const float dt = view->time - s->prev_time;
-			if (!s->have_history || dt < 0.0f || dt > 1.0f)
+			if (!s->have_exposure || dt < 0.0f || dt > 1.0f)
 				s->auto_exposure = want;
 			else
 				s->auto_exposure += (want - s->auto_exposure) * (1.0f - std::exp(-dt * 2.5f));
+			s->have_exposure = true;
 		}
 		if (view->bloom > 0.0f)
 			Bloom(s, view->bloom);
@@ -1695,6 +1702,10 @@ void Present(pt_backend_t *b, const uint32_t *overlay)
 int ReadPixels(pt_backend_t *b, uint32_t *pixels, int with_overlay)
 {
 	CpuBackend *s = Self(b);
+
+	// a view made since the last frame was shown can be read already
+	if (s->has_view)
+		ClipView(s, s->shown[0], s->shown[1], s->shown[2], s->shown[3]);
 
 	for (int y = 0; y < s->height; y++)
 	{

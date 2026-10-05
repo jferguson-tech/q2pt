@@ -783,6 +783,14 @@ void Key_Event (int key, qboolean down, unsigned time)
 		return;
 	}
 
+	// a demo being rendered offline is left alone but for the key that stops it
+	if (CL_RenderBusy ())
+	{
+		if (down && key == K_ESCAPE)
+			CL_RenderStop ();
+		return;
+	}
+
 	// any key during the attract mode will bring up the menu
 	if (cl.attractloop && cls.key_dest != key_menu)
 		key = K_ESCAPE;

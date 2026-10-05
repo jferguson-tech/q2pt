@@ -1515,6 +1515,8 @@ void CL_InitLocal (void)
 
 	Cmd_AddCommand ("precache", CL_Precache_f);
 
+	CL_InitRender ();
+
 	Cmd_AddCommand ("download", CL_Download_f);
 
 	//
@@ -1684,13 +1686,16 @@ void CL_Frame (int msec)
 
 	extratime += msec;
 
-	if (!cl_timedemo->value)
+	if (!cl_timedemo->value && !CL_RenderBusy ())
 	{
 		if (cls.state == ca_connected && extratime < 100)
 			return;			// don't flood packets out while connecting
 		if (extratime < 1000/cl_maxfps->value)
 			return;			// framerate is too high
 	}
+
+	// rendering a demo offline: one frame of the film per frame here
+	CL_RenderFrame ();
 
 	// let the mouse activate or deactivate
 	IN_Frame ();

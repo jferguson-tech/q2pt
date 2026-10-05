@@ -161,6 +161,10 @@ typedef struct pt_view_s
 	float		sky_axis[3];			/* the sky turns about this (unit) axis ... */
 	float		sky_angle;				/* ... by this many degrees */
 
+	int		restart;		/* forget what earlier frames gathered: this one is
+						   made from nothing, as the first ever is. Exposure
+						   still follows on from before. */
+
 	/* quality settings; a backend may ignore what it has no use for */
 	float	scale;			/* internal resolution as a fraction of the view */
 	int		samples;		/* paths per pixel per frame */

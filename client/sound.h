@@ -30,6 +30,11 @@ void S_StartLocalSound (char *s);
 void S_RawSamples (int samples, int rate, int width, int channels, byte *data);
 
 void S_StopAllSounds(void);
+
+// mixing to a WAV file in step with frames, for rendering a demo offline
+qboolean S_CaptureStart (char *path);
+void S_CaptureStep (int frame, int fps);
+void S_CaptureStop (void);
 void S_Update (vec3_t origin, vec3_t v_forward, vec3_t v_right, vec3_t v_up);
 
 void S_Activate (qboolean active);

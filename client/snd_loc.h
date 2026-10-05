@@ -157,6 +157,9 @@ void S_IssuePlaysound (playsound_t *ps);
 
 void S_PaintChannels(int endtime);
 
+qboolean S_Capturing (void);
+void S_CaptureWrite (portable_samplepair_t *samples, int count);
+
 // picks a channel based on priorities, empty slots, number of channels
 channel_t *S_PickChannel(int entnum, int entchannel);
 

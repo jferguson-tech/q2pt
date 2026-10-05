@@ -261,6 +261,7 @@ qboolean R_Init (void *hInstance, void *wndProc)
 	R_InitMaterials ();
 	Draw_InitLocal ();
 	R_InitShots ();
+	R_InitOffline ();
 
 	ri.Vid_MenuInit ();
 
@@ -277,6 +278,7 @@ Also called by the engine after a failed R_Init
 void R_Shutdown (void)
 {
 	R_ShutdownShots ();
+	R_ShutdownOffline ();
 	R_WaterReset ();		// while the backend that holds its pictures is still there
 	R_ShutdownImages ();
 	R_ShutdownModels ();
@@ -422,9 +424,13 @@ void R_RenderFrame (refdef_t *fd)
 	view.anim_frame = (int)(fd->time * 2);
 	VectorCopy (r_skyaxis, view.sky_axis);
 	view.sky_angle = fd->time * r_skyrotate;
-	// more than once only for a screenshot
-	for (i=R_ShotPasses (&view) ; i>0 ; i--)
-		rpt.backend->render_view (rpt.backend, &view);
+	if (R_Offline ())
+		R_OfflineRender (fd, &view);
+	else
+	{	// more than once only for a screenshot
+		for (i=R_ShotPasses (&view) ; i>0 ; i--)
+			rpt.backend->render_view (rpt.backend, &view);
+	}
 
 	// damage flashes, underwater tint and the like
 	Draw_Blend (fd->x, fd->y, fd->width, fd->height, fd->blend);
@@ -434,7 +440,7 @@ void R_RenderFrame (refdef_t *fd)
 	Draw_String (fd->x + (fd->width - 12 * 8) / 2, fd->y + fd->height / 3 + 12, "no scene yet");
 #endif
 
-	if (pt_stats->value)
+	if (pt_stats->value && !R_Offline ())
 		R_DrawStats (fd);
 }
 
@@ -537,6 +543,7 @@ void R_EndFrame (void)
 	rpt.backend->present (rpt.backend, rpt.overlay);
 	R_CountFrame ();
 	R_ShotFinish ();
+	R_OfflineFinish ();
 }
 
 /*

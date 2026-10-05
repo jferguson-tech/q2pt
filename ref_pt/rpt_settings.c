@@ -317,4 +317,7 @@ void R_ViewSettings (pt_view_t *view)
 	view->bloom = pt_bloom->value;
 	view->fog = pt_fog->value != 0;
 	view->fog_density = pt_fog_density->value;
+
+	if (R_Offline ())
+		R_OfflineSettings (view);
 }
