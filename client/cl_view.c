@@ -503,7 +503,16 @@ void V_RenderView( float stereo_separation )
 		cl.refdef.y = scr_vrect.y;
 		cl.refdef.width = scr_vrect.width;
 		cl.refdef.height = scr_vrect.height;
-		cl.refdef.fov_y = CalcFov (cl.refdef.fov_x, cl.refdef.width, cl.refdef.height);
+		// The field of view is the game's for a picture four wide and three
+		// high. A wider picture keeps that much up and down and shows more
+		// to the sides, where otherwise it would be cut off above and below.
+		if (cl.refdef.width * 3 > cl.refdef.height * 4)
+		{
+			cl.refdef.fov_y = CalcFov (cl.refdef.fov_x, 4, 3);
+			cl.refdef.fov_x = CalcFov (cl.refdef.fov_y, cl.refdef.height, cl.refdef.width);
+		}
+		else
+			cl.refdef.fov_y = CalcFov (cl.refdef.fov_x, cl.refdef.width, cl.refdef.height);
 		cl.refdef.time = cl.time*0.001;
 
 		cl.refdef.areabits = cl.frame.areabits;
