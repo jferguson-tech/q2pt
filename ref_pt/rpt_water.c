@@ -30,6 +30,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "../pt/water/pt_water.h"
 
 #define	MAX_WATER_BODIES	48
+#define	MAX_BODY_MATERIALS	8
 #define	BODY_JOIN_DISTANCE	96		// faces this near each other are the same body
 
 typedef struct
@@ -37,8 +38,10 @@ typedef struct
 	image_t		*image;
 	float		z;
 	float		mins[2], maxs[2];
-	int			material;			// world material index
+	int			materials[MAX_BODY_MATERIALS];	// world material indices: its faces need not all be alike
+	int			nummaterials;
 	qboolean	lava;
+	qboolean	clear;				// water, as against lava and slime
 	float		absorb[3];
 	int			parent;				// the body this one turned out to be part of, or itself
 	pt_water_t	*sim;				// only bodies that are their own parent have one
@@ -207,9 +210,9 @@ int R_WaterBody (image_t *image, const char *name, float z, float points[][3], i
 	b->z = z;
 	b->mins[0] = mins[0]; b->mins[1] = mins[1];
 	b->maxs[0] = maxs[0]; b->maxs[1] = maxs[1];
-	b->material = -1;
 	b->parent = w_numbodies;
 	b->lava = strstr (name, "lava") != NULL;
+	b->clear = !b->lava && !strstr (name, "slime");
 	b->wave_texture = b->caustic_texture = -1;
 	R_WaterAbsorb (image, name, b->absorb);
 	return w_numbodies++;
@@ -217,8 +220,17 @@ int R_WaterBody (image_t *image, const char *name, float z, float points[][3], i
 
 void R_WaterSetMaterial (int body, int material)
 {
-	if (body >= 0 && body < w_numbodies)
-		w_bodies[body].material = material;
+	waterbody_t	*b;
+	int			i;
+
+	if (body < 0 || body >= w_numbodies)
+		return;
+	b = &w_bodies[body];
+	for (i=0 ; i<b->nummaterials ; i++)
+		if (b->materials[i] == material)
+			return;
+	if (b->nummaterials < MAX_BODY_MATERIALS)
+		b->materials[b->nummaterials++] = material;
 }
 
 /*
@@ -235,7 +247,7 @@ void R_WaterFinish (void)
 	pt_material_t	*mat;
 	pt_texture_t	tex;
 	qboolean		changed;
-	int				i, j, count;
+	int				i, j, k, count;
 
 	// faces come in no useful order, so bodies that started apart may
 	// have grown into each other
@@ -300,15 +312,25 @@ void R_WaterFinish (void)
 	for (i=0, b=w_bodies ; i<w_numbodies ; i++, b++)
 	{
 		root = &w_bodies[b->parent];
-		if (b->material < 0 || !root->sim)
+		if (!root->sim)
 			continue;
-		mat = R_WorldMaterialPtr (b->material);
-		mat->wave_map = root->wave_texture + 1;
-		mat->caustic_map = root->caustic_texture + 1;
-		mat->wave_rect[0] = root->mins[0];
-		mat->wave_rect[1] = root->mins[1];
-		mat->wave_rect[2] = 1.0f / (pt_water_width (root->sim) * pt_water_cell (root->sim));
-		mat->wave_rect[3] = 1.0f / (pt_water_height (root->sim) * pt_water_cell (root->sim));
+		for (k=0 ; k<b->nummaterials ; k++)
+		{
+			mat = R_WorldMaterialPtr (b->materials[k]);
+			mat->wave_map = root->wave_texture + 1;
+			mat->caustic_map = root->caustic_texture + 1;
+			mat->wave_rect[0] = root->mins[0];
+			mat->wave_rect[1] = root->mins[1];
+			mat->wave_rect[2] = 1.0f / (pt_water_width (root->sim) * pt_water_cell (root->sim));
+			mat->wave_rect[3] = 1.0f / (pt_water_height (root->sim) * pt_water_cell (root->sim));
+
+			// Simulated water is clear: what shows is what it reflects and
+			// what lies under it, coloured by the depth looked through, with
+			// none of the map's picture painted on top. Where the map made
+			// the water a light it still lights the room, unseen.
+			if (b->clear)
+				mat->alpha = 0;
+		}
 	}
 
 	if (count)

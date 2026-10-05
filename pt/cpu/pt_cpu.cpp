@@ -494,7 +494,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 		const float share = through * mat.alpha;
 		if (mat.emissive && surf.front)
 			front_add += Emitted(surf, true) * share;
-		if (MaxComponent(surf.kd) > 0.0f)
+		if (share > 0.0f && MaxComponent(surf.kd) > 0.0f)
 		{
 			const Lit world = DirectWorld(sc, surf, rng, true), frame = DirectFrameOne(sc, surf, rng);
 			front_diffuse += surf.kd * (world.diffuse + frame.diffuse) * (kInvPi * share);

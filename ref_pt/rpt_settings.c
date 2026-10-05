@@ -68,7 +68,7 @@ static cvar_t	*pt_refraction;			// water bends the view
 static cvar_t	*pt_normal_flip;			// 1 = hand made normal maps have green pointing up
 static cvar_t	*pt_water;				// 0 classic, 1 realistic, 2 simulated
 static cvar_t	*pt_water_cell;			// size of a simulation cell, in map units
-static cvar_t	*pt_water_caustics;		// strength of the light patterns under and beside water
+static cvar_t	*pt_water_caustics;		// strength of the light patterns waves throw under and beside water; 0 = none
 static cvar_t	*pt_water_height;		// how tall the simulated waves are, 1 = normal
 static cvar_t	*pt_water_damping;		// how fast waves die down, 1 = normal
 static cvar_t	*pt_waves;				// ripple strength on liquids
@@ -84,7 +84,7 @@ float	r_surfacelight = 1, r_pointlight = 1, r_liquidglow = 0.25f;
 float	r_detailglow = 1;
 int		r_watermode = 2;
 int		r_normalflip;
-float	r_watercell = 8, r_waterwaves = 1, r_watercaustics = 1, r_waterdamping = 1;
+float	r_watercell = 8, r_waterwaves = 1, r_watercaustics = 0, r_waterdamping = 1;
 float	r_bumpscale = 1, r_roughscale = 1, r_metalscale = 1;
 
 #define	NUM_PRESETS	4
@@ -160,7 +160,7 @@ void R_InitSettings (void)
 	pt_water = ri.Cvar_Get ("pt_water", "2", CVAR_ARCHIVE);
 	pt_normal_flip = ri.Cvar_Get ("pt_normal_flip", "0", CVAR_ARCHIVE);
 	pt_water_cell = ri.Cvar_Get ("pt_water_cell", "8", CVAR_ARCHIVE);
-	pt_water_caustics = ri.Cvar_Get ("pt_water_caustics", "1", CVAR_ARCHIVE);
+	pt_water_caustics = ri.Cvar_Get ("pt_water_caustics", "0", CVAR_ARCHIVE);
 	pt_water_damping = ri.Cvar_Get ("pt_water_damping", "1", CVAR_ARCHIVE);
 	pt_water_height = ri.Cvar_Get ("pt_water_height", "1", CVAR_ARCHIVE);
 
