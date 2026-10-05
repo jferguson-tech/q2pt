@@ -71,6 +71,9 @@ struct Pixels
 	std::vector<Vec3>	pos;
 	std::vector<Vec3>	seen;		// where it appears to be: along the eye's ray, even if water bent the view
 	std::vector<uint8_t> bent;		// seen through refraction
+	std::vector<uint8_t> moved;		// on something that was elsewhere last frame; seen is where
+	std::vector<Vec3>	spec_pos;	// where a mirror-like surface's reflection appears to be
+	std::vector<uint8_t> spec_ok;	// spec_pos is set
 	std::vector<Vec3>	plane;		// geometric normal
 	std::vector<Vec3>	normal;		// shading normal
 	std::vector<float>	depth;		// along the ray; negative where there is no surface
@@ -89,6 +92,9 @@ struct Pixels
 		pos.assign(n, Vec3());
 		seen.assign(n, Vec3());
 		bent.assign(n, 0);
+		moved.assign(n, 0);
+		spec_pos.assign(n, Vec3());
+		spec_ok.assign(n, 0);
 		plane.assign(n, Vec3());
 		normal.assign(n, Vec3());
 		depth.assign(n, -1.0f);
@@ -338,6 +344,8 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 	px.add[i] = Vec3();
 	px.over_pos[i] = Vec3();
 	px.bent[i] = 0;
+	px.moved[i] = 0;
+	px.spec_ok[i] = 0;
 	for (int c = 0; c < kChannels; c++)
 	{
 		px.albedo[c][i] = Vec3();
@@ -508,6 +516,18 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 	px.pos[i] = surf.p;
 	px.seen[i] = travelled > 0.0f ? cam.origin + eye_dir * (travelled + hit.t) : surf.p;
 	px.bent[i] = travelled > 0.0f;
+	if (!px.bent[i] && (hit.tri & kDynamic) && !sc.frame->prev.empty())
+	{
+		const Vec3 *corner = &sc.frame->prev[(size_t)(hit.tri & ~kDynamic) * 3];
+		const Vec3 before = corner[0] * (1.0f - hit.u - hit.v) + corner[1] * hit.u + corner[2] * hit.v;
+		const Vec3 shift = before - surf.p;
+		if (Dot(shift, shift) > 1e-6f)
+		{
+			// history is looked up where this point was, not where it is
+			px.seen[i] = before;
+			px.moved[i] = 1;
+		}
+	}
 	px.plane[i] = surf.ng;
 	px.normal[i] = surf.n;
 	px.depth[i] = travelled + hit.t;
@@ -528,6 +548,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 
 	Vec3 sum[2];
 	float m1[2] = {}, m2[2] = {};
+	float spec_reach = -1.0f;
 	for (int k = 0; k < samples; k++)
 	{
 		Vec3 c[2];
@@ -551,10 +572,14 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 			if (spec_chance > 0.0f && rng.Float() < spec_chance)
 			{
 				Vec3 weight;
+				float reached = 0.0f;
 				if (SampleSpecular(surf, rng, bounce.d, weight))
+				{
 					c[kSpecular] += Demodulate(
-						weight * Radiance(sc, bounce, rng, false, !surf.light_sampled_spec, 1, sc.reflection_bounces),
+						weight * Radiance(sc, bounce, rng, false, !surf.light_sampled_spec, 1, sc.reflection_bounces, &reached),
 						spec_albedo) * (1.0f / spec_chance);
+					spec_reach = reached;
+				}
 			}
 		}
 
@@ -566,6 +591,15 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 			m1[ch] += lum;
 			m2[ch] += lum * lum;
 		}
+	}
+
+	// A reflection in something close to a mirror appears to sit behind the
+	// surface, as far again as the thing reflected is in front of it. That is
+	// where to look for it in last frame's picture.
+	if (spec_reach >= 0.0f && surf.roughness < kLightSampledRoughness && !px.moved[i] && !px.bent[i])
+	{
+		px.spec_pos[i] = cam.origin + eye_dir * (hit.t + std::min(spec_reach, 100000.0f));
+		px.spec_ok[i] = 1;
 	}
 
 	const float inv = 1.0f / samples;
@@ -585,6 +619,13 @@ bool SameSurface(const Pixels &cur, const Pixels &prev, size_t i, size_t q)
 {
 	if (cur.bent[i])
 		return prev.bent[q] && std::fabs(prev.depth[q] - cur.depth[i]) < 0.1f * cur.depth[i] + 1.0f;
+	if (cur.moved[i])
+	{
+		// cur.seen is where this point was last frame: was that what q showed?
+		const Vec3 off = prev.pos[q] - cur.seen[i];
+		const float slack = 2.0f + cur.depth[i] * 0.02f;
+		return Dot(off, off) <= slack * slack;
+	}
 	return !prev.bent[q]
 		&& std::fabs(Dot(cur.plane[i], prev.pos[q] - cur.pos[i])) <= 1.0f + cur.depth[i] * 0.01f
 		&& Dot(cur.plane[i], prev.plane[q]) >= 0.9f;
@@ -607,6 +648,8 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 		if (cur.depth[i] < 0.0f)
 			continue;
 
+		const Vec3 spec_sample = cur.light[kSpecular][i];
+		const float spec_m1 = cur.m1[kSpecular][i], spec_m2 = cur.m2[kSpecular][i];
 		const bool has_over = cur.albedo[kOver][i].x > 0.0f;
 		const Vec3 over_sample = cur.light[kOver][i];
 		const float over_m1 = cur.m1[kOver][i], over_m2 = cur.m2[kOver][i];
@@ -737,6 +780,53 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 			if (len < 4.0f)
 				var = std::max(var, cur.m1[c][i] * cur.m1[c][i] * 0.25f + 0.01f);
 			cur.variance[c][i] = var;
+		}
+
+		// The same goes for what a mirror-like solid surface reflects.
+		if (cur.spec_ok[i] && s->have_history)
+		{
+			const Vec3 v = cur.spec_pos[i] - prev_cam.origin;
+			const float z = Dot(v, prev_cam.forward);
+			Vec3 sh;
+			float sh1 = 0.0f, sh2 = 0.0f, sw = 0.0f;
+			if (z > 0.01f)
+			{
+				const float fx = (Dot(v, prev_cam.right) / (z * prev_cam.tx) * 0.5f + 0.5f) * rw - 0.5f - s->jitter_x;
+				const float fy = (0.5f - Dot(v, prev_cam.up) / (z * prev_cam.ty) * 0.5f) * rh - 0.5f - s->jitter_y;
+				const int ix = (int)std::floor(fx + 0.001f), iy = (int)std::floor(fy + 0.001f);
+				const float ax = fx - ix, ay = fy - iy;
+
+				for (int t = 0; t < 4; t++)
+				{
+					const int qx = ix + (t & 1), qy = iy + (t >> 1);
+					if (qx < 0 || qy < 0 || qx >= rw || qy >= rh)
+						continue;
+					const size_t q = (size_t)qy * rw + qx;
+					// any surface about as smooth, facing much the same way
+					if (prev.depth[q] < 0.0f || prev.length[q] <= 0.0f
+						|| std::fabs(prev.roughness[q] - cur.roughness[i]) > 0.1f
+						|| Dot(cur.plane[i], prev.plane[q]) < 0.8f)
+						continue;
+					const float w = ((t & 1) ? ax : 1.0f - ax) * ((t >> 1) ? ay : 1.0f - ay);
+					if (w <= 0.0f)
+						continue;
+					sh += prev.light[kSpecular][q] * w;
+					sh1 += prev.m1[kSpecular][q] * w;
+					sh2 += prev.m2[kSpecular][q] * w;
+					sw += w;
+				}
+			}
+			if (sw > 0.01f)
+			{
+				const float inv = 1.0f / sw;
+				const float n = std::min(std::max(cur.length[i], 2.0f), max_history);
+				const float a = 1.0f / n;
+				cur.light[kSpecular][i] = sh * inv + (spec_sample - sh * inv) * a;
+				cur.m1[kSpecular][i] = sh1 * inv + (spec_m1 - sh1 * inv) * a;
+				cur.m2[kSpecular][i] = sh2 * inv + (spec_m2 - sh2 * inv) * a;
+				cur.variance[kSpecular][i] = std::max(0.0f,
+					cur.m2[kSpecular][i] - cur.m1[kSpecular][i] * cur.m1[kSpecular][i]) / n;
+			}
 		}
 
 		// Reflections in glass and water do not move across the screen the

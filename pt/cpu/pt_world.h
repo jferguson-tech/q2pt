@@ -192,6 +192,7 @@ struct Frame
 {
 	std::vector<Material>	materials;
 	std::vector<Tri>		tris;
+	std::vector<Vec3>		prev;		// 3 per triangle: its corners last frame; may be empty
 	Bvh						bvh;
 	std::vector<Light>		lights;		// point lights only
 	uint32_t				hash = 0;	// changes when anything in it does

@@ -24,6 +24,20 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "rpt_local.h"
 
 static float			*s_positions, *s_uvs, *s_normals;
+static float			*s_prev;			// 9 per triangle: where it was last frame
+
+// Where each entity was last frame, so the tracer can follow what moves.
+// Entities carry no identity from one frame to the next; they are matched
+// by their place in the list, or failing that by the nearest of the same model.
+typedef struct
+{
+	struct model_s	*model;		// NULL if not something to follow
+	vec3_t			origin;
+	vec3_t			axis[3];
+} entstate_t;
+
+static entstate_t		s_was[MAX_ENTITIES], s_now[MAX_ENTITIES];
+static int				s_numwas;
 static uint32_t			*s_trimaterials;
 static int				s_numtris, s_maxtris;
 
@@ -102,6 +116,61 @@ static int S_ImageMaterial (image_t *image, float r, float g, float b, float alp
 	return S_FindMaterial (&mat);
 }
 
+// where the triangle just added was last frame
+static void S_Prev (const float *a, const float *b, const float *c)
+{
+	float	*p = s_prev + (s_numtris - 1) * 9;
+
+	p[0] = a[0]; p[1] = a[1]; p[2] = a[2];
+	p[3] = b[0]; p[4] = b[1]; p[5] = b[2];
+	p[6] = c[0]; p[7] = c[1]; p[8] = c[2];
+}
+
+/*
+=============
+S_Before
+
+Notes where entity number index is now and returns where it was last frame,
+or NULL if it was not there to be found
+=============
+*/
+static entstate_t *S_Before (int index, entity_t *e, vec3_t origin, vec3_t axis[3])
+{
+	entstate_t	*now, *was, *best;
+	vec3_t		d;
+	float		dist, bestdist;
+	int			i;
+
+	now = &s_now[index];
+	now->model = e->model;
+	VectorCopy (origin, now->origin);
+	memcpy (now->axis, axis, sizeof(now->axis));
+
+	was = &s_was[index];
+	if (index < s_numwas && was->model == e->model)
+	{
+		VectorSubtract (was->origin, origin, d);
+		if (DotProduct (d, d) < 256 * 256)
+			return was;
+	}
+
+	best = NULL;
+	bestdist = 128 * 128;
+	for (i=0, was=s_was ; i<s_numwas ; i++, was++)
+	{
+		if (was->model != e->model)
+			continue;
+		VectorSubtract (was->origin, origin, d);
+		dist = DotProduct (d, d);
+		if (dist < bestdist)
+		{
+			bestdist = dist;
+			best = was;
+		}
+	}
+	return best;
+}
+
 // the normals of the triangle just added, for smooth shading
 static void S_Normals (const float *a, const float *b, const float *c)
 {
@@ -123,6 +192,7 @@ static void S_Triangle (const float *a, const float *b, const float *c,
 		s_maxtris = s_maxtris ? s_maxtris * 2 : 8192;
 		s_positions = realloc (s_positions, s_maxtris * 9 * sizeof(float));
 		s_normals = realloc (s_normals, s_maxtris * 9 * sizeof(float));
+		s_prev = realloc (s_prev, s_maxtris * 9 * sizeof(float));
 		s_uvs = realloc (s_uvs, s_maxtris * 6 * sizeof(float));
 		s_trimaterials = realloc (s_trimaterials, s_maxtris * sizeof(uint32_t));
 	}
@@ -145,6 +215,7 @@ static void S_Triangle (const float *a, const float *b, const float *c,
 	CrossProduct (d1, d2, normal);
 	VectorNormalize (normal);
 	S_Normals (normal, normal, normal);
+	S_Prev (a, b, c);		// not known to have moved
 }
 
 /*
@@ -195,9 +266,10 @@ S_AddInline
 A door, lift or other piece of the map
 =============
 */
-static void S_AddInline (entity_t *e, model_t *mod)
+static void S_AddInline (entity_t *e, model_t *mod, int index)
 {
-	float			*positions, *uvs, a[3], b[3], c[3];
+	float			*positions, *uvs, a[3], b[3], c[3], pa[3], pb[3], pc[3];
+	entstate_t		*before;
 	uint32_t		*materials;
 	pt_material_t	mat;
 	image_t			*image;
@@ -209,6 +281,7 @@ static void S_AddInline (entity_t *e, model_t *mod)
 		return;
 
 	S_EntityAxis (e, false, axis);
+	before = S_Before (index, e, e->origin, axis);
 
 	for (i=0 ; i<count ; i++)
 	{
@@ -236,6 +309,13 @@ static void S_AddInline (entity_t *e, model_t *mod)
 		S_Transform (positions + i * 9 + 3, e->origin, axis, b);
 		S_Transform (positions + i * 9 + 6, e->origin, axis, c);
 		S_Triangle (a, b, c, uvs[i*6], uvs[i*6+1], uvs[i*6+2], uvs[i*6+3], uvs[i*6+4], uvs[i*6+5], s_worldremap[m]);
+		if (before)
+		{
+			S_Transform (positions + i * 9, before->origin, before->axis, pa);
+			S_Transform (positions + i * 9 + 3, before->origin, before->axis, pb);
+			S_Transform (positions + i * 9 + 6, before->origin, before->axis, pc);
+			S_Prev (pa, pb, pc);
+		}
 	}
 }
 
@@ -246,9 +326,11 @@ S_AddAlias
 A model, posed between two of its frames
 =============
 */
-static void S_AddAlias (entity_t *e, model_t *mod)
+static void S_AddAlias (entity_t *e, model_t *mod, int index)
 {
-	static float	verts[MAX_VERTS][3], normals[MAX_VERTS][3];
+	static float	verts[MAX_VERTS][3], normals[MAX_VERTS][3], prevverts[MAX_VERTS][3];
+	entstate_t		*before;
+	qboolean		shell;
 	dmdl_t			*hdr;
 	daliasframe_t	*frame, *oldframe;
 	dtrivertx_t		*v, *ov;
@@ -279,6 +361,7 @@ static void S_AddAlias (entity_t *e, model_t *mod)
 	S_EntityAxis (e, true, axis);
 	for (j=0 ; j<3 ; j++)
 		origin[j] = e->origin[j] + backlerp * (e->oldorigin[j] - e->origin[j]);
+	before = S_Before (index, e, origin, axis);
 
 	for (i=0 ; i<hdr->num_xyz ; i++)
 	{
@@ -286,6 +369,11 @@ static void S_AddAlias (entity_t *e, model_t *mod)
 			local[j] = (ov[i].v[j] * oldframe->scale[j] + oldframe->translate[j]) * backlerp
 				+ (v[i].v[j] * frame->scale[j] + frame->translate[j]) * frontlerp;
 		S_Transform (local, origin, axis, verts[i]);
+		// last frame: the same pose, where the entity was then
+		if (before)
+			S_Transform (local, before->origin, before->axis, prevverts[i]);
+		else
+			VectorCopy (verts[i], prevverts[i]);
 	}
 
 	// select skin
@@ -303,9 +391,11 @@ static void S_AddAlias (entity_t *e, model_t *mod)
 	emit[0] = emit[1] = emit[2] = 0;
 	if (e->flags & RF_VIEWERMODEL)
 		flags |= PT_MAT_CAMERA_INVISIBLE;	// the player's own body: shadows, but not in the way
-	if (e->flags & (RF_SHELL_RED|RF_SHELL_GREEN|RF_SHELL_BLUE|RF_SHELL_DOUBLE|RF_SHELL_HALF_DAM))
+	shell = (e->flags & (RF_SHELL_RED|RF_SHELL_GREEN|RF_SHELL_BLUE|RF_SHELL_DOUBLE|RF_SHELL_HALF_DAM)) != 0;
+	if (shell)
 	{
-		// power-up shells: the model glows in the shell's colour
+		// A power-up shell: the client sends the model a second time for it. It
+		// is drawn puffed out, see-through and glowing in the shell's colour.
 		if (e->flags & (RF_SHELL_RED|RF_SHELL_DOUBLE))
 			emit[0] = 1;
 		if (e->flags & (RF_SHELL_GREEN|RF_SHELL_DOUBLE|RF_SHELL_HALF_DAM))
@@ -318,7 +408,10 @@ static void S_AddAlias (entity_t *e, model_t *mod)
 		emit[0] = emit[1] = emit[2] = 1;
 		flags |= PT_MAT_EMIT_TEXTURE;
 	}
-	material = S_ImageMaterial (skin, emit[0], emit[1], emit[2], alpha, flags);
+	if (shell)
+		material = S_Material (-1, emit[0], emit[1], emit[2], alpha < 1 ? alpha : 0.3f, PT_MAT_BLACK);
+	else
+		material = S_ImageMaterial (skin, emit[0], emit[1], emit[2], alpha, flags);
 
 	// vertex normals: each vertex takes the area weighted average of its triangles
 	memset (normals, 0, hdr->num_xyz * sizeof(normals[0]));
@@ -334,7 +427,14 @@ static void S_AddAlias (entity_t *e, model_t *mod)
 			VectorAdd (normals[tri->index_xyz[j]], facenormal, normals[tri->index_xyz[j]]);
 	}
 	for (i=0 ; i<hdr->num_xyz ; i++)
+	{
 		VectorNormalize (normals[i]);
+		if (shell)
+		{
+			VectorMA (verts[i], 3, normals[i], verts[i]);
+			VectorMA (prevverts[i], 3, normals[i], prevverts[i]);
+		}
+	}
 
 	sscale = 1.0 / hdr->skinwidth;
 	tscale = 1.0 / hdr->skinheight;
@@ -350,6 +450,7 @@ static void S_AddAlias (entity_t *e, model_t *mod)
 			(st[tri->index_st[1]].s + 0.5) * sscale, (st[tri->index_st[1]].t + 0.5) * tscale,
 			material);
 		S_Normals (normals[tri->index_xyz[0]], normals[tri->index_xyz[2]], normals[tri->index_xyz[1]]);
+		S_Prev (prevverts[tri->index_xyz[0]], prevverts[tri->index_xyz[2]], prevverts[tri->index_xyz[1]]);
 	}
 }
 
@@ -510,6 +611,8 @@ void R_BuildScene (refdef_t *fd, pt_scene_t *scene)
 
 	for (i=0, e=fd->entities ; i<fd->num_entities ; i++, e++)
 	{
+		if (i < MAX_ENTITIES)
+			s_now[i].model = NULL;
 		if (e->flags & RF_BEAM)
 		{
 			S_AddBeam (e);
@@ -523,10 +626,10 @@ void R_BuildScene (refdef_t *fd, pt_scene_t *scene)
 		switch (mod->type)
 		{
 		case mod_inline:
-			S_AddInline (e, mod);
+			S_AddInline (e, mod, i);
 			break;
 		case mod_alias:
-			S_AddAlias (e, mod);
+			S_AddAlias (e, mod, i);
 			break;
 		case mod_sprite:
 			S_AddSprite (e, mod, right, up);
@@ -558,6 +661,10 @@ void R_BuildScene (refdef_t *fd, pt_scene_t *scene)
 	scene->positions = s_positions;
 	scene->uvs = s_uvs;
 	scene->normals = s_normals;
+	scene->prev_positions = s_prev;
+
+	s_numwas = fd->num_entities < MAX_ENTITIES ? fd->num_entities : MAX_ENTITIES;
+	memcpy (s_was, s_now, s_numwas * sizeof(s_was[0]));
 	scene->tri_materials = s_trimaterials;
 	scene->num_triangles = s_numtris;
 	scene->lights = s_lights;

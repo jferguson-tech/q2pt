@@ -425,6 +425,7 @@ void BuildFrame(Frame &f, const pt_scene_t *in, const std::vector<std::unique_pt
 {
 	f.materials.clear();
 	f.tris.clear();
+	f.prev.clear();
 	f.lights.clear();
 	f.hash = 2166136261u;
 
@@ -474,6 +475,13 @@ void BuildFrame(Frame &f, const pt_scene_t *in, const std::vector<std::unique_pt
 		l.cone_cos = 0.0f;
 			if (Luminance(l.emission) > 0.0f)
 				f.lights.push_back(l);
+		}
+
+		if (in->prev_positions)
+		{
+			f.prev.resize((size_t)in->num_triangles * 3);
+			for (size_t k = 0; k < f.prev.size(); k++)
+				f.prev[k] = Vec3(&in->prev_positions[k * 3]);
 		}
 
 		f.hash = HashBytes(in->positions, (size_t)in->num_triangles * 9 * sizeof(float), f.hash);

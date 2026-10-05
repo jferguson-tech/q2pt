@@ -118,6 +118,8 @@ typedef struct pt_scene_s
 	const float			*positions;			/* 9 per triangle */
 	const float			*uvs;				/* 6 per triangle */
 	const float			*normals;			/* 9 per triangle, or NULL for flat shading */
+	const float			*prev_positions;		/* 9 per triangle: where it was last frame; NULL
+											   if nothing is known to have moved */
 	const uint32_t		*tri_materials;		/* 1 per triangle */
 	int					num_triangles;
 
