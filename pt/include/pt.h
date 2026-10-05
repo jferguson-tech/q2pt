@@ -141,6 +141,7 @@ typedef struct pt_view_s
 	int		samples;		/* paths per pixel per frame */
 	int		bounces;		/* maximum path length after the first hit */
 	float	exposure;
+	int		antialias;	/* blend frames over time to smooth edges */
 } pt_view_t;
 
 /*

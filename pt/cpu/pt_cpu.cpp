@@ -143,6 +143,8 @@ struct CpuBackend
 	std::vector<uint32_t>	ldr;			// tone mapped, render sized
 	int						rw = 0, rh = 0;
 	bool					have_history = false;
+	bool					antialiased = false;	// last frame was
+	float					jitter_x = 0.0f, jitter_y = 0.0f;	// this frame's offset within the pixel
 	Camera					prev_camera;
 	uint32_t				prev_hash = 0;
 	uint32_t				frame_index = 0;
@@ -288,7 +290,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 			px.add[i] = front_add + front_diffuse + front_mirror + sc.world->Sky(ray.d) * through;
 			return;
 		}
-		MakeSurface(sc, *tri, hit, ray, surf);
+		MakeSurface(sc, *tri, hit, ray, surf, true);
 		const Material &mat = *surf.mat;
 		if (mat.alpha >= 1.0f || layer >= 8)
 			break;
@@ -432,9 +434,12 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 			const float z = Dot(v, prev_cam.forward);
 			if (z > 0.01f)
 			{
-				const float fx = (Dot(v, prev_cam.right) / (z * prev_cam.tx) * 0.5f + 0.5f) * rw - 0.5f;
-				const float fy = (0.5f - Dot(v, prev_cam.up) / (z * prev_cam.ty) * 0.5f) * rh - 0.5f;
-				const int ix = (int)std::floor(fx), iy = (int)std::floor(fy);
+				// Less this frame's offset within the pixel: history belongs to
+				// pixels, and with the eye at rest must come from the very same
+				// one, or it would be resampled and crawl about every frame.
+				const float fx = (Dot(v, prev_cam.right) / (z * prev_cam.tx) * 0.5f + 0.5f) * rw - 0.5f - s->jitter_x;
+				const float fy = (0.5f - Dot(v, prev_cam.up) / (z * prev_cam.ty) * 0.5f) * rh - 0.5f - s->jitter_y;
+				const int ix = (int)std::floor(fx + 0.001f), iy = (int)std::floor(fy + 0.001f);
 				const float ax = fx - ix, ay = fy - iy;
 				const float limit = 1.0f + cur.depth[i] * 0.01f;
 
@@ -650,8 +655,10 @@ void Steady(CpuBackend *s, const Camera &cam, const Camera &prev_cam, bool have_
 
 			const Vec3 v = p - prev_cam.origin;
 			const float z = Dot(v, prev_cam.forward);
-			const float fx = z > 0.01f ? (Dot(v, prev_cam.right) / (z * prev_cam.tx) * 0.5f + 0.5f) * rw - 0.5f : -10.0f;
-			const float fy = z > 0.01f ? (0.5f - Dot(v, prev_cam.up) / (z * prev_cam.ty) * 0.5f) * rh - 0.5f : -10.0f;
+			// surfaces were seen through this frame's offset; the sky point was not
+			const float ox = s->cur.depth[i] < 0.0f ? 0.0f : s->jitter_x, oy = s->cur.depth[i] < 0.0f ? 0.0f : s->jitter_y;
+			const float fx = z > 0.01f ? (Dot(v, prev_cam.right) / (z * prev_cam.tx) * 0.5f + 0.5f) * rw - 0.5f - ox + 0.001f : -10.0f;
+			const float fy = z > 0.01f ? (0.5f - Dot(v, prev_cam.up) / (z * prev_cam.ty) * 0.5f) * rh - 0.5f - oy + 0.001f : -10.0f;
 
 			const Vec3 *prev = s->steady_prev.data();
 			const Pixels &was = s->prev;
@@ -705,7 +712,13 @@ void Steady(CpuBackend *s, const Camera &cam, const Camera &prev_cam, bool have_
 					}
 				}
 				h = Max(lo, Min(hi, h));
-				out = h + (c - h) * 0.12f;
+
+				// Each frame looks through a different point of the pixel, so a
+				// new frame must count for little or the picture would visibly
+				// jump about with it: the longer this surface has been in
+				// view, the less.
+				const float frames = std::min(std::max(s->cur.length[i], 4.0f), 64.0f);
+				out = h + (c - h) * (1.0f / frames);
 			}
 		}
 
@@ -788,8 +801,11 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 
 	// each frame looks through a slightly different point of every pixel, so
 	// that over time edges are seen from all across it
-	const float jx = Halton(s->frame_index % 16 + 1, 2) - 0.5f;
-	const float jy = Halton(s->frame_index % 16 + 1, 3) - 0.5f;
+	const bool antialias = view->antialias != 0;
+	const float jx = antialias ? Halton(s->frame_index % 16 + 1, 2) - 0.5f : 0.0f;
+	const float jy = antialias ? Halton(s->frame_index % 16 + 1, 3) - 0.5f : 0.0f;
+	s->jitter_x = jx;
+	s->jitter_y = jy;
 
 	s->pool.Run(rh, [&](int y)
 	{
@@ -851,7 +867,8 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		}
 	});
 
-	const bool have_history = s->have_history;
+	const bool have_history = s->have_history && antialias && s->antialiased;
+	s->antialiased = antialias;
 	s->pool.Run(rh, [&](int y) { Steady(s, cam, prev_cam, have_history, y); });
 
 	// stretch to the view with bilinear filtering

@@ -171,7 +171,7 @@ Vec3 Surface::SpecularAlbedo() const
 	return f0 * scale + Vec3(bias);
 }
 
-void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s)
+void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth)
 {
 	const Material &mat = tri.mat->At(sc.anim_frame);
 	s.tri = &tri;
@@ -184,7 +184,7 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	float u, v;
 	TexCoord(tri, hit.u, hit.v, u, v);
 
-	s.colour = mat.texture ? Decode(mat.texture->Texel(u, v)) : Vec3(1, 1, 1);
+	s.colour = !mat.texture ? Vec3(1, 1, 1) : (smooth ? mat.texture->Smooth(u, v) : Decode(mat.texture->Texel(u, v)));
 	s.roughness = mat.roughness;
 
 	Vec3 n = s.ng;
@@ -196,12 +196,28 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	}
 	if (mat.normal_texture)
 	{
-		const uint32_t t = mat.normal_texture->Texel(u, v);
-		const float tx = (float)(t & 0xff) * (2.0f / 255.0f) - 1.0f;
-		const float ty = (float)((t >> 8) & 0xff) * (2.0f / 255.0f) - 1.0f;
-		const float tz = (float)((t >> 16) & 0xff) * (2.0f / 255.0f) - 1.0f;
+		// x, y, z and roughness, each 0-255
+		float c[4];
+		if (smooth)
+		{
+			uint32_t t[4];
+			float w[4];
+			mat.normal_texture->Corners(u, v, t, w);
+			for (int k = 0; k < 4; k++)
+				c[k] = (float)((t[0] >> (k * 8)) & 0xff) * w[0] + (float)((t[1] >> (k * 8)) & 0xff) * w[1]
+					+ (float)((t[2] >> (k * 8)) & 0xff) * w[2] + (float)((t[3] >> (k * 8)) & 0xff) * w[3];
+		}
+		else
+		{
+			const uint32_t t = mat.normal_texture->Texel(u, v);
+			for (int k = 0; k < 4; k++)
+				c[k] = (float)((t >> (k * 8)) & 0xff);
+		}
+		const float tx = c[0] * (2.0f / 255.0f) - 1.0f;
+		const float ty = c[1] * (2.0f / 255.0f) - 1.0f;
+		const float tz = c[2] * (2.0f / 255.0f) - 1.0f;
 		n = Normalize(tri.tu * tx + tri.tv * ty + n * tz);
-		s.roughness = (float)(t >> 24) * (1.0f / 255.0f);
+		s.roughness = c[3] * (1.0f / 255.0f);
 	}
 	if (mat.flags & PT_MAT_WAVES)
 	{

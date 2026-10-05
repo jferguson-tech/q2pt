@@ -39,6 +39,35 @@ struct Texture
 		return pixels[(size_t)y * width + x];
 	}
 
+	// the four texels around a point and how much each counts, wrapping
+	void Corners(float u, float v, uint32_t texel[4], float weight[4]) const
+	{
+		const float fx = u * width - 0.5f, fy = v * height - 0.5f;
+		const float flx = std::floor(fx), fly = std::floor(fy);
+		const float ax = fx - flx, ay = fy - fly;
+		int x0 = (int)flx % width, y0 = (int)fly % height;
+		if (x0 < 0) x0 += width;
+		if (y0 < 0) y0 += height;
+		const int x1 = x0 + 1 == width ? 0 : x0 + 1, y1 = y0 + 1 == height ? 0 : y0 + 1;
+		texel[0] = pixels[(size_t)y0 * width + x0];
+		texel[1] = pixels[(size_t)y0 * width + x1];
+		texel[2] = pixels[(size_t)y1 * width + x0];
+		texel[3] = pixels[(size_t)y1 * width + x1];
+		weight[0] = (1.0f - ax) * (1.0f - ay);
+		weight[1] = ax * (1.0f - ay);
+		weight[2] = (1.0f - ax) * ay;
+		weight[3] = ax * ay;
+	}
+
+	// bilinear, in linear light
+	Vec3 Smooth(float u, float v) const
+	{
+		uint32_t t[4];
+		float w[4];
+		Corners(u, v, t, w);
+		return Decode(t[0]) * w[0] + Decode(t[1]) * w[1] + Decode(t[2]) * w[2] + Decode(t[3]) * w[3];
+	}
+
 	// clamped, for the sky faces
 	Vec3 SampleClamped(float u, float v) const
 	{

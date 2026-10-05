@@ -53,6 +53,7 @@ static cvar_t	*pt_samples;
 static cvar_t	*pt_bounces;
 static cvar_t	*pt_exposure;
 static cvar_t	*pt_stats;
+static cvar_t	*pt_taa;
 
 //=============================================================================
 
@@ -230,6 +231,7 @@ qboolean R_Init (void *hInstance, void *wndProc)
 	pt_bounces = ri.Cvar_Get ("pt_bounces", "3", CVAR_ARCHIVE);
 	pt_exposure = ri.Cvar_Get ("pt_exposure", "2", CVAR_ARCHIVE);
 	pt_stats = ri.Cvar_Get ("pt_stats", "0", 0);
+	pt_taa = ri.Cvar_Get ("pt_taa", "1", CVAR_ARCHIVE);
 
 #ifdef RPT_RTX
 	pt_rtx_disable = ri.Cvar_Get ("pt_rtx_disable", "0", CVAR_ARCHIVE);
@@ -394,6 +396,7 @@ void R_RenderFrame (refdef_t *fd)
 	view.samples = pt_samples->value;
 	view.bounces = pt_bounces->value;
 	view.exposure = pt_exposure->value;
+	view.antialias = pt_taa->value != 0;
 	R_BuildScene (fd, &scene);
 	view.scene = &scene;
 

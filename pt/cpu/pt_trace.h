@@ -53,7 +53,9 @@ Vec3 ClampSample(Vec3 c);
 // skipped.
 bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &hit, const Tri *&tri);
 
-void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s);
+// smooth: filter the textures, for surfaces the eye sees directly. Further
+// along a path the nearest texel is as good and cheaper.
+void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth = false);
 
 // what an emitter sends back along the ray that hit it
 Vec3 Emitted(const Surface &s, bool seen);
