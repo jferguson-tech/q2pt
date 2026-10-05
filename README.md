@@ -9,7 +9,10 @@ through the map: no lightmaps and no rasterized geometry. The path tracer
 runs on the CPU, or on the GPU with an Nvidia RTX card. The path tracing core is
 a separate, engine-independent library under the MIT license.
 
-<!-- screenshot -->
+![Four seconds of play on the first map, path traced: up a flight of stairs towards a guard, then round into a store room with red sky showing through two windows](docs/images/gameplay.webp)
+
+*Rendered offline with the RTX renderer from a recorded demo: 64 paths per
+pixel, motion blur, 30 frames a second.*
 
 ## Features
 
