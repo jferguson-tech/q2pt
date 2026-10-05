@@ -6,7 +6,8 @@ A path traced renderer for the original Quake 2 source release (3.21), ported
 to 64-bit Windows. The game can be switched while it runs between the original
 OpenGL renderer and a CPU path tracer that lights every frame by tracing
 paths through the map: no lightmaps and no rasterized geometry. A Vulkan ray
-tracing renderer for Nvidia RTX cards is in progress. The path tracing core is
+tracing renderer for Nvidia RTX cards is in progress: it traces the scene but
+does not light it yet. The path tracing core is
 a separate, engine-independent library under the MIT license.
 
 <!-- screenshot -->
@@ -45,10 +46,13 @@ written that turns both into a video with ffmpeg.
 
 **RTX renderer** (`ref_ptrtx.dll`), in progress
 
-It starts up, creates a Vulkan device with the ray tracing extensions and
-presents the menus and status bar, but it does not trace the scene yet. Every
-setting goes through the same interface as the CPU renderer, so it will take
-them over as it is written.
+It traces the scene on the GPU with Vulkan ray queries: the map and everything
+that moves are held in acceleration structures (the moving part rebuilt every
+frame) and a compute shader sends a ray per pixel through them. So far it
+shows what the eye sees, textured and simply shaded, with the sky and
+see-through surfaces. The lighting, the denoiser and the other features of the
+CPU renderer are not there yet. Every setting goes through the same interface
+as the CPU renderer, so it will take them over as it is written.
 
 ## Requirements
 

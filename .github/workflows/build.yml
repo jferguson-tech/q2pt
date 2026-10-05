@@ -50,7 +50,7 @@ jobs:
         shell: bash
         run: |
           fail=0
-          sources=$(git ls-files pt | grep -E '\.(c|cc|cpp|h|hpp|inl|vert|frag|glsl)$')
+          sources=$(git ls-files pt | grep -E '\.(c|cc|cpp|h|hpp|inl|vert|frag|comp|glsl)$')
           for f in $sources; do
             if ! grep -q 'SPDX-License-Identifier: MIT' "$f"; then
               echo "::error file=$f::no SPDX MIT header"
