@@ -1,3 +1,23 @@
+# build output and the folder the game runs from (holds your own game data)
 build/
 run/
 *.log
+
+# game data: never part of this repository
+*.pak
+*.wal
+*.pcx
+*.bsp
+*.md2
+*.dm2
+*.wav
+*.cin
+
+# binaries
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.lib
+*.exp
+*.obj

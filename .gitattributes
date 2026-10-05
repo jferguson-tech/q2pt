@@ -1,0 +1,15 @@
+# Normalize line endings in the repository; check out with native endings.
+* text=auto
+*.bat text eol=crlf
+
+# id Software's project files and artwork, kept as they were released
+*.gif binary
+*.jpg binary
+*.ico binary
+*.tiff binary
+*.png binary
+*.tga binary
+*.opt binary
+*.aps binary
+*.o binary
+*.ssv binary

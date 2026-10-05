@@ -1,0 +1,97 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The jobs only read the code; the token they get cannot push or edit anything.
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The Vulkan SDK is not on the runner, so the RTX renderer is left out
+      # of the build here, as it is on any machine without the SDK.
+      - name: Build
+        shell: cmd
+        run: build.bat x64 Release
+      - name: Check that everything was built
+        shell: bash
+        run: |
+          for f in run/quake2.exe run/ref_gl.dll run/ref_soft.dll run/ref_ptcpu.dll run/baseq2/gamex64.dll; do
+            test -f "$f" || { echo "::error::missing $f"; exit 1; }
+          done
+
+  windows-x86:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build
+        shell: cmd
+        run: build.bat x86 Release
+      - name: Check that everything was built
+        shell: bash
+        run: |
+          for f in run/x86/quake2.exe run/x86/ref_gl.dll run/x86/ref_soft.dll run/x86/ref_ptcpu.dll run/baseq2/gamex86.dll; do
+            test -f "$f" || { echo "::error::missing $f"; exit 1; }
+          done
+
+  # pt/ is MIT and must stay free of the GPL sources around it: every file
+  # says so, and nothing in it includes a file from outside it.
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check pt/ headers and includes
+        shell: bash
+        run: |
+          fail=0
+          sources=$(git ls-files pt | grep -E '\.(c|cc|cpp|h|hpp|inl|vert|frag|glsl)$')
+          for f in $sources; do
+            if ! grep -q 'SPDX-License-Identifier: MIT' "$f"; then
+              echo "::error file=$f::no SPDX MIT header"
+              fail=1
+            fi
+            dir=$(dirname "$f")
+
+            # "quoted" includes: a file inside pt/, or a shader the build
+            # compiles from a source inside pt/ (name.inc from name)
+            while read -r inc; do
+              [ -z "$inc" ] && continue
+              case "$inc" in
+                *.inc)
+                  if ! git ls-files pt | grep -q "/$(basename "$inc" .inc)\$"; then
+                    echo "::error file=$f::includes $inc, which is not built from pt/"
+                    fail=1
+                  fi
+                  continue;;
+              esac
+              target=$(realpath -m --relative-to=. "$dir/$inc")
+              case "$target" in
+                pt/*) ;;
+                *) echo "::error file=$f::includes $inc, which is outside pt/"; fail=1; continue;;
+              esac
+              if [ ! -f "$target" ]; then
+                echo "::error file=$f::includes $inc, which does not exist"
+                fail=1
+              fi
+            done < <(grep -oE '^[[:space:]]*#[[:space:]]*include[[:space:]]+"[^"]+"' "$f" | sed -E 's/.*"([^"]+)"/\1/')
+
+            # <angle> includes: system and Vulkan headers only, so never a
+            # path that climbs out or names a file of this repository
+            while read -r inc; do
+              [ -z "$inc" ] && continue
+              case "$inc" in
+                *..*) echo "::error file=$f::includes <$inc>"; fail=1; continue;;
+              esac
+              if git ls-files | grep -v '^pt/' | grep -q -E "(^|/)$(printf '%s' "$inc" | sed 's/[.[\*^$]/\\&/g')\$"; then
+                echo "::error file=$f::includes <$inc>, a file of the engine"
+                fail=1
+              fi
+            done < <(grep -oE '^[[:space:]]*#[[:space:]]*include[[:space:]]+<[^>]+>' "$f" | sed -E 's/.*<([^>]+)>/\1/')
+          done
+          exit $fail
