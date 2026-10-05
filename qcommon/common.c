@@ -33,6 +33,15 @@ int		realtime;
 
 jmp_buf abortframe;		// an ERR_DROP occured, exit the entire frame
 
+// Com_Error unloads the game dll before it longjmps out of that dll's frames.
+// On Win64 longjmp would SEH-unwind through the unloaded code, so clear the
+// saved frame to get a plain register-restoring jump.
+#ifdef _WIN64
+#define Com_NoUnwindJmp(b)	(((_JUMP_BUFFER *)(b))->Frame = 0)
+#else
+#define Com_NoUnwindJmp(b)
+#endif
+
 
 FILE	*log_stats_file;
 
@@ -104,7 +113,7 @@ void Com_Printf (char *fmt, ...)
 	char		msg[MAXPRINTMSG];
 
 	va_start (argptr,fmt);
-	vsprintf (msg,fmt,argptr);
+	vsnprintf (msg, sizeof(msg), fmt,argptr);
 	va_end (argptr);
 
 	if (rd_target)
@@ -157,7 +166,7 @@ void Com_DPrintf (char *fmt, ...)
 		return;			// don't confuse non-developers with techie stuff...
 
 	va_start (argptr,fmt);
-	vsprintf (msg,fmt,argptr);
+	vsnprintf (msg, sizeof(msg), fmt,argptr);
 	va_end (argptr);
 	
 	Com_Printf ("%s", msg);
@@ -183,7 +192,7 @@ void Com_Error (int code, char *fmt, ...)
 	recursive = true;
 
 	va_start (argptr,fmt);
-	vsprintf (msg,fmt,argptr);
+	vsnprintf (msg, sizeof(msg), fmt,argptr);
 	va_end (argptr);
 	
 	if (code == ERR_DISCONNECT)
@@ -1401,6 +1410,7 @@ void Qcommon_Init (int argc, char **argv)
 
 	if (setjmp (abortframe) )
 		Sys_Error ("Error during initialization");
+	Com_NoUnwindJmp (abortframe);
 
 	z_chain.next = z_chain.prev = &z_chain;
 
@@ -1495,6 +1505,7 @@ void Qcommon_Frame (int msec)
 
 	if (setjmp (abortframe) )
 		return;			// an ERR_DROP was thrown
+	Com_NoUnwindJmp (abortframe);
 
 	if ( log_stats->modified )
 	{

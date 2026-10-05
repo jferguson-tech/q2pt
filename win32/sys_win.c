@@ -73,7 +73,7 @@ void Sys_Error (char *error, ...)
 	Qcommon_Shutdown ();
 
 	va_start (argptr, error);
-	vsprintf (text, error, argptr);
+	vsnprintf (text, sizeof(text), error, argptr);
 	va_end (argptr);
 
 	MessageBox(NULL, text, "Error", 0 /* MB_OK */ );
@@ -475,7 +475,16 @@ void *Sys_GetGameAPI (void *parms)
 	char	name[MAX_OSPATH];
 	char	*path;
 	char	cwd[MAX_OSPATH];
-#if defined _M_IX86
+#if defined _M_X64
+	const char *gamename = "gamex64.dll";
+
+#ifdef NDEBUG
+	const char *debugdir = "release";
+#else
+	const char *debugdir = "debug";
+#endif
+
+#elif defined _M_IX86
 	const char *gamename = "gamex86.dll";
 
 #ifdef NDEBUG

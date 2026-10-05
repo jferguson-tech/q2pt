@@ -35,7 +35,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define BUILDSTRING "Win32 DEBUG"
 #endif
 
-#ifdef _M_IX86
+#ifdef _M_X64
+#define	CPUSTRING	"x64"
+#elif defined _M_IX86
 #define	CPUSTRING	"x86"
 #elif defined _M_ALPHA
 #define	CPUSTRING	"AXP"

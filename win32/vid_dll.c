@@ -54,7 +54,7 @@ HWND        cl_hwnd;            // Main window handle for life of program
 
 #define VID_NUM_MODES ( sizeof( vid_modes ) / sizeof( vid_modes[0] ) )
 
-LONG WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam );
+LRESULT CALLBACK MainWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam );
 
 static qboolean s_alttab_disabled;
 
@@ -120,7 +120,7 @@ void VID_Printf (int print_level, char *fmt, ...)
 	static qboolean	inupdate;
 	
 	va_start (argptr,fmt);
-	vsprintf (msg,fmt,argptr);
+	vsnprintf (msg, sizeof(msg), fmt,argptr);
 	va_end (argptr);
 
 	if (print_level == PRINT_ALL)
@@ -145,7 +145,7 @@ void VID_Error (int err_level, char *fmt, ...)
 	static qboolean	inupdate;
 	
 	va_start (argptr,fmt);
-	vsprintf (msg,fmt,argptr);
+	vsnprintf (msg, sizeof(msg), fmt,argptr);
 	va_end (argptr);
 
 	Com_Error (err_level,"%s", msg);
@@ -282,7 +282,7 @@ MainWndProc
 main window procedure
 ====================
 */
-LONG WINAPI MainWndProc (
+LRESULT CALLBACK MainWndProc (
     HWND    hWnd,
     UINT    uMsg,
     WPARAM  wParam,
@@ -492,7 +492,11 @@ vidmode_t vid_modes[] =
 	{ "Mode 6: 1024x768",  1024, 768,  6 },
 	{ "Mode 7: 1152x864",  1152, 864,  7 },
 	{ "Mode 8: 1280x960",  1280, 960, 8 },
-	{ "Mode 9: 1600x1200", 1600, 1200, 9 }
+	{ "Mode 9: 1600x1200", 1600, 1200, 9 },
+	{ "Mode 10: 1280x720", 1280, 720, 10 },
+	{ "Mode 11: 1920x1080", 1920, 1080, 11 },
+	{ "Mode 12: 2560x1440", 2560, 1440, 12 },
+	{ "Mode 13: 3840x2160", 3840, 2160, 13 }
 };
 
 qboolean VID_GetModeInfo( int *width, int *height, int mode )

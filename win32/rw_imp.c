@@ -276,6 +276,13 @@ rserr_t SWimp_SetMode( int *pwidth, int *pheight, int mode, qboolean fullscreen 
 		return rserr_invalid_mode;
 	}
 
+	// the rasterizer tables are sized for MAXWIDTH x MAXHEIGHT
+	if ( *pwidth > MAXWIDTH || *pheight > MAXHEIGHT )
+	{
+		ri.Con_Printf( PRINT_ALL, " too large for ref_soft\n" );
+		return rserr_invalid_mode;
+	}
+
 	ri.Con_Printf( PRINT_ALL, " %d %d %s\n", *pwidth, *pheight, win_fs[fullscreen] );
 
 	sww_state.initializing = true;
@@ -409,7 +416,7 @@ void Sys_MakeCodeWriteable (unsigned long startaddr, unsigned long length)
 {
 	DWORD  flOldProtect;
 
-	if (!VirtualProtect((LPVOID)startaddr, length, PAGE_READWRITE, &flOldProtect))
+	if (!VirtualProtect((LPVOID)(uintptr_t)startaddr, length, PAGE_READWRITE, &flOldProtect))
  		ri.Sys_Error(ERR_FATAL, "Protection change failed\n");
 }
 
