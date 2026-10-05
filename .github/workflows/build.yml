@@ -14,15 +14,25 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      # The Vulkan SDK is not on the runner, so the RTX renderer is left out
-      # of the build here, as it is on any machine without the SDK.
+      # The RTX renderer needs the Vulkan SDK to build: headers, the loader's
+      # library and the shader compiler. Only what a build needs is installed.
+      - name: Install the Vulkan SDK
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest https://sdk.lunarg.com/sdk/download/latest/windows/vulkan_sdk.exe -OutFile vulkan_sdk.exe
+          $p = Start-Process -FilePath .\vulkan_sdk.exe -Wait -PassThru -ArgumentList `
+            '--root', 'C:\VulkanSDK', '--accept-licenses', '--default-answer', '--confirm-command', 'install'
+          if ($p.ExitCode -ne 0) { throw "the Vulkan SDK installer returned $($p.ExitCode)" }
+          if (-not (Test-Path C:\VulkanSDK\Bin\glslc.exe)) { throw 'glslc.exe was not installed' }
+          "VULKAN_SDK=C:\VulkanSDK" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Build
         shell: cmd
         run: build.bat x64 Release
       - name: Check that everything was built
         shell: bash
         run: |
-          for f in run/quake2.exe run/ref_gl.dll run/ref_soft.dll run/ref_ptcpu.dll run/baseq2/gamex64.dll; do
+          for f in run/quake2.exe run/ref_gl.dll run/ref_soft.dll run/ref_ptcpu.dll run/ref_ptrtx.dll run/baseq2/gamex64.dll; do
             test -f "$f" || { echo "::error::missing $f"; exit 1; }
           done
 
