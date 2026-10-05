@@ -86,3 +86,48 @@ set_target_properties(game PROPERTIES
 	RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL ${Q2_DATA}/baseq2)
 
 set_target_properties(quake2 ref_gl ref_soft game PROPERTIES PREFIX "")
+
+# ------------------------------------------------------------ path tracers
+# pt/ is the MIT, engine independent core. ref_pt/ is the GPL glue that
+# adapts it to the refresh interface, built once per backend.
+enable_language(CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+set(REF_PT_SRC
+	ref_pt/rpt_main.c ref_pt/rpt_image.c ref_pt/rpt_draw.c
+	win32/q_shwin.c ${SHARED_SRC} ref_pt/ref_pt.def)
+
+add_library(pt_cpu STATIC pt/cpu/pt_cpu.cpp)
+add_library(ref_ptcpu SHARED ${REF_PT_SRC})
+target_link_libraries(ref_ptcpu PRIVATE pt_cpu winmm gdi32 user32)
+set_target_properties(ref_ptcpu PROPERTIES PREFIX "")
+
+# the Vulkan backend needs the SDK to build (headers, loader lib, glslc);
+# without it everything else still builds and the engine falls back to CPU
+find_package(Vulkan COMPONENTS glslc)
+if(Vulkan_FOUND AND Vulkan_glslc_FOUND AND Q2_ARCH STREQUAL x64)
+	set(PT_SHADER_DIR ${CMAKE_BINARY_DIR}/pt_shaders)
+	file(MAKE_DIRECTORY ${PT_SHADER_DIR})
+	set(PT_SHADER_INC)
+	foreach(shader blit.vert blit.frag)
+		add_custom_command(
+			OUTPUT ${PT_SHADER_DIR}/${shader}.inc
+			COMMAND Vulkan::glslc -mfmt=c --target-env=vulkan1.3 -O
+				${CMAKE_SOURCE_DIR}/pt/rtx/shaders/${shader} -o ${PT_SHADER_DIR}/${shader}.inc
+			DEPENDS ${CMAKE_SOURCE_DIR}/pt/rtx/shaders/${shader}
+			VERBATIM)
+		list(APPEND PT_SHADER_INC ${PT_SHADER_DIR}/${shader}.inc)
+	endforeach()
+
+	add_library(pt_rtx STATIC pt/rtx/pt_rtx.cpp ${PT_SHADER_INC})
+	target_include_directories(pt_rtx PRIVATE ${PT_SHADER_DIR})
+	target_link_libraries(pt_rtx PUBLIC Vulkan::Vulkan)
+
+	add_library(ref_ptrtx SHARED ${REF_PT_SRC})
+	target_compile_definitions(ref_ptrtx PRIVATE RPT_RTX)
+	target_link_libraries(ref_ptrtx PRIVATE pt_rtx winmm gdi32 user32)
+	set_target_properties(ref_ptrtx PROPERTIES PREFIX "")
+else()
+	message(STATUS "Vulkan SDK not found or not x64: ref_ptrtx will not be built")
+endif()

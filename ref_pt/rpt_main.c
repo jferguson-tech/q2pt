@@ -1,0 +1,516 @@
+/*
+Copyright (C) 1997-2001 Id Software, Inc.
+Copyright (C) 2026 Jonathan Ferguson
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+*/
+// rpt_main.c -- refresh entry points, window and backend lifetime
+
+#include "rpt_local.h"
+
+#ifdef RPT_RTX
+#define	RPT_CREATE	pt_rtx_create
+#define	RPT_LABEL	"RTX PATH TRACER"
+#else
+#define	RPT_CREATE	pt_cpu_create
+#define	RPT_LABEL	"CPU PATH TRACER"
+#endif
+
+#define	WINDOW_CLASS_NAME	"Quake 2"
+#define	WINDOW_STYLE		(WS_OVERLAPPED|WS_BORDER|WS_CAPTION|WS_VISIBLE)
+
+#define	MAX_RPT_MODELS	1024
+
+refimport_t	ri;
+rptstate_t	rpt;
+int			registration_sequence;
+
+static cvar_t	*vid_fullscreen;
+static cvar_t	*gl_mode;		// shared with ref_gl so toggling keeps the window size
+#ifdef RPT_RTX
+static cvar_t	*pt_rtx_disable;
+#endif
+
+static model_t	r_models[MAX_RPT_MODELS];
+static int		numr_models;
+static char		r_skyname[MAX_QPATH];
+
+//=============================================================================
+
+static void R_BackendLog (const char *msg)
+{
+	ri.Con_Printf (PRINT_ALL, "%s", (char *)msg);
+}
+
+/*
+** R_DestroyWindow
+*/
+static void R_DestroyWindow (void)
+{
+	if (rpt.backend)
+	{
+		rpt.backend->destroy (rpt.backend);
+		rpt.backend = NULL;
+	}
+	if (rpt.overlay)
+	{
+		free (rpt.overlay);
+		rpt.overlay = NULL;
+	}
+	if (rpt.hWnd)
+	{
+		DestroyWindow (rpt.hWnd);
+		rpt.hWnd = NULL;
+		UnregisterClass (WINDOW_CLASS_NAME, rpt.hInstance);
+	}
+	if (rpt.changed_display)
+	{
+		ChangeDisplaySettings (0, 0);
+		rpt.changed_display = false;
+	}
+}
+
+/*
+** R_CreateWindow
+*/
+static qboolean R_CreateWindow (int width, int height, qboolean fullscreen)
+{
+	WNDCLASS	wc;
+	RECT		r;
+	cvar_t		*vid_xpos, *vid_ypos;
+	int			stylebits, exstyle;
+	int			x, y;
+
+	memset (&wc, 0, sizeof(wc));
+	wc.lpfnWndProc   = (WNDPROC)rpt.wndproc;
+	wc.hInstance     = rpt.hInstance;
+	wc.hCursor       = LoadCursor (NULL, IDC_ARROW);
+	wc.hbrBackground = GetStockObject (BLACK_BRUSH);
+	wc.lpszClassName = WINDOW_CLASS_NAME;
+
+	if (!RegisterClass (&wc))
+		ri.Sys_Error (ERR_FATAL, "Couldn't register window class");
+
+	if (fullscreen)
+	{
+		exstyle = WS_EX_TOPMOST;
+		stylebits = WS_POPUP|WS_VISIBLE;
+		x = 0;
+		y = 0;
+	}
+	else
+	{
+		exstyle = 0;
+		stylebits = WINDOW_STYLE;
+		vid_xpos = ri.Cvar_Get ("vid_xpos", "0", 0);
+		vid_ypos = ri.Cvar_Get ("vid_ypos", "0", 0);
+		x = vid_xpos->value;
+		y = vid_ypos->value;
+	}
+
+	r.left = 0;
+	r.top = 0;
+	r.right  = width;
+	r.bottom = height;
+	AdjustWindowRect (&r, stylebits, FALSE);
+
+	rpt.hWnd = CreateWindowEx (
+		exstyle,
+		WINDOW_CLASS_NAME,
+		"Quake 2",
+		stylebits,
+		x, y, r.right - r.left, r.bottom - r.top,
+		NULL,
+		NULL,
+		rpt.hInstance,
+		NULL);
+
+	if (!rpt.hWnd)
+	{
+		UnregisterClass (WINDOW_CLASS_NAME, rpt.hInstance);
+		ri.Sys_Error (ERR_FATAL, "Couldn't create window");
+	}
+
+	ShowWindow (rpt.hWnd, SW_SHOW);
+	UpdateWindow (rpt.hWnd);
+	SetForegroundWindow (rpt.hWnd);
+	SetFocus (rpt.hWnd);
+
+	rpt.width = width;
+	rpt.height = height;
+	rpt.fullscreen = fullscreen;
+	return true;
+}
+
+/*
+** R_SetMode
+**
+** Fullscreen is a borderless window; the display mode is only changed when
+** the requested size is not the desktop's.
+*/
+static qboolean R_SetMode (void)
+{
+	int			width, height;
+	qboolean	fullscreen;
+	DEVMODE		dm;
+
+	fullscreen = vid_fullscreen->value != 0;
+	gl_mode->modified = false;
+	vid_fullscreen->modified = false;
+
+	ri.Con_Printf (PRINT_ALL, "...setting mode %d:", (int)gl_mode->value);
+	if (!ri.Vid_GetModeInfo (&width, &height, gl_mode->value))
+	{
+		ri.Con_Printf (PRINT_ALL, " invalid mode\n");
+		return false;
+	}
+	ri.Con_Printf (PRINT_ALL, " %d %d %s\n", width, height, fullscreen ? "FS" : "W");
+
+	if (fullscreen && (width != GetSystemMetrics (SM_CXSCREEN) || height != GetSystemMetrics (SM_CYSCREEN)))
+	{
+		memset (&dm, 0, sizeof(dm));
+		dm.dmSize = sizeof(dm);
+		dm.dmPelsWidth  = width;
+		dm.dmPelsHeight = height;
+		dm.dmFields     = DM_PELSWIDTH | DM_PELSHEIGHT;
+
+		if (ChangeDisplaySettings (&dm, CDS_FULLSCREEN) == DISP_CHANGE_SUCCESSFUL)
+			rpt.changed_display = true;
+		else
+		{
+			ri.Con_Printf (PRINT_ALL, "...display mode change failed, using a window\n");
+			ri.Cvar_SetValue ("vid_fullscreen", 0);
+			vid_fullscreen->modified = false;
+			fullscreen = false;
+		}
+	}
+
+	return R_CreateWindow (width, height, fullscreen);
+}
+
+/*
+===============
+R_Init
+===============
+*/
+qboolean R_Init (void *hInstance, void *wndProc)
+{
+	pt_create_t	ci;
+	char		err[1024];
+
+	ri.Con_Printf (PRINT_ALL, "ref_pt version: "REF_VERSION" ("RPT_LABEL")\n");
+
+	rpt.hInstance = (HINSTANCE)hInstance;
+	rpt.wndproc = wndProc;
+
+	vid_fullscreen = ri.Cvar_Get ("vid_fullscreen", "0", CVAR_ARCHIVE);
+	gl_mode = ri.Cvar_Get ("gl_mode", "3", CVAR_ARCHIVE);
+
+#ifdef RPT_RTX
+	pt_rtx_disable = ri.Cvar_Get ("pt_rtx_disable", "0", CVAR_ARCHIVE);
+	if (pt_rtx_disable->value)
+	{
+		ri.Con_Printf (PRINT_ALL, "RTX path tracer: turned off by pt_rtx_disable\n");
+		return -1;
+	}
+#endif
+
+	if (!R_SetMode ())
+		return -1;
+
+	rpt.overlay = malloc (rpt.width * rpt.height * sizeof(uint32_t));
+	memset (rpt.overlay, 0, rpt.width * rpt.height * sizeof(uint32_t));
+
+	memset (&ci, 0, sizeof(ci));
+	ci.hinstance = rpt.hInstance;
+	ci.hwnd = rpt.hWnd;
+	ci.width = rpt.width;
+	ci.height = rpt.height;
+	ci.log = R_BackendLog;
+
+	err[0] = 0;
+	rpt.backend = RPT_CREATE (&ci, err, sizeof(err));
+	if (!rpt.backend)
+	{
+		ri.Con_Printf (PRINT_ALL, RPT_LABEL" unavailable: %s\n", err);
+		return -1;		// the engine calls R_Shutdown for us
+	}
+
+	// let the sound and input subsystems know about the new window
+	ri.Vid_NewWindow (rpt.width, rpt.height);
+
+	R_InitImages ();
+	Draw_InitLocal ();
+
+	ri.Vid_MenuInit ();
+
+	return true;
+}
+
+/*
+===============
+R_Shutdown
+
+Also called by the engine after a failed R_Init
+===============
+*/
+void R_Shutdown (void)
+{
+	R_ShutdownImages ();
+	memset (r_models, 0, sizeof(r_models));
+	numr_models = 0;
+	R_DestroyWindow ();
+}
+
+//=============================================================================
+
+/*
+@@@@@@@@@@@@@@@@@@@@@
+R_RegisterModel
+
+The path tracers do not load geometry yet, so a model is only a name.
+The client treats the pointer as an opaque handle.
+@@@@@@@@@@@@@@@@@@@@@
+*/
+struct model_s *R_RegisterModel (char *name)
+{
+	model_t	*mod;
+	int		i;
+
+	if (!name || !name[0] || strlen (name) >= MAX_QPATH)
+		return NULL;
+
+	for (i=0, mod=r_models ; i<numr_models ; i++, mod++)
+	{
+		if (mod->registration_sequence && !strcmp (mod->name, name))
+		{
+			mod->registration_sequence = registration_sequence;
+			return mod;
+		}
+	}
+
+	for (i=0, mod=r_models ; i<numr_models ; i++, mod++)
+		if (!mod->registration_sequence)
+			break;
+	if (i == numr_models)
+	{
+		if (numr_models == MAX_RPT_MODELS)
+			ri.Sys_Error (ERR_DROP, "MAX_RPT_MODELS");
+		numr_models++;
+	}
+
+	strcpy (mod->name, name);
+	mod->registration_sequence = registration_sequence;
+	return mod;
+}
+
+/*
+@@@@@@@@@@@@@@@@@@@@@
+R_BeginRegistration
+
+Specifies the model that will be used as the world
+@@@@@@@@@@@@@@@@@@@@@
+*/
+void R_BeginRegistration (char *model)
+{
+	char	fullname[MAX_QPATH];
+
+	registration_sequence++;
+
+	Com_sprintf (fullname, sizeof(fullname), "maps/%s.bsp", model);
+	R_RegisterModel (fullname);
+}
+
+/*
+@@@@@@@@@@@@@@@@@@@@@
+R_EndRegistration
+@@@@@@@@@@@@@@@@@@@@@
+*/
+void R_EndRegistration (void)
+{
+	int		i;
+
+	for (i=0 ; i<numr_models ; i++)
+		if (r_models[i].registration_sequence != registration_sequence)
+			memset (&r_models[i], 0, sizeof(r_models[i]));
+
+	R_FreeUnusedImages ();
+}
+
+/*
+============
+R_SetSky
+============
+*/
+void R_SetSky (char *name, float rotate, vec3_t axis)
+{
+	strncpy (r_skyname, name, sizeof(r_skyname)-1);
+	r_skyname[sizeof(r_skyname)-1] = 0;
+}
+
+//=============================================================================
+
+/*
+@@@@@@@@@@@@@@@@@@@@@
+R_BeginFrame
+@@@@@@@@@@@@@@@@@@@@@
+*/
+void R_BeginFrame (float camera_separation)
+{
+	/*
+	** change modes if necessary
+	*/
+	if (gl_mode->modified || vid_fullscreen->modified)
+	{	// FIXME: only restart if CDS is required
+		cvar_t	*ref;
+
+		ref = ri.Cvar_Get ("vid_ref", "gl", 0);
+		ref->modified = true;
+	}
+
+	memset (rpt.overlay, 0, rpt.width * rpt.height * sizeof(uint32_t));
+}
+
+/*
+@@@@@@@@@@@@@@@@@@@@@
+R_RenderFrame
+@@@@@@@@@@@@@@@@@@@@@
+*/
+void R_RenderFrame (refdef_t *fd)
+{
+	static const char	*lines[2] = { RPT_LABEL, "no scene yet" };
+	pt_view_t			view;
+	int					i;
+
+	if (fd->rdflags & RDF_NOWORLDMODEL)
+		return;		// menu model previews
+
+	view.x = fd->x;
+	view.y = fd->y;
+	view.width = fd->width;
+	view.height = fd->height;
+	view.time = fd->time;
+	rpt.backend->render_view (rpt.backend, &view);
+
+	for (i=0 ; i<2 ; i++)
+		Draw_String (fd->x + (fd->width - (int)strlen (lines[i]) * 8) / 2,
+			fd->y + fd->height / 3 + i * 12, lines[i]);
+}
+
+/*
+@@@@@@@@@@@@@@@@@@@@@
+R_EndFrame
+@@@@@@@@@@@@@@@@@@@@@
+*/
+void R_EndFrame (void)
+{
+	rpt.backend->present (rpt.backend, rpt.overlay);
+}
+
+/*
+** R_AppActivate
+*/
+void R_AppActivate (qboolean active)
+{
+	if (!rpt.hWnd)
+		return;
+
+	if (active)
+	{
+		SetForegroundWindow (rpt.hWnd);
+		ShowWindow (rpt.hWnd, SW_RESTORE);
+	}
+	else
+	{
+		if (rpt.fullscreen)
+			ShowWindow (rpt.hWnd, SW_MINIMIZE);
+	}
+}
+
+//=============================================================================
+
+/*
+@@@@@@@@@@@@@@@@@@@@@
+GetRefAPI
+
+@@@@@@@@@@@@@@@@@@@@@
+*/
+refexport_t GetRefAPI (refimport_t rimp)
+{
+	refexport_t	re;
+
+	ri = rimp;
+
+	re.api_version = API_VERSION;
+
+	re.BeginRegistration = R_BeginRegistration;
+	re.RegisterModel = R_RegisterModel;
+	re.RegisterSkin = R_RegisterSkin;
+	re.RegisterPic = Draw_FindPic;
+	re.SetSky = R_SetSky;
+	re.EndRegistration = R_EndRegistration;
+
+	re.RenderFrame = R_RenderFrame;
+
+	re.DrawGetPicSize = Draw_GetPicSize;
+	re.DrawPic = Draw_Pic;
+	re.DrawStretchPic = Draw_StretchPic;
+	re.DrawChar = Draw_Char;
+	re.DrawTileClear = Draw_TileClear;
+	re.DrawFill = Draw_Fill;
+	re.DrawFadeScreen = Draw_FadeScreen;
+
+	re.DrawStretchRaw = Draw_StretchRaw;
+
+	re.Init = R_Init;
+	re.Shutdown = R_Shutdown;
+
+	re.CinematicSetPalette = R_SetPalette;
+	re.BeginFrame = R_BeginFrame;
+	re.EndFrame = R_EndFrame;
+
+	re.AppActivate = R_AppActivate;
+
+	Swap_Init ();
+
+	return re;
+}
+
+// this is only here so the functions in q_shared.c and q_shwin.c can link
+void Sys_Error (char *error, ...)
+{
+	va_list		argptr;
+	char		text[1024];
+
+	va_start (argptr, error);
+	vsnprintf (text, sizeof(text), error, argptr);
+	va_end (argptr);
+
+	ri.Sys_Error (ERR_FATAL, "%s", text);
+}
+
+void Com_Printf (char *fmt, ...)
+{
+	va_list		argptr;
+	char		text[1024];
+
+	va_start (argptr, fmt);
+	vsnprintf (text, sizeof(text), fmt, argptr);
+	va_end (argptr);
+
+	ri.Con_Printf (PRINT_ALL, "%s", text);
+}

@@ -465,6 +465,40 @@ void VID_Restart_f (void)
 	vid_ref->modified = true;
 }
 
+/*
+============
+VID_PtCycle_f
+
+Steps original -> CPU path traced -> RTX path traced -> original. The RTX
+step is skipped once it has failed to start in this session.
+============
+*/
+static qboolean	vid_rtx_failed;
+
+void VID_PtCycle_f (void)
+{
+	char	*next, *label;
+
+	if ( strcmp (vid_ref->string, "ptcpu") == 0 && !vid_rtx_failed )
+	{
+		next = "ptrtx";
+		label = "RTX path traced";
+	}
+	else if ( strcmp (vid_ref->string, "ptcpu") == 0 || strcmp (vid_ref->string, "ptrtx") == 0 )
+	{
+		next = "gl";
+		label = "original (OpenGL)";
+	}
+	else
+	{
+		next = "ptcpu";
+		label = "CPU path traced";
+	}
+
+	Com_Printf ("Renderer: %s\n", label);
+	Cvar_Set ("vid_ref", next);
+}
+
 void VID_Front_f( void )
 {
 	SetWindowLong( cl_hwnd, GWL_EXSTYLE, WS_EX_TOPMOST );
@@ -676,14 +710,31 @@ void VID_CheckChanges (void)
 		Com_sprintf( name, sizeof(name), "ref_%s.dll", vid_ref->string );
 		if ( !VID_LoadRefresh( name ) )
 		{
+			const char *fallback;
+			qboolean	quiet = false;
+
 			if ( strcmp (vid_ref->string, "soft") == 0 )
 				Com_Error (ERR_FATAL, "Couldn't fall back to software refresh!");
-			Cvar_Set( "vid_ref", "soft" );
+
+			// ptrtx -> ptcpu -> gl -> soft
+			if ( strcmp (vid_ref->string, "ptrtx") == 0 )
+			{
+				fallback = "ptcpu";
+				vid_rtx_failed = true;
+				quiet = true;	// expected on machines without an RTX card
+			}
+			else if ( strcmp (vid_ref->string, "ptcpu") == 0 )
+				fallback = "gl";
+			else
+				fallback = "soft";
+
+			Com_Printf ("Couldn't start ref_%s, falling back to ref_%s\n", vid_ref->string, fallback);
+			Cvar_Set( "vid_ref", (char *)fallback );
 
 			/*
 			** drop the console if we fail to load a refresh
 			*/
-			if ( cls.key_dest != key_console )
+			if ( !quiet && cls.key_dest != key_console )
 			{
 				Con_ToggleConsole_f();
 			}
@@ -722,6 +773,9 @@ void VID_Init (void)
 	/* Add some console commands that we want to handle */
 	Cmd_AddCommand ("vid_restart", VID_Restart_f);
 	Cmd_AddCommand ("vid_front", VID_Front_f);
+	Cmd_AddCommand ("pt_cycle", VID_PtCycle_f);
+	if ( !keybindings[K_F8] )
+		Key_SetBinding (K_F8, "pt_cycle");
 
 	/*
 	** this is a gross hack but necessary to clamp the mode for 3Dfx

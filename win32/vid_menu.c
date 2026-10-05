@@ -22,9 +22,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define REF_SOFT	0
 #define REF_OPENGL	1
-#define REF_3DFX	2
-#define REF_POWERVR	3
-#define REF_VERITE	4
+#define REF_PTCPU	2
+#define REF_PTRTX	3
 
 extern cvar_t *vid_ref;
 extern cvar_t *vid_fullscreen;
@@ -149,17 +148,11 @@ static void ApplyChanges( void *unused )
 		Cvar_Set( "vid_ref", "gl" );
 		Cvar_Set( "gl_driver", "opengl32" );
 		break;
-	case REF_3DFX:
-		Cvar_Set( "vid_ref", "gl" );
-		Cvar_Set( "gl_driver", "3dfxgl" );
+	case REF_PTCPU:
+		Cvar_Set( "vid_ref", "ptcpu" );
 		break;
-	case REF_POWERVR:
-		Cvar_Set( "vid_ref", "gl" );
-		Cvar_Set( "gl_driver", "pvrgl" );
-		break;
-	case REF_VERITE:
-		Cvar_Set( "vid_ref", "gl" );
-		Cvar_Set( "gl_driver", "veritegl" );
+	case REF_PTRTX:
+		Cvar_Set( "vid_ref", "ptrtx" );
 		break;
 	}
 
@@ -230,9 +223,8 @@ void VID_MenuInit( void )
 	{
 		"[software      ]",
 		"[default OpenGL]",
-		"[3Dfx OpenGL   ]",
-		"[PowerVR OpenGL]",
-//		"[Rendition OpenGL]",
+		"[CPU path traced]",
+		"[RTX path traced]",
 		0
 	};
 	static const char *yesno_names[] =
@@ -276,15 +268,17 @@ void VID_MenuInit( void )
 	else if ( strcmp( vid_ref->string, "gl" ) == 0 )
 	{
 		s_current_menu_index = OPENGL_MENU;
-		if ( strcmp( gl_driver->string, "3dfxgl" ) == 0 )
-			s_ref_list[s_current_menu_index].curvalue = REF_3DFX;
-		else if ( strcmp( gl_driver->string, "pvrgl" ) == 0 )
-			s_ref_list[s_current_menu_index].curvalue = REF_POWERVR;
-		else if ( strcmp( gl_driver->string, "opengl32" ) == 0 )
-			s_ref_list[s_current_menu_index].curvalue = REF_OPENGL;
-		else
-//			s_ref_list[s_current_menu_index].curvalue = REF_VERITE;
-			s_ref_list[s_current_menu_index].curvalue = REF_OPENGL;
+		s_ref_list[0].curvalue = s_ref_list[1].curvalue = REF_OPENGL;
+	}
+	else if ( strcmp( vid_ref->string, "ptcpu" ) == 0 )
+	{
+		s_current_menu_index = OPENGL_MENU;
+		s_ref_list[0].curvalue = s_ref_list[1].curvalue = REF_PTCPU;
+	}
+	else if ( strcmp( vid_ref->string, "ptrtx" ) == 0 )
+	{
+		s_current_menu_index = OPENGL_MENU;
+		s_ref_list[0].curvalue = s_ref_list[1].curvalue = REF_PTRTX;
 	}
 
 	s_software_menu.x = viddef.width * 0.50;
