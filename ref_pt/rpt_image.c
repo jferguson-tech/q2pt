@@ -336,6 +336,38 @@ image_t	*R_FindImage (char *name, imagetype_t type)
 
 /*
 ===============
+R_ImageTexture
+
+The backend's texture for an image, made the first time it is asked for.
+Returns -1 if there is none.
+===============
+*/
+int R_ImageTexture (image_t *image)
+{
+	pt_texture_t	tex;
+
+	if (!image)
+		return -1;
+	if (!image->pt_texture)
+	{
+		tex.width = image->width;
+		tex.height = image->height;
+		tex.pixels = image->pixels;
+		image->pt_texture = rpt.backend->texture_create (rpt.backend, &tex) + 1;
+	}
+	return image->pt_texture - 1;
+}
+
+static void R_FreeImage (image_t *image)
+{
+	if (image->pt_texture && rpt.backend)
+		rpt.backend->texture_destroy (rpt.backend, image->pt_texture - 1);
+	free (image->pixels);
+	memset (image, 0, sizeof(*image));
+}
+
+/*
+===============
 R_RegisterSkin
 ===============
 */
@@ -366,8 +398,7 @@ void R_FreeUnusedImages (void)
 		if (image->type == it_pic)
 			continue;		// don't free pics
 
-		free (image->pixels);
-		memset (image, 0, sizeof(*image));
+		R_FreeImage (image);
 	}
 }
 
@@ -403,7 +434,6 @@ void R_ShutdownImages (void)
 	int		i;
 
 	for (i=0 ; i<numr_images ; i++)
-		free (r_images[i].pixels);
-	memset (r_images, 0, sizeof(r_images));
+		R_FreeImage (&r_images[i]);
 	numr_images = 0;
 }

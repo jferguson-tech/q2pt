@@ -47,12 +47,27 @@ typedef struct image_s
 	int			width, height;
 	int			registration_sequence;		// 0 = free
 	uint32_t	*pixels;					// R,G,B,A bytes, premultiplied
+	int			pt_texture;					// backend handle + 1, 0 = not created
 } image_t;
+
+typedef enum
+{
+	mod_bad,
+	mod_world,		// the map itself; its triangles live in the backend
+	mod_inline,		// "*N": a door, lift, ... inside the map
+	mod_alias,
+	mod_sprite
+} modtype_t;
 
 typedef struct model_s
 {
 	char		name[MAX_QPATH];
 	int			registration_sequence;		// 0 = free
+	modtype_t	type;
+	int			inlinenum;					// mod_inline
+	void		*data;						// mod_alias: dmdl_t, mod_sprite: dsprite_t; byte swapped file
+	image_t		*skins[MAX_MD2SKINS];		// mod_alias: skins, mod_sprite: frames
+	int			numskins;
 } model_t;
 
 typedef struct
@@ -98,8 +113,30 @@ void	Draw_Fill (int x, int y, int w, int h, int c);
 void	Draw_FadeScreen (void);
 void	Draw_StretchRaw (int x, int y, int w, int h, int cols, int rows, byte *data);
 void	R_SetPalette (const unsigned char *palette);
+void	Draw_Blend (int x, int y, int w, int h, float *blend);
+
+int		R_ImageTexture (image_t *image);
 
 //
 // rpt_world.c
 //
 void	R_LoadWorld (char *name, char *skyname);
+int		R_InlineModel (int num, float **positions, float **uvs, uint32_t **materials);
+void	R_WorldMaterial (int index, pt_material_t *material, image_t **image);
+
+// see rpt_world.c: brightness of a light entity or dynamic light of strength l
+#define	LIGHT_UNIT	(3.14159265f / 255.0f)
+#define	POINT_LIGHT_INTENSITY(l)	((l) * (l) * (l) / 8.0f * LIGHT_UNIT)
+
+//
+// rpt_model.c
+//
+struct model_s *R_RegisterModel (char *name);
+void	R_BeginModelRegistration (void);
+void	R_FreeUnusedModels (void);
+void	R_ShutdownModels (void);
+
+//
+// rpt_scene.c
+//
+void	R_BuildScene (refdef_t *fd, pt_scene_t *scene);

@@ -56,9 +56,20 @@ static pt_material_t	*w_materials;
 static matkey_t			*w_matkeys;
 static int				w_nummaterials, w_maxmaterials;
 
-static float			*w_positions, *w_uvs;
-static uint32_t			*w_indices, *w_trimaterials;
-static int				w_numtris, w_maxtris;
+typedef struct
+{
+	float		*positions;		// 9 per triangle
+	float		*uvs;			// 6 per triangle
+	uint32_t	*materials;
+	int			num, max;
+} trilist_t;
+
+static trilist_t		w_world;		// model 0, what the backend loads
+static trilist_t		w_inline;		// every other model, each in its own space
+static trilist_t		*w_list;		// the one being filled
+static int				w_inlinefirst[MAX_MAP_MODELS], w_inlinecount[MAX_MAP_MODELS];
+static int				w_nummodels;
+static uint32_t			*w_indices;
 
 static pt_point_light_t	*w_lights;
 static int				w_numlights, w_maxlights;
@@ -169,6 +180,9 @@ static int W_AddMaterial (texinfo_t *tex)
 				W_Reflectivity (image, color);
 			for (i=0 ; i<3 ; i++)
 				mat->emission[i] = color[i] * value * LIGHT_UNIT;
+
+			// to the eye a lamp is its texture, a bit over full brightness
+			mat->emission_seen = 1.5f;
 		}
 	}
 
@@ -177,32 +191,29 @@ static int W_AddMaterial (texinfo_t *tex)
 
 static void W_AddTriangle (float *a, float *b, float *c, float *uva, float *uvb, float *uvc, int material)
 {
-	float	*p, *uv;
-	int		i;
+	trilist_t	*list = w_list;
+	float		*p, *uv;
 
-	if (w_numtris == w_maxtris)
+	if (list->num == list->max)
 	{
-		w_maxtris = w_maxtris ? w_maxtris * 2 : 16384;
-		w_positions = realloc (w_positions, w_maxtris * 9 * sizeof(float));
-		w_uvs = realloc (w_uvs, w_maxtris * 6 * sizeof(float));
-		w_indices = realloc (w_indices, w_maxtris * 3 * sizeof(uint32_t));
-		w_trimaterials = realloc (w_trimaterials, w_maxtris * sizeof(uint32_t));
+		list->max = list->max ? list->max * 2 : 16384;
+		list->positions = realloc (list->positions, list->max * 9 * sizeof(float));
+		list->uvs = realloc (list->uvs, list->max * 6 * sizeof(float));
+		list->materials = realloc (list->materials, list->max * sizeof(uint32_t));
 	}
 
-	p = w_positions + w_numtris * 9;
+	p = list->positions + list->num * 9;
 	VectorCopy (a, p);
 	VectorCopy (b, (p + 3));
 	VectorCopy (c, (p + 6));
 
-	uv = w_uvs + w_numtris * 6;
+	uv = list->uvs + list->num * 6;
 	uv[0] = uva[0]; uv[1] = uva[1];
 	uv[2] = uvb[0]; uv[3] = uvb[1];
 	uv[4] = uvc[0]; uv[5] = uvc[1];
 
-	for (i=0 ; i<3 ; i++)
-		w_indices[w_numtris * 3 + i] = w_numtris * 3 + i;
-	w_trimaterials[w_numtris] = material;
-	w_numtris++;
+	list->materials[list->num] = material;
+	list->num++;
 }
 
 //=============================================================================
@@ -224,10 +235,11 @@ static void *W_Lump (byte *base, int filelen, int lump, int elemsize, int *count
 ===============
 W_LoadFaces
 
-Fan triangulates the world model's faces
+Fan triangulates one model's faces into w_list. Returns how many models
+the map has.
 ===============
 */
-static void W_LoadFaces (byte *base, int filelen)
+static int W_LoadFaces (byte *base, int filelen, int modelnum)
 {
 	dvertex_t	*verts;
 	dedge_t		*edges;
@@ -252,15 +264,19 @@ static void W_LoadFaces (byte *base, int filelen)
 	models = W_Lump (base, filelen, LUMP_MODELS, sizeof(*models), &nummodels);
 	if (nummodels < 1)
 		ri.Sys_Error (ERR_DROP, "R_LoadWorld: map with no models");
+	if (nummodels > MAX_MAP_MODELS)
+		nummodels = MAX_MAP_MODELS;
+	if (modelnum >= nummodels)
+		return nummodels;
 
 	texmat = malloc ((numtexinfo + 1) * sizeof(int));
 	for (i=0 ; i<numtexinfo ; i++)
 		texmat[i] = -1;
 
-	firstface = LittleLong (models[0].firstface);
-	facecount = LittleLong (models[0].numfaces);
+	firstface = LittleLong (models[modelnum].firstface);
+	facecount = LittleLong (models[modelnum].numfaces);
 	if (firstface < 0 || facecount < 0 || firstface + facecount > numfaces)
-		ri.Sys_Error (ERR_DROP, "R_LoadWorld: bad world model");
+		ri.Sys_Error (ERR_DROP, "R_LoadWorld: bad model %d", modelnum);
 
 	for (i=0, face=faces+firstface ; i<facecount ; i++, face++)
 	{
@@ -324,6 +340,7 @@ static void W_LoadFaces (byte *base, int filelen)
 	}
 
 	free (texmat);
+	return nummodels;
 }
 
 /*
@@ -520,8 +537,9 @@ void R_LoadWorld (char *name, char *skyname)
 	pt_world_t	world;
 	byte		*base;
 	dheader_t	*header;
-	int			filelen;
+	int			filelen, i;
 
+	w_nummodels = 0;
 	if (!name || !name[0])
 	{
 		rpt.backend->load_world (rpt.backend, NULL);
@@ -537,10 +555,27 @@ void R_LoadWorld (char *name, char *skyname)
 		|| LittleLong (header->version) != BSPVERSION)
 		ri.Sys_Error (ERR_DROP, "R_LoadWorld: %s is not a version %d bsp", name, BSPVERSION);
 
-	w_numtextures = w_nummaterials = w_numtris = w_numlights = 0;
+	w_numtextures = w_nummaterials = w_numlights = 0;
+	w_world.num = w_inline.num = 0;
 
 	memset (&world, 0, sizeof(world));
-	W_LoadFaces (base, filelen);
+
+	w_list = &w_world;
+	w_nummodels = W_LoadFaces (base, filelen, 0);
+
+	// doors, lifts and the like: kept here and added to each frame where they are
+	w_list = &w_inline;
+	for (i=1 ; i<w_nummodels ; i++)
+	{
+		w_inlinefirst[i] = w_inline.num;
+		W_LoadFaces (base, filelen, i);
+		w_inlinecount[i] = w_inline.num - w_inlinefirst[i];
+	}
+
+	w_indices = realloc (w_indices, (w_world.num * 3 + 1) * sizeof(uint32_t));
+	for (i=0 ; i<w_world.num*3 ; i++)
+		w_indices[i] = i;
+
 	W_LoadLights (base, filelen);
 	W_LoadSky (skyname, world.sky_textures);
 	ri.FS_FreeFile (base);
@@ -549,12 +584,12 @@ void R_LoadWorld (char *name, char *skyname)
 	world.num_textures = w_numtextures;
 	world.materials = w_materials;
 	world.num_materials = w_nummaterials;
-	world.positions = w_positions;
-	world.uvs = w_uvs;
-	world.num_vertices = w_numtris * 3;
+	world.positions = w_world.positions;
+	world.uvs = w_world.uvs;
+	world.num_vertices = w_world.num * 3;
 	world.indices = w_indices;
-	world.tri_materials = w_trimaterials;
-	world.num_triangles = w_numtris;
+	world.tri_materials = w_world.materials;
+	world.num_triangles = w_world.num;
 	world.lights = w_lights;
 	world.num_lights = w_numlights;
 	world.sky_scale = 2.0f;
@@ -562,6 +597,37 @@ void R_LoadWorld (char *name, char *skyname)
 	rpt.backend->load_world (rpt.backend, &world);
 
 	ri.Con_Printf (PRINT_ALL, "%s: %d triangles, %d materials, %d textures, %d point lights, sky \"%s\"%s\n",
-		name, w_numtris, w_nummaterials, w_numtextures, w_numlights, skyname,
+		name, w_world.num, w_nummaterials, w_numtextures, w_numlights, skyname,
 		world.sky_textures[0] < 0 ? " (not loaded)" : "");
+}
+
+/*
+===============
+R_InlineModel
+
+The triangles of inline model "*num", in the model's own space
+===============
+*/
+int R_InlineModel (int num, float **positions, float **uvs, uint32_t **materials)
+{
+	if (num < 1 || num >= w_nummodels)
+		return 0;
+
+	*positions = w_inline.positions + w_inlinefirst[num] * 9;
+	*uvs = w_inline.uvs + w_inlinefirst[num] * 6;
+	*materials = w_inline.materials + w_inlinefirst[num];
+	return w_inlinecount[num];
+}
+
+/*
+===============
+R_WorldMaterial
+
+A material index from R_InlineModel, as a material and the image it uses
+===============
+*/
+void R_WorldMaterial (int index, pt_material_t *material, image_t **image)
+{
+	*material = w_materials[index];
+	*image = w_matkeys[index].image;
 }

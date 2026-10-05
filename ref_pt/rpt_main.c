@@ -33,7 +33,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	WINDOW_CLASS_NAME	"Quake 2"
 #define	WINDOW_STYLE		(WS_OVERLAPPED|WS_BORDER|WS_CAPTION|WS_VISIBLE)
 
-#define	MAX_RPT_MODELS	1024
 
 refimport_t	ri;
 rptstate_t	rpt;
@@ -45,8 +44,6 @@ static cvar_t	*gl_mode;		// shared with ref_gl so toggling keeps the window size
 static cvar_t	*pt_rtx_disable;
 #endif
 
-static model_t	r_models[MAX_RPT_MODELS];
-static int		numr_models;
 static char		r_skyname[MAX_QPATH];
 static char		r_worldname[MAX_QPATH];
 static qboolean	r_worlddirty;
@@ -231,7 +228,7 @@ qboolean R_Init (void *hInstance, void *wndProc)
 	pt_scale = ri.Cvar_Get ("pt_scale", "0.5", CVAR_ARCHIVE);
 	pt_samples = ri.Cvar_Get ("pt_samples", "1", CVAR_ARCHIVE);
 	pt_bounces = ri.Cvar_Get ("pt_bounces", "3", CVAR_ARCHIVE);
-	pt_exposure = ri.Cvar_Get ("pt_exposure", "3", CVAR_ARCHIVE);
+	pt_exposure = ri.Cvar_Get ("pt_exposure", "2", CVAR_ARCHIVE);
 	pt_stats = ri.Cvar_Get ("pt_stats", "0", 0);
 
 #ifdef RPT_RTX
@@ -285,55 +282,13 @@ Also called by the engine after a failed R_Init
 void R_Shutdown (void)
 {
 	R_ShutdownImages ();
-	memset (r_models, 0, sizeof(r_models));
-	numr_models = 0;
+	R_ShutdownModels ();
 	r_worldname[0] = 0;
 	r_skyname[0] = 0;
 	r_worlddirty = false;
 	R_DestroyWindow ();
 }
 
-//=============================================================================
-
-/*
-@@@@@@@@@@@@@@@@@@@@@
-R_RegisterModel
-
-The path tracers do not load geometry yet, so a model is only a name.
-The client treats the pointer as an opaque handle.
-@@@@@@@@@@@@@@@@@@@@@
-*/
-struct model_s *R_RegisterModel (char *name)
-{
-	model_t	*mod;
-	int		i;
-
-	if (!name || !name[0] || strlen (name) >= MAX_QPATH)
-		return NULL;
-
-	for (i=0, mod=r_models ; i<numr_models ; i++, mod++)
-	{
-		if (mod->registration_sequence && !strcmp (mod->name, name))
-		{
-			mod->registration_sequence = registration_sequence;
-			return mod;
-		}
-	}
-
-	for (i=0, mod=r_models ; i<numr_models ; i++, mod++)
-		if (!mod->registration_sequence)
-			break;
-	if (i == numr_models)
-	{
-		if (numr_models == MAX_RPT_MODELS)
-			ri.Sys_Error (ERR_DROP, "MAX_RPT_MODELS");
-		numr_models++;
-	}
-
-	strcpy (mod->name, name);
-	mod->registration_sequence = registration_sequence;
-	return mod;
-}
 
 /*
 @@@@@@@@@@@@@@@@@@@@@
@@ -362,12 +317,7 @@ R_EndRegistration
 */
 void R_EndRegistration (void)
 {
-	int		i;
-
-	for (i=0 ; i<numr_models ; i++)
-		if (r_models[i].registration_sequence != registration_sequence)
-			memset (&r_models[i], 0, sizeof(r_models[i]));
-
+	R_FreeUnusedModels ();
 	R_FreeUnusedImages ();
 }
 
@@ -415,6 +365,7 @@ R_RenderFrame
 void R_RenderFrame (refdef_t *fd)
 {
 	pt_view_t	view;
+	pt_scene_t	scene;
 	const char	*stats;
 
 	if (fd->rdflags & RDF_NOWORLDMODEL)
@@ -440,7 +391,12 @@ void R_RenderFrame (refdef_t *fd)
 	view.samples = pt_samples->value;
 	view.bounces = pt_bounces->value;
 	view.exposure = pt_exposure->value;
+	R_BuildScene (fd, &scene);
+	view.scene = &scene;
 	rpt.backend->render_view (rpt.backend, &view);
+
+	// damage flashes, underwater tint and the like
+	Draw_Blend (fd->x, fd->y, fd->width, fd->height, fd->blend);
 
 #ifdef RPT_RTX
 	Draw_String (fd->x + (fd->width - (int)strlen (RPT_LABEL) * 8) / 2, fd->y + fd->height / 3, RPT_LABEL);

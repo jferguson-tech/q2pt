@@ -344,3 +344,40 @@ void Draw_StretchRaw (int x, int y, int w, int h, int cols, int rows, byte *data
 {
 	Draw_Scaled (x, y, w, h, data, cols, rows, r_rawpalette);
 }
+
+/*
+=============
+Draw_Blend
+
+Tints a rectangle with an rgba colour, 0-1 each
+=============
+*/
+void Draw_Blend (int x, int y, int w, int h, float *blend)
+{
+	int			x1, y1, dx, dy, a;
+	uint32_t	*dest, color;
+
+	a = blend[3] * 255;
+	if (a <= 0)
+		return;
+	if (a > 255)
+		a = 255;
+
+	// premultiplied
+	color = (uint32_t)(blend[0] * a) | ((uint32_t)(blend[1] * a) << 8)
+		| ((uint32_t)(blend[2] * a) << 16) | ((uint32_t)a << 24);
+
+	x1 = x + w > rpt.width ? rpt.width : x + w;
+	y1 = y + h > rpt.height ? rpt.height : y + h;
+	if (x < 0)
+		x = 0;
+	if (y < 0)
+		y = 0;
+
+	for (dy=y ; dy<y1 ; dy++)
+	{
+		dest = rpt.overlay + dy * rpt.width;
+		for (dx=x ; dx<x1 ; dx++)
+			dest[dx] = Blend (color, dest[dx]);
+	}
+}

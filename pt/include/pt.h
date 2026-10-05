@@ -28,20 +28,30 @@ Triangles are one sided for emission: they emit from the side where the
 vertices appear counter clockwise.
 */
 
-#define PT_MAT_SKY		1u		/* shows the sky; nothing else applies */
+#define PT_MAT_SKY				1u	/* shows the sky; nothing else applies */
+#define PT_MAT_ALPHA_TEST		2u	/* texels with alpha under half are holes */
+#define PT_MAT_EMIT_TEXTURE		4u	/* emitted radiance is emission * texel */
+#define PT_MAT_CAMERA_INVISIBLE	8u	/* not seen directly, still lights and shadows */
+#define PT_MAT_BLACK			16u	/* reflects nothing; it can still emit */
 
 typedef struct pt_texture_s
 {
 	int				width, height;
-	const uint32_t	*pixels;	/* R,G,B,A bytes, top row first; alpha ignored */
+	const uint32_t	*pixels;	/* R,G,B,A bytes, top row first */
 } pt_texture_t;
 
 typedef struct pt_material_s
 {
-	int			texture;		/* index into textures, -1 for plain white */
+	int			texture;		/* -1 for plain white. In a world, an index into
+								   its textures; in a scene, a handle from
+								   texture_create */
 	float		emission[3];	/* average emitted radiance. With a texture the
 								   radiance at a point is this times
-								   texel / average texel */
+								   texel / average texel, unless
+								   PT_MAT_EMIT_TEXTURE */
+	float		emission_seen;	/* if above 0: the radiance shown to the eye for a
+								   white texel, in place of the real emission, so
+								   a bright lamp keeps its look */
 	float		alpha;			/* 1 = opaque; less lets light through */
 	uint32_t	flags;
 } pt_material_t;
@@ -80,6 +90,25 @@ typedef struct pt_world_s
 	float				sky_scale;			/* radiance of a white sky texel */
 } pt_world_t;
 
+/*
+What moves: rebuilt by the host every frame, in world space. Its emitting
+triangles light the scene but are found by chance, so anything that should
+light well also belongs in lights.
+*/
+typedef struct pt_scene_s
+{
+	const pt_material_t	*materials;
+	int					num_materials;
+
+	const float			*positions;			/* 9 per triangle */
+	const float			*uvs;				/* 6 per triangle */
+	const uint32_t		*tri_materials;		/* 1 per triangle */
+	int					num_triangles;
+
+	const pt_point_light_t	*lights;
+	int						num_lights;
+} pt_scene_t;
+
 /* one 3D view */
 typedef struct pt_view_s
 {
@@ -90,6 +119,8 @@ typedef struct pt_view_s
 	float	origin[3];
 	float	forward[3], right[3], up[3];	/* orthonormal */
 	float	fov_x, fov_y;					/* degrees */
+
+	const pt_scene_t	*scene;				/* may be NULL */
 
 	/* quality settings; a backend may ignore what it has no use for */
 	float	scale;			/* internal resolution as a fraction of the view */
@@ -116,6 +147,10 @@ struct pt_backend_s
 
 	/* copies everything it needs; NULL unloads the world */
 	void	(*load_world)(pt_backend_t *self, const pt_world_t *world);
+
+	/* textures for scene materials. Returns a handle, or -1 */
+	int		(*texture_create)(pt_backend_t *self, const pt_texture_t *texture);
+	void	(*texture_destroy)(pt_backend_t *self, int handle);
 
 	void	(*render_view)(pt_backend_t *self, const pt_view_t *view);
 	void	(*present)(pt_backend_t *self, const uint32_t *overlay);

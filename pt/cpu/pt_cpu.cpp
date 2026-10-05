@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Jonathan Ferguson
 //
 // CPU backend: a unidirectional path tracer with next event estimation,
-// presented through GDI.
+// temporal accumulation and an edge aware filter, presented through GDI.
 
 #include "../include/pt.h"
 #include "pt_bvh.h"
@@ -18,16 +18,20 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace {
 
 using namespace pt;
 
-const float kRayOffset = 0.03f;		// keeps bounce rays off the surface they leave
-const int kLightCandidates = 8;		// per shading point
-const float kMaxSample = 40.0f;		// luminance clamp per path, tames fireflies
+const float kRayOffset = 0.03f;			// keeps bounce rays off the surface they leave
+const int kLightCandidates = 8;			// per shading point
+const float kMaxSample = 40.0f;			// luminance clamp per path, tames fireflies
 const float kGlobalLightChance = 0.2f;	// how often a light is picked map wide instead of nearby
+const uint32_t kDynamic = 0x80000000u;	// triangle index bit: belongs to the frame, not the world
+const float kMovingHistory = 32.0f;		// frames of history kept while anything changes
+const int kFilterPasses = 4;
 
 float g_to_linear[256];
 uint8_t g_to_display[4097];
@@ -49,7 +53,14 @@ Vec3 Decode(uint32_t rgba)
 	return Vec3(g_to_linear[rgba & 0xff], g_to_linear[(rgba >> 8) & 0xff], g_to_linear[(rgba >> 16) & 0xff]);
 }
 
-// ----------------------------------------------------------------- world
+bool Finite(float f)
+{
+	uint32_t bits;
+	memcpy(&bits, &f, sizeof(bits));
+	return (bits & 0x7f800000u) != 0x7f800000u;
+}
+
+// ----------------------------------------------------------------- scene
 
 struct Texture
 {
@@ -57,13 +68,27 @@ struct Texture
 	std::vector<uint32_t>	pixels;
 	Vec3					average{1, 1, 1};
 
-	Vec3 Sample(float u, float v) const
+	void Set(const pt_texture_t &src)
+	{
+		width = src.width;
+		height = src.height;
+		const size_t count = (size_t)width * height;
+		pixels.assign(src.pixels, src.pixels + count);
+
+		Vec3 sum;
+		for (size_t p = 0; p < count; p++)
+			sum += Decode(pixels[p]);
+		if (count)
+			average = Max(sum / (float)count, Vec3(1e-4f));
+	}
+
+	uint32_t Texel(float u, float v) const
 	{
 		int x = (int)std::floor(u * width) % width;
 		int y = (int)std::floor(v * height) % height;
 		if (x < 0) x += width;
 		if (y < 0) y += height;
-		return Decode(pixels[(size_t)y * width + x]);
+		return pixels[(size_t)y * width + x];
 	}
 
 	// clamped, for the sky faces
@@ -79,21 +104,50 @@ struct Texture
 
 struct Material
 {
-	int			texture = -1;
-	Vec3		emission;			// average
-	Vec3		emission_per_texel;	// emission / average texel
-	float		alpha = 1.0f;
-	uint32_t	flags = 0;
-	bool		emissive = false;
+	const Texture	*texture = nullptr;
+	Vec3			emission;			// average
+	Vec3			emission_per_texel;	// multiply by the texel to get emitted radiance
+	float			alpha = 1.0f;
+	float			emission_seen = 0.0f;
+	uint32_t		flags = 0;
+	bool			emissive = false;
+	bool			sampled = false;	// reached through the light lists, so not counted when hit by chance
+
+	void Set(const pt_material_t &src, const Texture *tex)
+	{
+		texture = (tex && tex->width > 0 && tex->height > 0) ? tex : nullptr;
+		emission = Vec3(src.emission);
+		alpha = src.alpha;
+		emission_seen = src.emission_seen;
+		flags = src.flags;
+		emissive = MaxComponent(emission) > 0.0f && !(flags & PT_MAT_SKY);
+		emission_per_texel = emission;
+		if (texture && !(flags & PT_MAT_EMIT_TEXTURE))
+		{
+			const Vec3 avg = texture->average;
+			emission_per_texel = Vec3(emission.x / avg.x, emission.y / avg.y, emission.z / avg.z);
+		}
+	}
 };
 
 struct Tri
 {
-	Vec3		p0, e1, e2;
-	Vec3		n;			// unit, towards the counter clockwise side
-	float		area;
-	float		uv[3][2];
-	uint32_t	material;
+	Vec3			p0, e1, e2;
+	Vec3			n;			// unit, towards the counter clockwise side
+	float			area;
+	float			uv[3][2];
+	const Material	*mat;
+
+	void Set(Vec3 a, Vec3 b, Vec3 c)
+	{
+		p0 = a;
+		e1 = b - a;
+		e2 = c - a;
+		const Vec3 x = Cross(e1, e2);
+		const float len = Length(x);
+		area = len * 0.5f;
+		n = len > 0.0f ? x / len : Vec3(0, 0, 1);
+	}
 };
 
 struct Light
@@ -101,7 +155,7 @@ struct Light
 	uint32_t	tri;		// or ~0u for a point light
 	Vec3		origin;		// point lights; centroid for triangles
 	Vec3		emission;	// radiance for triangles, intensity for points
-	float		pdf;		// chance of being picked
+	float		pdf;		// chance of being picked map wide
 };
 
 // For each cell of a coarse grid, the lights that matter most there. Sampling
@@ -155,6 +209,27 @@ struct World
 		if (sky[face] < 0 || m <= 0.0f)
 			return Vec3(0, 0, 0);
 		return textures[sky[face]].SampleClamped((d[b] / m + 1.0f) * 0.5f, (d[c] / m + 1.0f) * 0.5f) * sky_scale;
+	}
+};
+
+// what the host hands over each frame
+struct Frame
+{
+	std::vector<Material>	materials;
+	std::vector<Tri>		tris;
+	Bvh						bvh;
+	std::vector<Light>		lights;		// point lights only
+	uint32_t				hash = 0;	// changes when anything in it does
+};
+
+struct Scene
+{
+	const World	*world;
+	const Frame	*frame;
+
+	const Tri &TriAt(uint32_t index) const
+	{
+		return (index & kDynamic) ? frame->tris[index & ~kDynamic] : world->tris[index];
 	}
 };
 
@@ -234,36 +309,14 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 
 	w->textures.resize(in->num_textures);
 	for (int i = 0; i < in->num_textures; i++)
-	{
-		Texture &t = w->textures[i];
-		t.width = in->textures[i].width;
-		t.height = in->textures[i].height;
-		const size_t count = (size_t)t.width * t.height;
-		t.pixels.assign(in->textures[i].pixels, in->textures[i].pixels + count);
+		w->textures[i].Set(in->textures[i]);
 
-		Vec3 sum;
-		for (size_t p = 0; p < count; p++)
-			sum += Decode(t.pixels[p]);
-		if (count)
-			t.average = Max(sum / (float)count, Vec3(1e-4f));
-	}
-
-	w->materials.resize(in->num_materials);
+	w->materials.resize(std::max(1, in->num_materials));
 	for (int i = 0; i < in->num_materials; i++)
 	{
-		Material &m = w->materials[i];
-		const pt_material_t &src = in->materials[i];
-		m.texture = (src.texture >= 0 && src.texture < in->num_textures) ? src.texture : -1;
-		m.emission = Vec3(src.emission);
-		m.alpha = src.alpha;
-		m.flags = src.flags;
-		m.emissive = MaxComponent(m.emission) > 0.0f && !(m.flags & PT_MAT_SKY);
-		m.emission_per_texel = m.emission;
-		if (m.texture >= 0)
-		{
-			const Vec3 avg = w->textures[m.texture].average;
-			m.emission_per_texel = Vec3(m.emission.x / avg.x, m.emission.y / avg.y, m.emission.z / avg.z);
-		}
+		const int t = in->materials[i].texture;
+		w->materials[i].Set(in->materials[i], (t >= 0 && t < in->num_textures) ? &w->textures[t] : nullptr);
+		w->materials[i].sampled = w->materials[i].emissive;
 	}
 
 	std::vector<Vec3> soup((size_t)in->num_triangles * 3);
@@ -278,14 +331,9 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 			t.uv[k][0] = in->uvs[vi * 2];
 			t.uv[k][1] = in->uvs[vi * 2 + 1];
 		}
-		t.p0 = soup[(size_t)i * 3];
-		t.e1 = soup[(size_t)i * 3 + 1] - t.p0;
-		t.e2 = soup[(size_t)i * 3 + 2] - t.p0;
-		const Vec3 c = Cross(t.e1, t.e2);
-		const float len = Length(c);
-		t.area = len * 0.5f;
-		t.n = len > 0.0f ? c / len : Vec3(0, 0, 1);
-		t.material = in->tri_materials[i] < (uint32_t)in->num_materials ? in->tri_materials[i] : 0;
+		t.Set(soup[(size_t)i * 3], soup[(size_t)i * 3 + 1], soup[(size_t)i * 3 + 2]);
+		const uint32_t m = in->tri_materials[i];
+		t.mat = &w->materials[m < (uint32_t)in->num_materials ? m : 0];
 	}
 	w->bvh.Build(soup.data(), (uint32_t)in->num_triangles);
 
@@ -294,16 +342,15 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 	for (int i = 0; i < in->num_triangles; i++)
 	{
 		const Tri &t = w->tris[i];
-		const Material &m = w->materials[t.material];
-		if (!m.emissive || t.area <= 1e-6f)
+		if (!t.mat->emissive || t.area <= 1e-6f)
 			continue;
 		Light l;
 		l.tri = (uint32_t)i;
 		l.origin = t.p0 + (t.e1 + t.e2) * (1.0f / 3.0f);
-		l.emission = m.emission;
+		l.emission = t.mat->emission;
 		l.pdf = 0;
 		w->lights.push_back(l);
-		power.push_back(Luminance(m.emission) * t.area * kPi);
+		power.push_back(Luminance(t.mat->emission) * t.area * kPi);
 	}
 	for (int i = 0; i < in->num_lights; i++)
 	{
@@ -340,22 +387,179 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 	return w;
 }
 
-// ------------------------------------------------------------ integrator
-
-Vec3 Albedo(const World &w, const Tri &t, const Material &m, float u, float v)
+uint32_t HashBytes(const void *data, size_t bytes, uint32_t h)
 {
-	if (m.texture < 0)
-		return Vec3(1, 1, 1);
-	const float b0 = 1.0f - u - v;
-	return w.textures[m.texture].Sample(
-		t.uv[0][0] * b0 + t.uv[1][0] * u + t.uv[2][0] * v,
-		t.uv[0][1] * b0 + t.uv[1][1] * u + t.uv[2][1] * v);
+	const uint8_t *p = (const uint8_t *)data;
+	for (size_t i = 0; i < bytes; i++)
+		h = (h ^ p[i]) * 16777619u;
+	return h;
 }
 
-// Unoccluded light arriving at p from one light, picked by resampling a few
-// candidates in proportion to what each would contribute.
-Vec3 Direct(const World &w, Vec3 p, Vec3 n, Rng &rng)
+void BuildFrame(Frame &f, const pt_scene_t *in, const std::vector<std::unique_ptr<Texture>> &textures)
 {
+	f.materials.clear();
+	f.tris.clear();
+	f.lights.clear();
+	f.hash = 2166136261u;
+
+	std::vector<Vec3> soup;
+	if (in)
+	{
+		f.materials.resize(std::max(1, in->num_materials));
+		for (int i = 0; i < in->num_materials; i++)
+		{
+			const int t = in->materials[i].texture;
+			f.materials[i].Set(in->materials[i],
+				(t >= 0 && t < (int)textures.size() && textures[t]) ? textures[t].get() : nullptr);
+		}
+
+		f.tris.resize(in->num_triangles);
+		soup.resize((size_t)in->num_triangles * 3);
+		for (int i = 0; i < in->num_triangles; i++)
+		{
+			Tri &t = f.tris[i];
+			for (int k = 0; k < 3; k++)
+			{
+				soup[(size_t)i * 3 + k] = Vec3(&in->positions[i * 9 + k * 3]);
+				t.uv[k][0] = in->uvs[i * 6 + k * 2];
+				t.uv[k][1] = in->uvs[i * 6 + k * 2 + 1];
+			}
+			t.Set(soup[(size_t)i * 3], soup[(size_t)i * 3 + 1], soup[(size_t)i * 3 + 2]);
+			const uint32_t m = in->tri_materials[i];
+			t.mat = &f.materials[m < (uint32_t)in->num_materials ? m : 0];
+		}
+
+		for (int i = 0; i < in->num_lights; i++)
+		{
+			Light l;
+			l.tri = ~0u;
+			l.origin = Vec3(in->lights[i].origin);
+			l.emission = Vec3(in->lights[i].intensity);
+			l.pdf = 0;
+			if (Luminance(l.emission) > 0.0f)
+				f.lights.push_back(l);
+		}
+
+		f.hash = HashBytes(in->positions, (size_t)in->num_triangles * 9 * sizeof(float), f.hash);
+		f.hash = HashBytes(in->materials, (size_t)in->num_materials * sizeof(pt_material_t), f.hash);
+		f.hash = HashBytes(in->lights, (size_t)in->num_lights * sizeof(pt_point_light_t), f.hash);
+	}
+	f.bvh.Build(soup.data(), (uint32_t)f.tris.size());
+}
+
+// ------------------------------------------------------------ integrator
+
+void TexCoord(const Tri &t, float u, float v, float &s, float &tt)
+{
+	const float b0 = 1.0f - u - v;
+	s = t.uv[0][0] * b0 + t.uv[1][0] * u + t.uv[2][0] * v;
+	tt = t.uv[0][1] * b0 + t.uv[1][1] * u + t.uv[2][1] * v;
+}
+
+Vec3 Colour(const Tri &t, float u, float v)
+{
+	if (!t.mat->texture)
+		return Vec3(1, 1, 1);
+	float s, tt;
+	TexCoord(t, u, v, s, tt);
+	return Decode(t.mat->texture->Texel(s, tt));
+}
+
+Vec3 Albedo(const Tri &t, float u, float v)
+{
+	return (t.mat->flags & PT_MAT_BLACK) ? Vec3() : Colour(t, u, v);
+}
+
+// Radiance leaving an emitter. A lamp bright enough to light a room would show
+// as a white blob, so a material can ask to be seen dimmer than it is.
+Vec3 Emitted(const Tri &t, float u, float v, bool seen)
+{
+	const Material &m = *t.mat;
+	const Vec3 c = Colour(t, u, v);
+	return (seen && m.emission_seen > 0.0f) ? c * m.emission_seen : m.emission_per_texel * c;
+}
+
+bool IsHole(const Tri &t, float u, float v)
+{
+	if (!(t.mat->flags & PT_MAT_ALPHA_TEST) || !t.mat->texture)
+		return false;
+	float s, tt;
+	TexCoord(t, u, v, s, tt);
+	return (t.mat->texture->Texel(s, tt) >> 24) < 128;
+}
+
+// Nearest surface along the ray, in the world or the frame. Holes are
+// stepped through, and so are surfaces the camera must not see when the ray
+// comes from it. With cross set, surfaces that let light through are crossed
+// at random in proportion to how much they pass.
+bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &hit, const Tri *&tri)
+{
+	for (int skips = 0; ; skips++)
+	{
+		bool found = sc.world->bvh.Intersect(ray, hit);
+		Ray r = ray;
+		if (found)
+			r.tmax = hit.t;
+		Hit h;
+		if (sc.frame->bvh.Intersect(r, h))
+		{
+			hit = h;
+			hit.tri |= kDynamic;
+			found = true;
+		}
+		if (!found)
+			return false;
+
+		tri = &sc.TriAt(hit.tri);
+		const Material &m = *tri->mat;
+		const bool skip = skips < 32 && (
+			(camera && (m.flags & PT_MAT_CAMERA_INVISIBLE)) ||
+			IsHole(*tri, hit.u, hit.v) ||
+			(cross && m.alpha < 1.0f && rng.Float() >= m.alpha));
+		if (!skip)
+			return true;
+		ray.tmin = hit.t + 0.01f;
+	}
+}
+
+// true if nothing stops light between p and target
+bool Visible(const Scene &sc, Vec3 p, Vec3 n, Vec3 target, Rng &rng)
+{
+	Ray shadow;
+	shadow.o = p + n * kRayOffset;
+	shadow.d = target - shadow.o;
+	shadow.tmin = 0.0f;
+	shadow.tmax = 0.999f;
+
+	const auto blocks = [&](const Tri &t, float u, float v)
+	{
+		if (IsHole(t, u, v))
+			return false;
+		return t.mat->alpha >= 1.0f || rng.Float() < t.mat->alpha;
+	};
+	if (sc.world->bvh.AnyHit(shadow, [&](uint32_t i, float u, float v) { return blocks(sc.world->tris[i], u, v); }))
+		return false;
+	return !sc.frame->bvh.AnyHit(shadow, [&](uint32_t i, float u, float v) { return blocks(sc.frame->tris[i], u, v); });
+}
+
+// irradiance * cos from a point light, ignoring occlusion
+Vec3 PointLight(const Light &l, Vec3 p, Vec3 n)
+{
+	const Vec3 d = l.origin - p;
+	const float dist2 = Dot(d, d);
+	if (dist2 <= 1e-6f)
+		return Vec3();
+	const float cosx = Dot(n, d) / std::sqrt(dist2);
+	if (cosx <= 0.0f)
+		return Vec3();
+	return l.emission * (cosx / dist2);
+}
+
+// Light arriving at p from the world's lights: one of them, picked by
+// resampling a few candidates in proportion to what each would contribute.
+Vec3 DirectWorld(const Scene &sc, Vec3 p, Vec3 n, Rng &rng)
+{
+	const World &w = *sc.world;
 	if (w.lights.empty())
 		return Vec3();
 
@@ -414,14 +618,7 @@ Vec3 Direct(const World &w, Vec3 p, Vec3 n, Rng &rng)
 		else
 		{
 			y = l.origin;
-			const Vec3 d = y - p;
-			const float dist2 = Dot(d, d);
-			if (dist2 <= 1e-6f)
-				continue;
-			const float cosx = Dot(n, d) / std::sqrt(dist2);
-			if (cosx <= 0.0f)
-				continue;
-			f = l.emission * (cosx / dist2);
+			f = PointLight(l, p, n);
 			pdf = pick;
 		}
 
@@ -438,60 +635,89 @@ Vec3 Direct(const World &w, Vec3 p, Vec3 n, Rng &rng)
 		}
 	}
 
-	if (wsum <= 0.0f)
+	if (wsum <= 0.0f || !Visible(sc, p, n, chosen_y, rng))
 		return Vec3();
-
-	Ray shadow;
-	shadow.o = p + n * kRayOffset;
-	shadow.d = chosen_y - shadow.o;
-	shadow.tmin = 0.0f;
-	shadow.tmax = 0.999f;
-	const bool blocked = w.bvh.AnyHit(shadow, [&](uint32_t tri, float, float)
-	{
-		const Material &m = w.materials[w.tris[tri].material];
-		return m.alpha >= 1.0f || rng.Float() < m.alpha;
-	});
-	if (blocked)
-		return Vec3();
-
 	return chosen_f * (wsum / (kLightCandidates * chosen_phat));
 }
 
-Vec3 Trace(const World &w, Ray ray, Rng &rng, int max_bounces)
+// Light arriving at p from the frame's point lights, one shadow ray: the
+// light is picked exactly in proportion to its unoccluded contribution.
+Vec3 DirectFrameOne(const Scene &sc, Vec3 p, Vec3 n, Rng &rng)
+{
+	const std::vector<Light> &lights = sc.frame->lights;
+	if (lights.empty())
+		return Vec3();
+
+	float total = 0.0f;
+	for (const Light &l : lights)
+		total += Luminance(PointLight(l, p, n));
+	if (total <= 0.0f)
+		return Vec3();
+
+	float pick = rng.Float() * total;
+	for (const Light &l : lights)
+	{
+		const Vec3 f = PointLight(l, p, n);
+		const float lum = Luminance(f);
+		pick -= lum;
+		if (pick <= 0.0f && lum > 0.0f)
+			return Visible(sc, p, n, l.origin, rng) ? f * (total / lum) : Vec3();
+	}
+	return Vec3();
+}
+
+// the same, every light with its own shadow ray
+Vec3 DirectFrameAll(const Scene &sc, Vec3 p, Vec3 n, Rng &rng)
+{
+	Vec3 sum;
+	for (const Light &l : sc.frame->lights)
+	{
+		const Vec3 f = PointLight(l, p, n);
+		if (Luminance(f) > 0.0f && Visible(sc, p, n, l.origin, rng))
+			sum += f;
+	}
+	return sum;
+}
+
+Vec3 CosineDirection(Vec3 n, Rng &rng)
+{
+	const float r1 = rng.Float(), r2 = rng.Float();
+	const float r = std::sqrt(r1), phi = 2.0f * kPi * r2;
+	Vec3 t, b;
+	Basis(n, t, b);
+	return t * (r * std::cos(phi)) + b * (r * std::sin(phi)) + n * std::sqrt(std::max(0.0f, 1.0f - r1));
+}
+
+// Radiance arriving back along the ray. camera says the ray left the eye;
+// depth counts the bounces already taken.
+Vec3 Radiance(const Scene &sc, Ray ray, Rng &rng, bool camera, int depth, int max_bounces)
 {
 	Vec3 radiance, throughput(1, 1, 1);
 
-	for (int depth = 0; ; depth++)
+	for (;; depth++, camera = false)
 	{
 		Hit hit;
 		const Tri *tri;
-		const Material *mat;
+		if (!Closest(sc, ray, rng, camera, true, hit, tri))
+			return radiance;
+		const Material &mat = *tri->mat;
 
-		// surfaces that let light through are crossed at random
-		for (int skips = 0; ; skips++)
-		{
-			if (!w.bvh.Intersect(ray, hit))
-				return radiance;
-			tri = &w.tris[hit.tri];
-			mat = &w.materials[tri->material];
-			if (mat->alpha >= 1.0f || skips >= 16 || rng.Float() < mat->alpha)
-				break;
-			ray.tmin = hit.t + 0.01f;
-		}
-
-		if (mat->flags & PT_MAT_SKY)
-			return radiance + throughput * w.Sky(ray.d);
+		if (mat.flags & PT_MAT_SKY)
+			return radiance + throughput * sc.world->Sky(ray.d);
 
 		const Vec3 p = ray.o + ray.d * hit.t;
 		const bool front = Dot(tri->n, ray.d) < 0.0f;
 		const Vec3 n = front ? tri->n : -tri->n;
-		const Vec3 albedo = Albedo(w, *tri, *mat, hit.u, hit.v);
+		const Vec3 albedo = Albedo(*tri, hit.u, hit.v);
 
-		// later bounces get emitters through Direct(), so only count them when seen
-		if (depth == 0 && mat->emissive && front)
-			radiance += throughput * mat->emission_per_texel * albedo;
+		// emitters in the light lists reach later bounces through DirectWorld
+		if (mat.emissive && front && (camera || !mat.sampled))
+			radiance += throughput * Emitted(*tri, hit.u, hit.v, camera);
 
-		radiance += throughput * albedo * Direct(w, p, n, rng) * kInvPi;
+		if (MaxComponent(albedo) <= 0.0f)
+			return radiance;		// reflects nothing
+
+		radiance += throughput * albedo * (DirectWorld(sc, p, n, rng) + DirectFrameOne(sc, p, n, rng)) * kInvPi;
 
 		if (depth >= max_bounces)
 			return radiance;
@@ -506,26 +732,63 @@ Vec3 Trace(const World &w, Ray ray, Rng &rng, int max_bounces)
 			throughput *= 1.0f / survive;
 		}
 
-		const float r1 = rng.Float(), r2 = rng.Float();
-		const float r = std::sqrt(r1), phi = 2.0f * kPi * r2;
-		Vec3 t, b;
-		Basis(n, t, b);
 		ray.o = p + n * kRayOffset;
-		ray.d = t * (r * std::cos(phi)) + b * (r * std::sin(phi)) + n * std::sqrt(std::max(0.0f, 1.0f - r1));
+		ray.d = CosineDirection(n, rng);
 		ray.tmin = 0.0f;
 		ray.tmax = FLT_MAX;
 	}
 }
 
+Vec3 ClampSample(Vec3 c)
+{
+	const float lum = Luminance(c);
+	if (!Finite(lum))
+		return Vec3();
+	return lum > kMaxSample ? c * (kMaxSample / lum) : c;
+}
+
 // --------------------------------------------------------------- backend
 
-// everything that invalidates what has been accumulated
-struct AccumKey
+struct Camera
 {
-	float		origin[3], forward[3], right[3], up[3];
-	float		fov_x, fov_y;
-	int			width, height, bounces;
-	unsigned	world;
+	Vec3	origin, forward, right, up;
+	float	tx = 0, ty = 0;		// tangents of the half angles
+
+	bool operator==(const Camera &o) const { return !memcmp(this, &o, sizeof(*this)); }
+};
+
+/*
+Per pixel state at render resolution.
+
+Lighting is kept apart from the colour of the surface it falls on: `light`
+is what arrives, to be multiplied by `albedo`, with `add` on top for what
+needs no filtering (what the surface emits, the frame's point lights). That
+lets the noisy part be averaged over time and space without smearing
+textures.
+*/
+struct Pixels
+{
+	std::vector<Vec3>	pos, normal;
+	std::vector<float>	depth;		// along the ray; negative where there is no surface
+	std::vector<Vec3>	albedo, add;
+	std::vector<Vec3>	light;		// this frame's samples, then accumulated
+	std::vector<float>	m1, m2;		// luminance moments of light
+	std::vector<float>	length;		// frames accumulated
+	std::vector<float>	variance;
+
+	void Resize(size_t n)
+	{
+		pos.assign(n, Vec3());
+		normal.assign(n, Vec3());
+		depth.assign(n, -1.0f);
+		albedo.assign(n, Vec3());
+		add.assign(n, Vec3());
+		light.assign(n, Vec3());
+		m1.assign(n, 0.0f);
+		m2.assign(n, 0.0f);
+		length.assign(n, 0.0f);
+		variance.assign(n, 0.0f);
+	}
 };
 
 struct CpuBackend
@@ -544,15 +807,19 @@ struct CpuBackend
 
 	Pool					pool;
 	std::unique_ptr<World>	world;
-	unsigned				world_epoch = 0;
+	std::vector<std::unique_ptr<Texture>> textures;	// by handle
+	Frame					frame;
 
-	std::vector<Vec3>		accum;			// sum of samples, render sized
+	Pixels					cur, prev;
+	std::vector<Vec3>		filter_a, filter_b;
+	std::vector<float>		var_a, var_b;
 	std::vector<uint32_t>	ldr;			// tone mapped, render sized
 	int						rw = 0, rh = 0;
-	int						accum_samples = 0;
-	uint32_t				frame = 0;
-	AccumKey				key{};
-	char					stats[128] = "";
+	bool					have_history = false;
+	Camera					prev_camera;
+	uint32_t				prev_hash = 0;
+	uint32_t				frame_index = 0;
+	char					stats[160] = "";
 };
 
 CpuBackend *Self(pt_backend_t *b) { return reinterpret_cast<CpuBackend *>(b); }
@@ -575,7 +842,7 @@ void LoadWorld(pt_backend_t *b, const pt_world_t *world)
 {
 	CpuBackend *s = Self(b);
 	s->world.reset();
-	s->world_epoch++;
+	s->have_history = false;
 	if (!world)
 		return;
 	s->world = BuildWorld(world);
@@ -596,6 +863,29 @@ void LoadWorld(pt_backend_t *b, const pt_world_t *world)
 	}
 }
 
+int TextureCreate(pt_backend_t *b, const pt_texture_t *texture)
+{
+	CpuBackend *s = Self(b);
+	if (!texture || texture->width <= 0 || texture->height <= 0 || !texture->pixels)
+		return -1;
+
+	size_t slot = 0;
+	while (slot < s->textures.size() && s->textures[slot])
+		slot++;
+	if (slot == s->textures.size())
+		s->textures.emplace_back();
+	s->textures[slot].reset(new Texture);
+	s->textures[slot]->Set(*texture);
+	return (int)slot;
+}
+
+void TextureDestroy(pt_backend_t *b, int handle)
+{
+	CpuBackend *s = Self(b);
+	if (handle >= 0 && handle < (int)s->textures.size())
+		s->textures[handle].reset();
+}
+
 void ClipView(const CpuBackend *s, int &x0, int &y0, int &x1, int &y1)
 {
 	x0 = s->view.x < 0 ? 0 : s->view.x;
@@ -612,12 +902,264 @@ uint32_t ToneMap(Vec3 c)
 	uint32_t out = 0;
 	for (int i = 0; i < 3; i++)
 	{
-		const float x = c[i];
+		const float x = c[i] > 0.0f ? c[i] : 0.0f;
 		float y = (x * (2.51f * x + 0.03f)) / (x * (2.43f * x + 0.59f) + 0.14f);
 		y = y < 0.0f ? 0.0f : (y > 1.0f ? 1.0f : y);
 		out = (out << 8) | g_to_display[(int)(y * 4096.0f)];
 	}
 	return out;
+}
+
+// Traces one pixel: what the eye sees there, and samples of the light on it
+void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, int x, int y, int samples, int bounces)
+{
+	const size_t i = (size_t)y * s->rw + x;
+	Pixels &px = s->cur;
+	Rng rng(Hash((uint32_t)i, s->frame_index));
+
+	Ray ray;
+	ray.o = cam.origin;
+	ray.d = Normalize(cam.forward
+		+ cam.right * ((2.0f * (x + 0.5f) / s->rw - 1.0f) * cam.tx)
+		+ cam.up * ((1.0f - 2.0f * (y + 0.5f) / s->rh) * cam.ty));
+	ray.tmin = 0.0f;
+	ray.tmax = FLT_MAX;
+
+	px.depth[i] = -1.0f;
+	px.albedo[i] = Vec3();
+	px.add[i] = Vec3();
+	px.light[i] = Vec3();
+	px.m1[i] = px.m2[i] = 0.0f;
+
+	// Walk through whatever is see-through to the first solid surface. The
+	// solid surface is what the filters work on; the layers in front dim it
+	// and add their own light on top.
+	float through = 1.0f;		// how much of what is behind still shows
+	Vec3 front_add;				// from the layers: what they emit
+	Vec3 front_light;			// and what they reflect, which is noisy
+	Hit hit;
+	const Tri *tri;
+	for (int layer = 0; ; layer++)
+	{
+		if (!Closest(sc, ray, rng, true, false, hit, tri))
+		{
+			px.add[i] = front_add + front_light;
+			return;
+		}
+		const Material &mat = *tri->mat;
+		if (mat.flags & PT_MAT_SKY)
+		{
+			px.add[i] = front_add + front_light + sc.world->Sky(ray.d) * through;
+			return;
+		}
+		if (mat.alpha >= 1.0f || layer >= 8)
+			break;
+
+		const bool front = Dot(tri->n, ray.d) < 0.0f;
+		const Vec3 albedo = Albedo(*tri, hit.u, hit.v);
+		const float share = through * mat.alpha;
+		if (mat.emissive && front)
+			front_add += Emitted(*tri, hit.u, hit.v, true) * share;
+		if (MaxComponent(albedo) > 0.0f)
+		{
+			const Vec3 p = ray.o + ray.d * hit.t;
+			const Vec3 n = front ? tri->n : -tri->n;
+			front_light += albedo * (DirectWorld(sc, p, n, rng) + DirectFrameOne(sc, p, n, rng)) * (kInvPi * share);
+		}
+		through *= 1.0f - mat.alpha;
+		ray.tmin = hit.t + 0.01f;
+	}
+
+	const Material &mat = *tri->mat;
+	const Vec3 p = ray.o + ray.d * hit.t;
+	const bool front = Dot(tri->n, ray.d) < 0.0f;
+	const Vec3 n = front ? tri->n : -tri->n;
+	const Vec3 albedo = Albedo(*tri, hit.u, hit.v);
+	const Vec3 shown = albedo * through;
+
+	px.pos[i] = p;
+	px.normal[i] = n;
+	px.depth[i] = hit.t;
+	px.albedo[i] = shown;
+	px.add[i] = front_add + shown * DirectFrameAll(sc, p, n, rng) * kInvPi;
+	if (mat.emissive && front)
+		px.add[i] += Emitted(*tri, hit.u, hit.v, true) * through;
+
+	// the layers' reflected light is filtered along with the surface's own,
+	// so express it as light on that surface
+	const Vec3 extra = ClampSample(Vec3(
+		front_light.x / std::max(shown.x, 0.02f),
+		front_light.y / std::max(shown.y, 0.02f),
+		front_light.z / std::max(shown.z, 0.02f)));
+
+	Vec3 sum;
+	float m1 = 0.0f, m2 = 0.0f;
+	if (MaxComponent(albedo) > 0.0f)
+	{
+		for (int k = 0; k < samples; k++)
+		{
+			Vec3 c = DirectWorld(sc, p, n, rng) * kInvPi;
+			if (bounces > 0)
+			{
+				Ray bounce;
+				bounce.o = p + n * kRayOffset;
+				bounce.d = CosineDirection(n, rng);
+				bounce.tmin = 0.0f;
+				bounce.tmax = FLT_MAX;
+				c += Radiance(sc, bounce, rng, false, 1, bounces);
+			}
+			c = ClampSample(c) + extra;
+			const float lum = Luminance(c);
+			sum += c;
+			m1 += lum;
+			m2 += lum * lum;
+		}
+	}
+
+	const float inv = 1.0f / samples;
+	px.light[i] = sum * inv;
+	px.m1[i] = m1 * inv;
+	px.m2[i] = m2 * inv;
+}
+
+// Blends this frame's samples into what earlier frames saw of the same surface
+void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
+{
+	const int rw = s->rw, rh = s->rh;
+	Pixels &cur = s->cur;
+	const Pixels &prev = s->prev;
+
+	for (int x = 0; x < rw; x++)
+	{
+		const size_t i = (size_t)y * rw + x;
+		cur.length[i] = 0.0f;
+		cur.variance[i] = 0.0f;
+		if (cur.depth[i] < 0.0f)
+			continue;
+
+		Vec3 hist;
+		float hm1 = 0.0f, hm2 = 0.0f, hlen = 0.0f, wsum = 0.0f;
+
+		if (s->have_history)
+		{
+			// where was this point on screen last frame?
+			const Vec3 v = cur.pos[i] - prev_cam.origin;
+			const float z = Dot(v, prev_cam.forward);
+			if (z > 0.01f)
+			{
+				const float fx = (Dot(v, prev_cam.right) / (z * prev_cam.tx) * 0.5f + 0.5f) * rw - 0.5f;
+				const float fy = (0.5f - Dot(v, prev_cam.up) / (z * prev_cam.ty) * 0.5f) * rh - 0.5f;
+				const int ix = (int)std::floor(fx), iy = (int)std::floor(fy);
+				const float ax = fx - ix, ay = fy - iy;
+				const float limit = 1.0f + cur.depth[i] * 0.01f;
+
+				for (int t = 0; t < 4; t++)
+				{
+					const int qx = ix + (t & 1), qy = iy + (t >> 1);
+					if (qx < 0 || qy < 0 || qx >= rw || qy >= rh)
+						continue;
+					const size_t q = (size_t)qy * rw + qx;
+					if (prev.depth[q] < 0.0f || prev.length[q] <= 0.0f)
+						continue;
+					// same surface: on the same plane, facing the same way
+					if (std::fabs(Dot(cur.normal[i], prev.pos[q] - cur.pos[i])) > limit ||
+						Dot(cur.normal[i], prev.normal[q]) < 0.9f)
+						continue;
+					const float w = ((t & 1) ? ax : 1.0f - ax) * ((t >> 1) ? ay : 1.0f - ay);
+					if (w <= 0.0f)
+						continue;
+					hist += prev.light[q] * w;
+					hm1 += prev.m1[q] * w;
+					hm2 += prev.m2[q] * w;
+					hlen += prev.length[q] * w;
+					wsum += w;
+				}
+			}
+		}
+
+		float len = 1.0f;
+		if (wsum > 0.01f)
+		{
+			const float inv = 1.0f / wsum;
+			hist *= inv;
+			hm1 *= inv;
+			hm2 *= inv;
+			len = std::min(hlen * inv + 1.0f, max_history);
+			const float a = 1.0f / len;
+			cur.light[i] = hist + (cur.light[i] - hist) * a;
+			cur.m1[i] = hm1 + (cur.m1[i] - hm1) * a;
+			cur.m2[i] = hm2 + (cur.m2[i] - hm2) * a;
+		}
+		cur.length[i] = len;
+
+		// how unsure the average still is; with little history, assume very
+		float var = std::max(0.0f, cur.m2[i] - cur.m1[i] * cur.m1[i]) / len;
+		if (len < 4.0f)
+			var = std::max(var, cur.m1[i] * cur.m1[i] * 0.25f + 0.01f);
+		cur.variance[i] = var;
+	}
+}
+
+// One pass of an a-trous wavelet filter. Neighbours count for less the more
+// they differ in plane, facing or brightness, and brightness matters less
+// where the estimate is still noisy.
+void FilterRow(const CpuBackend *s, const std::vector<Vec3> &in, const std::vector<float> &var_in,
+	std::vector<Vec3> &out, std::vector<float> &var_out, int step, int y)
+{
+	static const float kernel[5] = {1.0f / 16, 1.0f / 4, 3.0f / 8, 1.0f / 4, 1.0f / 16};
+	const int rw = s->rw, rh = s->rh;
+	const Pixels &g = s->cur;
+
+	for (int x = 0; x < rw; x++)
+	{
+		const size_t i = (size_t)y * rw + x;
+		if (g.depth[i] < 0.0f)
+		{
+			out[i] = in[i];
+			var_out[i] = var_in[i];
+			continue;
+		}
+
+		const Vec3 n = g.normal[i], p = g.pos[i];
+		const float lum = Luminance(in[i]);
+		const float inv_plane = 1.0f / (1.0f + g.depth[i] * 0.004f);
+		const float inv_lum = 1.0f / (4.0f * std::sqrt(var_in[i]) + 1e-3f);
+
+		Vec3 sum = in[i] * (kernel[2] * kernel[2]);
+		float wsum = kernel[2] * kernel[2];
+		float vsum = var_in[i] * wsum * wsum;
+
+		for (int dy = -2; dy <= 2; dy++)
+		{
+			const int qy = y + dy * step;
+			if (qy < 0 || qy >= rh)
+				continue;
+			for (int dx = -2; dx <= 2; dx++)
+			{
+				const int qx = x + dx * step;
+				if (qx < 0 || qx >= rw || (!dx && !dy))
+					continue;
+				const size_t q = (size_t)qy * rw + qx;
+				if (g.depth[q] < 0.0f)
+					continue;
+
+				float wn = Dot(n, g.normal[q]);
+				if (wn <= 0.0f)
+					continue;
+				wn *= wn; wn *= wn; wn *= wn; wn *= wn; wn *= wn;	// ^32
+				const float wz = std::fabs(Dot(n, g.pos[q] - p)) * inv_plane;
+				const float wl = std::fabs(Luminance(in[q]) - lum) * inv_lum;
+				const float w = kernel[dx + 2] * kernel[dy + 2] * wn * std::exp(-wz - wl);
+
+				sum += in[q] * w;
+				vsum += var_in[q] * w * w;
+				wsum += w;
+			}
+		}
+
+		out[i] = sum / wsum;
+		var_out[i] = vsum / (wsum * wsum);
+	}
 }
 
 void RenderView(pt_backend_t *b, const pt_view_t *view)
@@ -646,66 +1188,72 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	const int rh = std::max(1, (int)(view->height * scale + 0.5f));
 	const int samples = std::max(1, view->samples);
 	const int bounces = std::max(0, view->bounces);
+	const size_t count = (size_t)rw * rh;
 
-	AccumKey key{};
-	memcpy(key.origin, view->origin, sizeof(key.origin));
-	memcpy(key.forward, view->forward, sizeof(key.forward));
-	memcpy(key.right, view->right, sizeof(key.right));
-	memcpy(key.up, view->up, sizeof(key.up));
-	key.fov_x = view->fov_x;
-	key.fov_y = view->fov_y;
-	key.width = rw;
-	key.height = rh;
-	key.bounces = bounces;
-	key.world = s->world_epoch;
-	if (memcmp(&key, &s->key, sizeof(key)) || s->accum.size() != (size_t)rw * rh)
+	if (rw != s->rw || rh != s->rh)
 	{
-		s->key = key;
 		s->rw = rw;
 		s->rh = rh;
-		s->accum.assign((size_t)rw * rh, Vec3());
-		s->ldr.assign((size_t)rw * rh, 0);
-		s->accum_samples = 0;
+		s->cur.Resize(count);
+		s->prev.Resize(count);
+		s->filter_a.assign(count, Vec3());
+		s->filter_b.assign(count, Vec3());
+		s->var_a.assign(count, 0.0f);
+		s->var_b.assign(count, 0.0f);
+		s->ldr.assign(count, 0);
+		s->have_history = false;
 	}
 
-	const World &w = *s->world;
-	const Vec3 origin(view->origin), forward(view->forward), right(view->right), up(view->up);
-	const float tx = std::tan(view->fov_x * kPi / 360.0f);
-	const float ty = std::tan(view->fov_y * kPi / 360.0f);
-	const uint32_t frame = s->frame++;
-	const float inv_total = view->exposure / (float)(s->accum_samples + samples);
+	BuildFrame(s->frame, view->scene, s->textures);
+	const auto built = std::chrono::steady_clock::now();
+
+	Camera cam;
+	cam.origin = Vec3(view->origin);
+	cam.forward = Vec3(view->forward);
+	cam.right = Vec3(view->right);
+	cam.up = Vec3(view->up);
+	cam.tx = std::tan(view->fov_x * kPi / 360.0f);
+	cam.ty = std::tan(view->fov_y * kPi / 360.0f);
+
+	Scene sc;
+	sc.world = s->world.get();
+	sc.frame = &s->frame;
+	s->frame_index++;
 
 	s->pool.Run(rh, [&](int y)
 	{
 		for (int x = 0; x < rw; x++)
+			TracePixel(s, sc, cam, x, y, samples, bounces);
+	});
+	const auto traced = std::chrono::steady_clock::now();
+
+	// with nothing changing the average may run forever and converge
+	const bool still = s->have_history && cam == s->prev_camera && s->frame.hash == s->prev_hash;
+	const float max_history = still ? 65536.0f : kMovingHistory;
+	const Camera prev_cam = s->prev_camera;
+	s->pool.Run(rh, [&](int y) { Accumulate(s, prev_cam, max_history, y); });
+
+	const std::vector<Vec3> *in = &s->cur.light;
+	const std::vector<float> *var_in = &s->cur.variance;
+	for (int pass = 0; pass < kFilterPasses; pass++)
+	{
+		std::vector<Vec3> &out = (pass & 1) ? s->filter_b : s->filter_a;
+		std::vector<float> &var_out = (pass & 1) ? s->var_b : s->var_a;
+		s->pool.Run(rh, [&](int y) { FilterRow(s, *in, *var_in, out, var_out, 1 << pass, y); });
+		in = &out;
+		var_in = &var_out;
+	}
+
+	const std::vector<Vec3> &light = *in;
+	const float exposure = view->exposure;
+	s->pool.Run(rh, [&](int y)
+	{
+		for (int x = 0; x < rw; x++)
 		{
-			Vec3 &acc = s->accum[(size_t)y * rw + x];
-			for (int i = 0; i < samples; i++)
-			{
-				Rng rng(Hash((uint32_t)(y * rw + x), frame * (uint32_t)samples + (uint32_t)i));
-				const float sx = (2.0f * (x + rng.Float()) / rw - 1.0f) * tx;
-				const float sy = (1.0f - 2.0f * (y + rng.Float()) / rh) * ty;
-
-				Ray ray;
-				ray.o = origin;
-				ray.d = Normalize(forward + right * sx + up * sy);
-				ray.tmin = 0.0f;
-				ray.tmax = FLT_MAX;
-
-				Vec3 c = Trace(w, ray, rng, bounces);
-				const float lum = Luminance(c);
-				uint32_t bits;
-				memcpy(&bits, &lum, sizeof(bits));
-				if ((bits & 0x7f800000u) == 0x7f800000u)
-					continue;		// NaN or infinite: drop the sample
-				if (lum > kMaxSample)
-					c *= kMaxSample / lum;
-				acc += c;
-			}
-			s->ldr[(size_t)y * rw + x] = ToneMap(acc * inv_total);
+			const size_t i = (size_t)y * rw + x;
+			s->ldr[i] = ToneMap((s->cur.albedo[i] * light[i] + s->cur.add[i]) * exposure);
 		}
 	});
-	s->accum_samples += samples;
 
 	// stretch to the view with bilinear filtering
 	const int vw = view->width, vh = view->height;
@@ -737,9 +1285,20 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		}
 	});
 
-	const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-	snprintf(s->stats, sizeof(s->stats), "%dx%d %dspp %d bounces %.1f ms, %d accumulated, %d threads",
-		rw, rh, samples, bounces, ms, s->accum_samples, s->pool.Threads());
+	// this frame becomes the history the next one looks back at
+	std::swap(s->cur, s->prev);
+	s->prev_camera = cam;
+	s->prev_hash = s->frame.hash;
+	s->have_history = true;
+
+	const auto end = std::chrono::steady_clock::now();
+	const auto ms = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point c)
+	{
+		return std::chrono::duration<double, std::milli>(c - a).count();
+	};
+	snprintf(s->stats, sizeof(s->stats), "%dx%d %dspp %db: %.1f ms (build %.1f trace %.1f post %.1f) %zu dyn tris%s",
+		rw, rh, samples, bounces, ms(start, end), ms(start, built), ms(built, traced), ms(traced, end),
+		s->frame.tris.size(), still ? " still" : "");
 }
 
 void Present(pt_backend_t *b, const uint32_t *overlay)
@@ -803,6 +1362,8 @@ extern "C" pt_backend_t *pt_cpu_create(const pt_create_t *ci, char *err, int err
 	s->base.name = "CPU path tracer";
 	s->base.destroy = Destroy;
 	s->base.load_world = LoadWorld;
+	s->base.texture_create = TextureCreate;
+	s->base.texture_destroy = TextureDestroy;
 	s->base.render_view = RenderView;
 	s->base.present = Present;
 	s->base.stats = Stats;

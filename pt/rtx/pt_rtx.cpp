@@ -612,6 +612,15 @@ const char *Stats(pt_backend_t *)
 	return "";
 }
 
+int TextureCreate(pt_backend_t *, const pt_texture_t *)
+{
+	return -1;
+}
+
+void TextureDestroy(pt_backend_t *, int)
+{
+}
+
 void Record(RtxBackend *s, uint32_t image_index)
 {
 	VkCommandBuffer cmd = s->cmd;
@@ -786,6 +795,8 @@ extern "C" pt_backend_t *pt_rtx_create(const pt_create_t *ci, char *err, int err
 	s->base.name = "RTX path tracer";
 	s->base.destroy = Destroy;
 	s->base.load_world = LoadWorld;
+	s->base.texture_create = TextureCreate;
+	s->base.texture_destroy = TextureDestroy;
 	s->base.render_view = RenderView;
 	s->base.present = Present;
 	s->base.stats = Stats;
