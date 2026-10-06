@@ -35,6 +35,7 @@ static cvar_t	*pt_quality_applied;	// the preset the variables were last set fro
 // image
 static cvar_t	*pt_scale;				// internal resolution as a fraction of the window
 static cvar_t	*pt_taa;				// temporal anti-aliasing
+static cvar_t	*pt_filter;				// 2 filtered, 1 raw but adding up at rest, 0 raw
 static cvar_t	*pt_denoise;			// passes of the spatial filter, 0-4
 static cvar_t	*pt_history;			// frames of lighting kept while things change
 static cvar_t	*pt_exposure;
@@ -131,6 +132,10 @@ void R_InitSettings (void)
 
 	pt_scale = ri.Cvar_Get ("pt_scale", "0.5", CVAR_ARCHIVE);
 	pt_taa = ri.Cvar_Get ("pt_taa", "1", CVAR_ARCHIVE);
+	// The picture as the paths alone make it, noise and all, for when what
+	// blending frames and filtering leave behind is worse than the noise.
+	// 1 lets frames add up while the eye is at rest; 0 never does.
+	pt_filter = ri.Cvar_Get ("pt_filter", "2", CVAR_ARCHIVE);
 	pt_denoise = ri.Cvar_Get ("pt_denoise", "4", CVAR_ARCHIVE);
 	pt_history = ri.Cvar_Get ("pt_history", "32", CVAR_ARCHIVE);
 	pt_exposure = ri.Cvar_Get ("pt_exposure", "2", CVAR_ARCHIVE);
@@ -297,6 +302,7 @@ void R_ViewSettings (pt_view_t *view)
 	view->bounces = pt_bounces->value;
 	view->exposure = pt_exposure->value;
 	view->antialias = pt_taa->value != 0;
+	view->filter = pt_filter->value;
 	view->debug = pt_debug->value;
 
 	view->reflections = pt_reflections->value;

@@ -237,6 +237,7 @@ struct CpuBackend
 	bool					have_exposure = false;	// auto_exposure has been measured at least once
 	bool					antialiased = false;	// last frame was
 	float					jitter_x = 0.0f, jitter_y = 0.0f;	// this frame's offset within the pixel
+	int						filtering = 2;		// what is done about noise this frame, see pt_view_t
 	float					moving_history = 32.0f;	// frames of lighting kept while anything changes
 	Camera					prev_camera;
 	uint32_t				prev_hash = 0;
@@ -903,7 +904,9 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 		bool have_spot = false;
 		int spot_x = 0, spot_y = 0;	// the pixel this point was nearest to last frame
 
-		if (s->have_history)
+		// Where frames are only added up with the eye at rest, what moves
+		// starts afresh, so that nothing of where it was shows.
+		if (s->have_history && !(s->filtering == 1 && cur.moved[i]))
 		{
 			// where was this point on screen last frame?
 			const Vec3 v = cur.seen[i] - prev_cam.origin;
@@ -1775,13 +1778,14 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	sc.reflections = view->reflections;
 	sc.reflection_bounces = std::max(1, view->reflection_bounces > 0 ? view->reflection_bounces : bounces);
 	sc.reflection_rate = std::max(0.0f, view->reflection_rate);
-	sc.adaptive = std::min(std::max(view->adaptive, 1), 16);
+	// it goes by the history, which only the filtered picture keeps
+	sc.adaptive = (view->debug || view->filter >= 2) ? std::min(std::max(view->adaptive, 1), 16) : 1;
 	sc.refraction = view->refraction != 0;
 	sc.fog_density = view->fog ? std::min(std::max(view->fog_density, 0.0f), 0.05f) : 0.0f;
 	if (bounces < 1)
 		sc.reflections = 0;		// no bounces at all means none off mirrors either
 	s->moving_history = (float)std::min(std::max(view->history, 1), 512);
-	const int passes = std::min(std::max(view->denoise, 0), kMaxFilterPasses);
+	const int passes = (view->debug || view->filter >= 2) ? std::min(std::max(view->denoise, 0), kMaxFilterPasses) : 0;
 	s->pool.SetLimit(view->threads);
 	s->frame_index++;
 
@@ -1802,7 +1806,16 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 
 	// each frame looks through a slightly different point of every pixel, so
 	// that over time edges are seen from all across it
-	const bool antialias = view->antialias != 0;
+	// What is done about noise: 2, all there is; 1, nothing, but frames add up
+	// while the eye is at rest; 0, nothing. Without the first there is nothing
+	// of an earlier view in the picture, ever. A debug view is shown filtered.
+	const int filtering = view->debug ? 2 : std::min(std::max(view->filter, 0), 2);
+	const bool same_camera = s->have_history && cam == s->prev_camera;
+	const bool had_history = s->have_history;
+	s->have_history = had_history && (filtering == 2 || (filtering == 1 && same_camera));
+	s->filtering = filtering;
+	// (which only shows as shaking where frames are not being added up)
+	const bool antialias = view->antialias != 0 && (filtering == 2 || (filtering == 1 && same_camera));
 	const float jx = antialias ? Halton(s->frame_index % 16 + 1, 2) - 0.5f : 0.0f;
 	const float jy = antialias ? Halton(s->frame_index % 16 + 1, 3) - 0.5f : 0.0f;
 	s->jitter_x = jx;
@@ -1816,7 +1829,9 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	const auto traced = std::chrono::steady_clock::now();
 
 	// with nothing changing the average may run forever and converge
-	const bool still = s->have_history && cam == s->prev_camera && hash == s->prev_hash;
+	// (or, adding frames up at rest, whenever the eye has not moved: what
+	// does move in the view starts afresh by itself, see Accumulate)
+	const bool still = s->have_history && cam == s->prev_camera && (filtering == 1 || hash == s->prev_hash);
 	const float max_history = still ? 65536.0f : s->moving_history;
 	const Camera prev_cam = s->prev_camera;
 	s->pool.Run(rh, [&](int y) { Accumulate(s, prev_cam, max_history, y); });
@@ -1988,7 +2003,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		s->antialiased = false;
 	}
 
-	const bool resolve_history = s->have_history && antialias && s->antialiased && !debug;
+	const bool resolve_history = s->have_history && antialias && s->antialiased && !debug && filtering == 2;
 	s->antialiased = antialias;
 	if (antialias)
 	{

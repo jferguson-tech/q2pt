@@ -79,6 +79,7 @@ int R_ShotPasses (pt_view_t *view)
 	view->scale = 1;
 	view->samples = PATHS_PER_PASS;
 	view->antialias = 1;
+	view->filter = 2;
 	view->debug = 0;
 	// one more than the paths need: the first starts afresh at the new size
 	return (shot_paths + PATHS_PER_PASS - 1) / PATHS_PER_PASS + 1;

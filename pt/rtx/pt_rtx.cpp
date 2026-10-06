@@ -2194,12 +2194,18 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.origin[3] = std::tan(view->fov_x * 0.5f * 3.14159265f / 180.0f);
 	f.forward[3] = std::tan(view->fov_y * 0.5f * 3.14159265f / 180.0f);
 	const bool same_camera = s->has_history && !memcmp(f.origin, s->camera, sizeof(s->camera));
+	// What is done about noise: 2, all there is; 1, nothing, but frames add up
+	// while the eye is at rest; 0, nothing. Without the first there is nothing
+	// of an earlier view in the picture, ever. A debug view is shown filtered.
+	const int filtering = view->debug ? 2 : std::min(std::max(view->filter, 0), 2);
+	const bool use_history = filtering == 2 || (filtering == 1 && same_camera);
 	memcpy(s->camera, f.origin, sizeof(s->camera));			// origin, forward, right, up
 	memcpy(f.prev_origin, was.origin, sizeof(s->camera));
 
 	// each frame looks through a slightly different point of every pixel, so
 	// that over time edges are seen from all across it
-	if (view->antialias && !view->debug)
+	// (which only shows as shaking where frames are not being added up)
+	if (view->antialias && !view->debug && use_history)
 	{
 		const auto halton = [](uint32_t index, uint32_t base)
 		{
@@ -2255,7 +2261,8 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.counts[1] = (int32_t)num_lights;
 	f.counts[2] = (int32_t)s->frame_index;
 	f.counts[3] = view->anim_frame;
-	f.bases[0] = std::min(std::max(view->adaptive, 1), 16);
+	f.bases[0] = filtering == 2 ? std::min(std::max(view->adaptive, 1), 16) : 1;	// it goes by the history
+	f.bases[2] = filtering;
 	f.bases[1] = (int32_t)s->world.num_solid;
 	f.bases[3] = (int32_t)s->frame.num_solid;
 	f.grid_dims[3] = s->has_grid ? 1 : 0;
@@ -2286,11 +2293,11 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 
 	s->exposure_used = view->debug ? 1.0f : view->exposure * (view->auto_exposure ? s->auto_exposure : 1.0f);
 	f.medium[3] = s->exposure_used;
-	s->filter_passes = std::min(std::max(view->denoise, 0), 4);
+	s->filter_passes = filtering == 2 ? std::min(std::max(view->denoise, 0), 4) : 0;
 	f.output_i[0] = view->tonemap;
 	f.output_i[1] = s->filter_passes;
 	f.output_i[2] = std::min(std::max(view->history, 1), 512);
-	f.output_i[3] = s->has_history ? 1 : 0;
+	f.output_i[3] = (s->has_history && use_history) ? 1 : 0;
 	f.output_f[0] = view->saturation;
 	f.output_f[1] = view->contrast;
 	f.output_f[2] = view->bloom;
@@ -2309,7 +2316,9 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	if (s->world_has_waves || s->pending.size())
 		hash = HashBytes(&view->time, sizeof(view->time), hash);
 	// with nothing changing the average may run on and converge
-	const bool still = same_camera && hash == s->prev_hash;
+	// (or, adding frames up at rest, whenever the eye has not moved: what
+	// does move in the view starts afresh by itself, see temporal.comp)
+	const bool still = same_camera && (filtering == 1 || hash == s->prev_hash);
 	s->prev_hash = hash;
 	f.output_f[3] = still ? 1.0f : 0.0f;
 
@@ -2317,7 +2326,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.frame_has[0] = (scene && scene->normals) ? 1 : 0;
 	f.frame_has[1] = (scene && scene->prev_positions) ? 1 : 0;
 	f.frame_has[2] = s->parity;
-	f.frame_has[3] = (view->antialias && !view->debug) ? 1 : 0;
+	f.frame_has[3] = (view->antialias && !view->debug && filtering == 2) ? 1 : 0;
 	s->bloom_on = view->bloom > 0.0f && !view->debug;
 	f.size[0] = rw;
 	f.size[1] = rh;

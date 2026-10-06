@@ -1410,6 +1410,7 @@ static menulist_s		s_pt_tonemap_list;
 static menulist_s		s_pt_bloom_box;
 static menulist_s		s_pt_fog_box;
 static menulist_s		s_pt_water_list;
+static menulist_s		s_pt_filter_list;
 static menulist_s		s_pt_stats_box;
 static menuaction_s		s_pt_render_action;
 
@@ -1473,6 +1474,31 @@ static void PT_WaterFunc( void *unused )
 	Cvar_SetValue( "pt_water", s_pt_water_list.curvalue );
 }
 
+static void PT_FilterFunc( void *unused )
+{
+	Cvar_SetValue( "pt_filter", s_pt_filter_list.curvalue );
+}
+
+/*
+=================
+M_PtFilterCycle_f
+
+Steps the path tracers between the filtered picture and the two raw ones,
+to compare them while playing
+=================
+*/
+void M_PtFilterCycle_f (void)
+{
+	static const char	*names[] = { "raw", "raw, adding up at rest", "filtered" };
+	int					next;
+
+	Cvar_Get( "pt_filter", "2", CVAR_ARCHIVE );
+	// filtered -> raw, adding up at rest -> raw -> filtered
+	next = ( (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_filter" ) ) + 2 ) % 3;
+	Cvar_SetValue( "pt_filter", next );
+	Com_Printf( "Path traced picture: %s\n", names[next] );
+}
+
 static void PT_StatsFunc( void *unused )
 {
 	Cvar_SetValue( "pt_stats", s_pt_stats_box.curvalue );
@@ -1505,6 +1531,7 @@ static void PT_SetMenuValues( void )
 	s_pt_bloom_box.curvalue = Cvar_VariableValue( "pt_bloom" ) > 0;
 	s_pt_fog_box.curvalue = Cvar_VariableValue( "pt_fog" ) != 0;
 	s_pt_water_list.curvalue = (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_water" ) );
+	s_pt_filter_list.curvalue = (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_filter" ) );
 	s_pt_stats_box.curvalue = Cvar_VariableValue( "pt_stats" ) != 0;
 }
 
@@ -1540,6 +1567,13 @@ void PathTrace_MenuInit( void )
 		"simulated",
 		0
 	};
+	static const char *filter_names[] =
+	{
+		"raw",
+		"raw, adds up at rest",
+		"filtered",
+		0
+	};
 	static const char *yesno_names[] =
 	{
 		"no",
@@ -1559,10 +1593,11 @@ void PathTrace_MenuInit( void )
 	Cvar_Get( "pt_bloom", "0.3", CVAR_ARCHIVE );
 	Cvar_Get( "pt_fog", "1", CVAR_ARCHIVE );
 	Cvar_Get( "pt_water", "2", CVAR_ARCHIVE );
+	Cvar_Get( "pt_filter", "2", CVAR_ARCHIVE );
 	Cvar_Get( "pt_stats", "1", CVAR_ARCHIVE );
 
 	s_pt_menu.x = viddef.width / 2;
-	s_pt_menu.y = viddef.height / 2 - 58;
+	s_pt_menu.y = viddef.height / 2 - 63;
 	s_pt_menu.nitems = 0;
 
 	s_pt_quality_list.generic.type		= MTYPE_SPINCONTROL;
@@ -1638,16 +1673,23 @@ void PathTrace_MenuInit( void )
 	s_pt_water_list.generic.callback	= PT_WaterFunc;
 	s_pt_water_list.itemnames			= water_names;
 
+	s_pt_filter_list.generic.type		= MTYPE_SPINCONTROL;
+	s_pt_filter_list.generic.x			= 0;
+	s_pt_filter_list.generic.y			= 110;
+	s_pt_filter_list.generic.name		= "picture";
+	s_pt_filter_list.generic.callback	= PT_FilterFunc;
+	s_pt_filter_list.itemnames			= filter_names;
+
 	s_pt_stats_box.generic.type			= MTYPE_SPINCONTROL;
 	s_pt_stats_box.generic.x			= 0;
-	s_pt_stats_box.generic.y			= 110;
+	s_pt_stats_box.generic.y			= 120;
 	s_pt_stats_box.generic.name			= "performance info";
 	s_pt_stats_box.generic.callback		= PT_StatsFunc;
 	s_pt_stats_box.itemnames			= yesno_names;
 
 	s_pt_render_action.generic.type		= MTYPE_ACTION;
 	s_pt_render_action.generic.x		= 0;
-	s_pt_render_action.generic.y		= 130;
+	s_pt_render_action.generic.y		= 140;
 	s_pt_render_action.generic.name		= "render a demo";
 	s_pt_render_action.generic.callback	= PT_RenderFunc;
 
@@ -1663,6 +1705,7 @@ void PathTrace_MenuInit( void )
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_bloom_box );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_fog_box );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_water_list );
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_filter_list );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_stats_box );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_render_action );
 }
@@ -1675,7 +1718,7 @@ void PathTrace_MenuDraw (void)
 	PT_SetMenuValues();
 	Menu_AdjustCursor( &s_pt_menu, 1 );
 	Menu_Draw( &s_pt_menu );
-	Menu_DrawStringDark( viddef.width / 2 - (int)strlen( note ) * 4, s_pt_menu.y + 154, note );
+	Menu_DrawStringDark( viddef.width / 2 - (int)strlen( note ) * 4, s_pt_menu.y + 164, note );
 }
 
 const char *PathTrace_MenuKey( int key )
@@ -4460,6 +4503,9 @@ M_Init
 void M_Init (void)
 {
 	Cmd_AddCommand ("menu_main", M_Menu_Main_f);
+	Cmd_AddCommand ("pt_filter_cycle", M_PtFilterCycle_f);
+	if ( !keybindings[K_F7] )
+		Key_SetBinding (K_F7, "pt_filter_cycle");
 	Cmd_AddCommand ("menu_game", M_Menu_Game_f);
 		Cmd_AddCommand ("menu_loadgame", M_Menu_LoadGame_f);
 		Cmd_AddCommand ("menu_savegame", M_Menu_SaveGame_f);
