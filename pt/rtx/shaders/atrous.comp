@@ -6,11 +6,16 @@
 #extension GL_GOOGLE_include_directive : require
 
 // One pass of the spatial filter: each pixel's light is averaged with that
-// of pixels around it that show the same surface and are lit alike. Run a
-// few times with the taps spread twice as far each time ("a trous"), it
-// reaches a long way for the cost of a small one. How readily neighbours are
-// let in depends on how many frames stand behind a pixel: little history
-// means noise, which wants smoothing; a lot means the value can be trusted.
+// of pixels around it that lie in the same plane, face the same way and are
+// lit alike. Run a few times with the taps spread twice as far each time
+// ("a trous"), it reaches a long way for the cost of a small one.
+//
+// How readily a neighbour is let in goes by how unsure the pixel's own
+// average still is (temporal.comp works that out): a difference in
+// brightness is counted in units of it. Where the picture is noisy nearly
+// anything nearby helps; where it has settled a pixel is left as it is.
+// The measure is filtered along with the light, so that each pass knows
+// what the one before has already smoothed.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -24,11 +29,21 @@ layout(push_constant) uniform Pass
 	int		unused;
 } pass;
 
+// rgb: the light; a: how unsure it is
 vec4 Load(int k, ivec2 q)
 {
 	if (pass.source == 0)
 		return imageLoad(img_kept[fr.frame_has.z * 3 + k], q);
 	return imageLoad(img_filter[(pass.source - 1) * 3 + k], q);
+}
+
+// where in the world the pixel's ray was, that far along
+vec3 PointSeen(ivec2 q, float depth)
+{
+	const vec3 dir = normalize(fr.forward.xyz
+		+ fr.right.xyz * ((2.0 * (q.x + 0.5 + fr.right.w) / fr.size.x - 1.0) * fr.origin.w)
+		+ fr.up.xyz * ((1.0 - 2.0 * (q.y + 0.5 + fr.up.w) / fr.size.y) * fr.forward.w));
+	return fr.origin.xyz + dir * depth;
 }
 
 void main()
@@ -43,32 +58,139 @@ void main()
 	vec4 centre[3];
 	for (int k = 0; k < 3; k++)
 		centre[k] = Load(k, pixel);
-	if (surface.a < 0.0)
+
+	// nothing to smooth where there is no surface, or where all three have
+	// settled already
+	bool leave = surface.a < 0.0;
+	float lum[3], sigma[3];
+	if (!leave)
+	{
+		leave = true;
+		for (int k = 0; k < 3; k++)
+		{
+			lum[k] = Luminance(centre[k].rgb);
+			sigma[k] = sqrt(max(centre[k].a, 0.0));
+			if (sigma[k] > lum[k] * 0.01 + 1.0e-4)
+				leave = false;
+		}
+	}
+	if (leave)
 	{
 		for (int k = 0; k < 3; k++)
 			imageStore(img_filter[pass.target * 3 + k], pixel, centre[k]);
 		return;
 	}
 
+	// the plane the surface lies in, by its own facing and not the texture's
+	const vec3 plane = OctDecode(vec2(imageLoad(img_albedo[0], pixel).a, imageLoad(img_albedo[1], pixel).a));
+	const vec3 at = PointSeen(pixel, surface.a);
+	const float inv_plane = 1.0 / (1.0 + surface.a * 0.004);
+
+	// A pixel that has only just come into view has a sample or two behind
+	// it. Those say next to nothing of how bright it ought to be or of how
+	// far off it may be: most single samples are dark, and a dark one would
+	// take its bright neighbours for something else and stay a dark dot. So
+	// for such a pixel both are taken from the pixels around it on the same
+	// surface: what it is compared by is their average, and how unsure it is
+	// is how far they are spread.
+	if (pass.source == 0 && imageLoad(img_m2[now], pixel).a < 4.0)
+	{
+		float n = 1.0;
+		float mean[3], square[3];
+		for (int k = 0; k < 3; k++)
+		{
+			mean[k] = lum[k];
+			square[k] = lum[k] * lum[k];
+		}
+		for (int dy = -3; dy <= 3; dy++)
+		{
+			for (int dx = -3; dx <= 3; dx++)
+			{
+				if (dx == 0 && dy == 0)
+					continue;
+				const ivec2 q = pixel + ivec2(dx, dy);
+				if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y)
+					continue;
+				const vec4 other = imageLoad(img_surface[now], q);
+				if (other.a < 0.0 || dot(surface.xyz, other.xyz) < 0.9
+					|| abs(dot(plane, PointSeen(q, other.a) - at)) * inv_plane >= 2.0)
+					continue;
+				for (int k = 0; k < 3; k++)
+				{
+					const float l = Luminance(Load(k, q).rgb);
+					mean[k] += l;
+					square[k] += l * l;
+				}
+				n += 1.0;
+			}
+		}
+		for (int k = 0; k < 3; k++)
+		{
+			mean[k] /= n;
+			const float spread = max(0.0, square[k] / n - mean[k] * mean[k]);
+			lum[k] = mean[k];
+			centre[k].a = max(centre[k].a, spread);
+			sigma[k] = sqrt(centre[k].a);
+		}
+	}
+
+	else
+	{
+		// The measure is itself made from a handful of samples and is noisy.
+		// Light comes in rare bright samples among many dark ones, and a
+		// pixel that has had none of the bright ones yet looks dark and sure
+		// of itself beside neighbours that are bright and unsure. Taking the
+		// measure from the pixels next to it as well stops that pixel from
+		// being left as a dark grain.
+		const float blur[2] = float[2](0.5, 0.25);
+		float v[3] = float[3](0.0, 0.0, 0.0);
+		float vw = 0.0;
+		for (int dy = -1; dy <= 1; dy++)
+		{
+			for (int dx = -1; dx <= 1; dx++)
+			{
+				const ivec2 q = pixel + ivec2(dx, dy);
+				if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y)
+					continue;
+				if (imageLoad(img_surface[now], q).a < 0.0)
+					continue;
+				const float w = blur[abs(dx)] * blur[abs(dy)];
+				for (int k = 0; k < 3; k++)
+					v[k] += Load(k, q).a * w;
+				vw += w;
+			}
+		}
+		for (int k = 0; k < 3; k++)
+			sigma[k] = sqrt(max(v[k] / vw, 0.0));
+	}
+
+	// How big a difference in brightness is still taken for noise, in units
+	// of how unsure the pixel is. A sharp reflection is a picture in itself
+	// and must not be smeared; light scattered by fog, which shares the third
+	// with reflections in glass and water, is smooth and wants more.
 	const float roughness = imageLoad(img_seen, pixel).a;
-	const float frames = max(centre[0].a, 1.0);
-	// how far apart two pixels' light may be and still be averaged, as a
-	// share of the light itself
-	const float trust = 4.0 / sqrt(frames);
-	float tolerance[3];
+	const float tolerance[3] = float[3](4.0, 1.0 + 3.0 * roughness, 2.0);
+	float inv_lum[3];
 	for (int k = 0; k < 3; k++)
-		tolerance[k] = max(Luminance(centre[k].rgb), 0.02) * trust;
-	// a sharp reflection is a picture in itself and must not be smeared
-	tolerance[1] *= clamp(roughness * 4.0, 0.05, 1.0);
+		inv_lum[k] = 1.0 / (tolerance[k] * sigma[k] + 1.0e-3);
 
 	const float kernel[3] = float[3](3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
-	vec3 sum[3] = vec3[3](vec3(0.0), vec3(0.0), vec3(0.0));
-	float wsum[3] = float[3](0.0, 0.0, 0.0);
+	const float w0 = kernel[0] * kernel[0];
+	vec3 sum[3];
+	float wsum[3], vsum[3];
+	for (int k = 0; k < 3; k++)
+	{
+		sum[k] = centre[k].rgb * w0;
+		wsum[k] = w0;
+		vsum[k] = centre[k].a * w0 * w0;
+	}
 
 	for (int dy = -2; dy <= 2; dy++)
 	{
 		for (int dx = -2; dx <= 2; dx++)
 		{
+			if (dx == 0 && dy == 0)
+				continue;
 			const ivec2 q = pixel + ivec2(dx, dy) * pass.spread;
 			if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y)
 				continue;
@@ -76,28 +198,37 @@ void main()
 			if (other.a < 0.0)
 				continue;
 
-			float w = kernel[abs(dx)] * kernel[abs(dy)];
-			// the same way up, and about as far off
-			const float facing = max(dot(surface.xyz, other.xyz), 0.0);
-			w *= facing * facing;
-			w *= facing * facing;
-			w *= facing * facing;
-			w *= facing * facing;
-			w *= exp(-abs(other.a - surface.a) / (0.03 * surface.a + 0.5));
-			if (w <= 1.0e-5)
+			// the same way up
+			float wn = dot(surface.xyz, other.xyz);
+			if (wn <= 0.0)
 				continue;
+			wn *= wn;
+			wn *= wn;
+			wn *= wn;
+			// and in the same plane
+			const float wz = abs(dot(plane, PointSeen(q, other.a) - at)) * inv_plane;
+			if (wz >= 4.0)
+				continue;
+			const float wk = kernel[abs(dx)] * kernel[abs(dy)] * wn;
 
 			for (int k = 0; k < 3; k++)
 			{
-				const vec3 c = Load(k, q).rgb;
-				const float wk = w * exp(-abs(Luminance(c) - Luminance(centre[k].rgb)) / tolerance[k]);
-				sum[k] += c * wk;
-				wsum[k] += wk;
+				const vec4 c = Load(k, q);
+				// exp(-x), near enough, and nothing at all past 4
+				float e = max(0.0, 1.0 - (wz + abs(Luminance(c.rgb) - lum[k]) * inv_lum[k]) * 0.25);
+				e *= e;
+				e *= e;
+				const float w = wk * e;
+				sum[k] += c.rgb * w;
+				vsum[k] += c.a * w * w;
+				wsum[k] += w;
 			}
 		}
 	}
 
 	for (int k = 0; k < 3; k++)
-		imageStore(img_filter[pass.target * 3 + k], pixel,
-			vec4(wsum[k] > 0.0 ? sum[k] / wsum[k] : centre[k].rgb, centre[k].a));
+	{
+		const float inv = 1.0 / wsum[k];
+		imageStore(img_filter[pass.target * 3 + k], pixel, vec4(sum[k] * inv, vsum[k] * inv * inv));
+	}
 }

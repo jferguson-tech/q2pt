@@ -129,11 +129,11 @@ layout(std430, set = 0, binding = 16) readonly buffer FramePrev { float v[]; } f
 // something, one is this frame's and the other the last one's, in turn.
 layout(set = 0, binding = 17, rgba16f) uniform image2D img_surface[2];	// shading normal, distance (negative: none)
 layout(set = 0, binding = 18, rgba32f) uniform image2D img_seen;		// where to look for it in the last frame; roughness
-layout(set = 0, binding = 19, rgba16f) uniform image2D img_albedo[2];	// what the diffuse and specular light are multiplied by
-layout(set = 0, binding = 20, rgba16f) uniform image2D img_noisy[3];	// this frame's diffuse, specular and layer light
+layout(set = 0, binding = 19, rgba16f) uniform image2D img_albedo[2];	// what the diffuse and specular light are multiplied by; a of the two: which way the surface itself faces, see OctEncode
+layout(set = 0, binding = 20, rgba16f) uniform image2D img_noisy[3];	// this frame's diffuse, specular and layer light; a: the mean square of its brightness
 layout(set = 0, binding = 21, rgba16f) uniform image2D img_extra;		// light that needs no filtering
-layout(set = 0, binding = 22, rgba16f) uniform image2D img_kept[6];		// the three gathered over time; a: frames
-layout(set = 0, binding = 23, rgba16f) uniform image2D img_filter[6];	// the three being filtered
+layout(set = 0, binding = 22, rgba16f) uniform image2D img_kept[6];		// the three gathered over time; a: how unsure each still is
+layout(set = 0, binding = 23, rgba16f) uniform image2D img_filter[6];	// the three being filtered, likewise
 layout(set = 0, binding = 24, rgba8) uniform image2D img_picture;
 layout(std430, set = 0, binding = 25) buffer Meter { uint v[]; } meter;	// sums for the exposure
 layout(set = 0, binding = 26, rgba16f) uniform image2D img_hdr;			// the picture put together, exposed, before grading
@@ -141,6 +141,23 @@ layout(set = 0, binding = 27, rgba16f) uniform image2D img_bloom[2];	// its glow
 // these two are the size of the view, which may be larger than what is traced
 layout(set = 0, binding = 28, rgba16f) uniform image2D img_steady[2];	// the finished picture gathered over frames; a: how much stands behind it
 layout(set = 0, binding = 29, rgba16f) uniform image2D img_graded;		// the picture graded for the screen, as traced
+layout(set = 0, binding = 30, rgba16f) uniform image2D img_m2[2];		// rgb: the mean square of the brightness of the three, over time; a: how many frames stand behind a pixel
+
+// A direction as two numbers, and back: the octahedron unfolded into a square
+vec2 OctEncode(vec3 n)
+{
+	n /= abs(n.x) + abs(n.y) + abs(n.z);
+	const vec2 fold = vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+	return n.z >= 0.0 ? n.xy : (1.0 - abs(n.yx)) * fold;
+}
+
+vec3 OctDecode(vec2 e)
+{
+	vec3 n = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+	if (n.z < 0.0)
+		n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+	return normalize(n);
+}
 
 float Luminance(vec3 c)
 {

@@ -8,6 +8,12 @@
 // Blends this frame's samples into what earlier frames saw of the same
 // surface: each point is looked up where it was on screen last frame, and
 // what is found there counts if it was the same surface.
+//
+// Beside the light itself, the average of its brightness squared is kept the
+// same way. From the two comes how much the samples behind a pixel have been
+// disagreeing, which is how unsure its average still is: the filter that
+// follows smooths by that, hard where the picture is noisy and hardly at all
+// where it has settled.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -23,7 +29,7 @@ bool SameSurface(ivec2 q, int prev, vec3 normal, float expected, out float frame
 	const vec4 was = imageLoad(img_surface[prev], q);
 	if (was.a < 0.0 || dot(was.xyz, normal) < 0.8 || abs(was.a - expected) > 0.1 * expected)
 		return false;
-	frames = imageLoad(img_kept[prev * 3], q).a;
+	frames = imageLoad(img_m2[prev], q).a;
 	return frames > 0.0;
 }
 
@@ -37,19 +43,26 @@ void main()
 
 	const vec4 surface = imageLoad(img_surface[now], pixel);
 	vec3 light[3];
+	vec3 square;		// of each of the three, the mean square of its brightness
 	for (int k = 0; k < 3; k++)
-		light[k] = imageLoad(img_noisy[k], pixel).rgb;
+	{
+		const vec4 sample_k = imageLoad(img_noisy[k], pixel);
+		light[k] = sample_k.rgb;
+		square[k] = sample_k.a;
+	}
 
 	if (surface.a < 0.0)
 	{
 		// nothing there to follow from frame to frame
 		for (int k = 0; k < 3; k++)
 			imageStore(img_kept[now * 3 + k], pixel, vec4(light[k], 0.0));
+		imageStore(img_m2[now], pixel, vec4(square, 0.0));
 		return;
 	}
 
 	const vec4 seen = imageLoad(img_seen, pixel);
 	vec3 hist[3] = vec3[3](vec3(0.0), vec3(0.0), vec3(0.0));
+	vec3 hist_square = vec3(0.0);
 	float frames = 0.0, wsum = 0.0;
 
 	if (fr.output_i.w != 0)
@@ -79,6 +92,7 @@ void main()
 					continue;
 				for (int k = 0; k < 3; k++)
 					hist[k] += imageLoad(img_kept[prev * 3 + k], q).rgb * w;
+				hist_square += imageLoad(img_m2[prev], q).rgb * w;
 				frames += f * w;
 				wsum += w;
 			}
@@ -101,6 +115,7 @@ void main()
 							continue;
 						for (int k = 0; k < 3; k++)
 							hist[k] += imageLoad(img_kept[prev * 3 + k], q).rgb;
+						hist_square += imageLoad(img_m2[prev], q).rgb;
 						frames += f;
 						wsum += 1.0;
 					}
@@ -127,8 +142,20 @@ void main()
 			if (k == 1 && !still)
 				keep = min(kept_frames, max(2.0, moving_history * seen.a * 2.0));
 			light[k] = mix(hist[k] * inv, light[k], 1.0 / keep);
+			square[k] = mix(hist_square[k] * inv, square[k], 1.0 / keep);
 		}
 	}
+
+	// How unsure each average still is: how far its samples have spread about
+	// it, less for every frame that stands behind it. With next to no history
+	// the spread itself is not known yet, so assume the worst.
 	for (int k = 0; k < 3; k++)
-		imageStore(img_kept[now * 3 + k], pixel, vec4(light[k], kept_frames));
+	{
+		const float mean = Luminance(light[k]);
+		float unsure = max(0.0, square[k] - mean * mean) / kept_frames;
+		if (kept_frames < 4.0)
+			unsure = max(unsure, mean * mean * 0.25 + 0.01);
+		imageStore(img_kept[now * 3 + k], pixel, vec4(light[k], unsure));
+	}
+	imageStore(img_m2[now], pixel, vec4(min(square, vec3(60000.0)), kept_frames));
 }
