@@ -181,6 +181,7 @@ were changed in 2026:
 | `win32/cd_win.c`, `conproc.c`, `net_wins.c`, `q_shwin.c`, `rw_imp.c`, `sys_win.c`, `q2.rc` | 64-bit port and building with current Windows headers |
 | `win32/vid_dll.c`, `win32/vid_menu.c` | loading the path traced renderers, switching between them, more video modes, closing the window |
 | `client/cl_scrn.c` | 64-bit port |
+| `client/console.c` | the console on a picture more than 2048 pixels wide |
 | `client/cl_main.c`, `client/client.h`, `client/keys.c`, `client/vid.h` | mouse look by default; hooks for offline demo rendering |
 | `client/menu.c` | menu pages for the path tracing options and for rendering a demo |
 | `client/snd_dma.c`, `snd_loc.h`, `snd_mem.c`, `snd_mix.c`, `sound.h` | 64-bit port; mixing the sound to a file in step with offline rendering |

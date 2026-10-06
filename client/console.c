@@ -249,6 +249,12 @@ void Con_CheckResize (void)
 
 	width = (viddef.width >> 3) - 2;
 
+	// The input line is drawn out of a line of the key history, which holds
+	// MAXCMDLINE characters and is filled with spaces to this width: on a
+	// picture more than 2048 pixels wide that ran on into the lines after it.
+	if (width > MAXCMDLINE - 2)
+		width = MAXCMDLINE - 2;
+
 	if (width == con.linewidth)
 		return;
 
