@@ -158,7 +158,7 @@ Cbuf_InsertFromDefer
 */
 void Cbuf_InsertFromDefer (void)
 {
-	Cbuf_InsertText (defer_text_buf);
+	Cbuf_InsertText ((char *)defer_text_buf);
 	defer_text_buf[0] = 0;
 }
 
@@ -516,7 +516,7 @@ Cmd_Argv
 */
 char	*Cmd_Argv (int arg)
 {
-	if ( (unsigned)arg >= cmd_argc )
+	if ( (unsigned)arg >= (unsigned)cmd_argc )
 		return cmd_null_string;
 	return cmd_argv[arg];	
 }

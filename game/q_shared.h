@@ -232,6 +232,11 @@ int Q_stricmp (char *s1, char *s2);
 int Q_strcasecmp (char *s1, char *s2);
 int Q_strncasecmp (char *s1, char *s2, int n);
 
+#ifndef _WIN32
+// the C library has it on Windows; elsewhere linux/q_shlinux.c does
+char *strlwr (char *s);
+#endif
+
 //=============================================
 
 short	BigShort(short l);

@@ -90,7 +90,10 @@ void SP_target_speaker (edict_t *ent)
 	if (!strstr (st.noise, ".wav"))
 		Com_sprintf (buffer, sizeof(buffer), "%s.wav", st.noise);
 	else
-		strncpy (buffer, st.noise, sizeof(buffer));
+	{
+		strncpy (buffer, st.noise, sizeof(buffer) - 1);
+		buffer[sizeof(buffer) - 1] = 0;
+	}
 	ent->noise_index = gi.soundindex (buffer);
 
 	if (!ent->volume)
@@ -415,15 +418,6 @@ speed	default is 1000
 
 void use_target_blaster (edict_t *self, edict_t *other, edict_t *activator)
 {
-	int effect;
-
-	if (self->spawnflags & 2)
-		effect = 0;
-	else if (self->spawnflags & 1)
-		effect = EF_HYPERBLASTER;
-	else
-		effect = EF_BLASTER;
-
 	fire_blaster (self, self->s.origin, self->movedir, self->dmg, self->speed, EF_BLASTER, MOD_TARGET_BLASTER);
 	gi.sound (self, CHAN_VOICE, self->noise_index, 1, ATTN_NORM, 0);
 }
