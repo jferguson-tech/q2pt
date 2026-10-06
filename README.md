@@ -47,6 +47,14 @@ Each frame is built from nothing at full resolution and saved as a PNG, with
 optional motion blur. The sound is mixed in step into a WAV, and a script is
 written that turns both into a video with ffmpeg.
 
+For a denoiser that works outside the game, `pt_render_export 1` makes
+`pt_render` save each frame's buffers instead of a picture: the noisy light
+at 4, 8 and 16 paths a pixel, what the surfaces reflect, their normals,
+distance and motion, and the light from all the paths asked for. Both
+renderers write the same file. To make such frames without anyone playing,
+the game can take the player round a map along a path from a file
+(`tour_file`, see `game/g_tour.c`).
+
 **Benchmark**
 
 `pt_bench [demo] [seconds]` plays a demo as fast as the renderer goes and
@@ -180,6 +188,7 @@ Some console commands and variables:
 | `record <name>`, `stop` | record a demo (the game's own commands) |
 | `pt_render <demo> [fps] [paths] [start] [length]` | render a demo offline into `baseq2\render\<demo>\`; start and length, in seconds, pick a part of it |
 | `pt_render_blur 0`-`1` | motion blur for offline rendering |
+| `pt_render_export 1` | `pt_render` saves each frame's buffers (`frameNNNNN.ptx`) in place of a picture, for a denoiser outside the game: see `ref_pt/rpt_export.c` for what is in the file |
 | `pt_bench [demo] [seconds] [quit]` | time a demo: `demo1` and 20 seconds unless given, 0 for all of it; `quit` leaves the game afterwards, for scripts (`quake2 +pt_bench demo1 20 quit`) |
 
 ## How it is put together
@@ -221,6 +230,7 @@ were changed in 2026:
 | Files | What changed |
 | --- | --- |
 | `game/g_local.h`, `game/g_main.c`, `game/q_shared.c`, `game/q_shared.h` | 64-bit port: structure offsets, formatted printing into fixed buffers |
+| `game/g_spawn.c`, `game/p_client.c`, `game/p_view.c` | where a tour (`game/g_tour.c`, new) takes hold of the player |
 | `game/g_items.c` | three variables declared one way in the header and another here, which gcc refuses |
 | `qcommon/common.c`, `qcommon/net_chan.c`, `qcommon/qcommon.h` | 64-bit port; leaving the game safely after an error |
 | `server/sv_game.c`, `server/sv_send.c`, `server/sv_world.c` | 64-bit port |

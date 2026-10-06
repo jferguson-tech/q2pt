@@ -255,7 +255,24 @@ struct pt_backend_s
 	/* the picture last presented: width*height pixels, bytes R,G,B,A, top row
 	   first, with or without the overlay. Returns 0 if it cannot. */
 	int		(*read_pixels)(pt_backend_t *self, uint32_t *pixels, int with_overlay);
+
+	/* One of the PT_BUFFER_* pictures of the last view rendered, as it was
+	   traced: 4 floats a pixel, top row first, max_pixels of room. Sets the
+	   size of the picture and returns 1; returns 0 if it cannot, with the
+	   size set all the same if all that was wrong was too little room. They are
+	   what something outside the backend needs to filter the picture itself:
+	   to mean anything the view should be rendered with restart set, no
+	   denoising, no adaptive sampling and an exposure of 1. */
+	int		(*read_buffer)(pt_backend_t *self, int buffer, float *out, int max_pixels, int *width, int *height);
 };
+
+#define PT_BUFFER_COLOUR	0	/* linear radiance times exposure, before glow and grading */
+#define PT_BUFFER_ALBEDO	1	/* what the surface reflects diffusely; a = roughness */
+#define PT_BUFFER_SPECULAR	2	/* what it reflects as a mirror would */
+#define PT_BUFFER_NORMAL	3	/* shading normal; a = distance along the view, under 0 for none */
+#define PT_BUFFER_POSITION	4	/* where the point seen was a frame ago, in the world: its
+								   place now, unless it is on something that moved */
+#define PT_NUM_BUFFERS		5
 
 /* both return NULL on failure with a reason in err */
 pt_backend_t *pt_cpu_create(const pt_create_t *ci, char *err, int errlen);

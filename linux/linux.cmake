@@ -80,7 +80,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(REF_PT_SRC
 	ref_pt/rpt_main.c ref_pt/rpt_image.c ref_pt/rpt_draw.c ref_pt/rpt_world.c
 	ref_pt/rpt_model.c ref_pt/rpt_scene.c ref_pt/rpt_material.c ref_pt/rpt_settings.c
-	ref_pt/rpt_water.c ref_pt/rpt_shot.c ref_pt/rpt_offline.c ref_pt/rpt_bench.c ref_pt/rpt_sdl.c
+	ref_pt/rpt_water.c ref_pt/rpt_shot.c ref_pt/rpt_offline.c ref_pt/rpt_export.c ref_pt/rpt_bench.c ref_pt/rpt_sdl.c
 	pt/water/pt_water.c pt/png/pt_png.c
 	linux/q_shlinux.c linux/glob.c ${SHARED_SRC})
 

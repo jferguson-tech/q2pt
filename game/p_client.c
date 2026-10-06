@@ -1280,6 +1280,8 @@ void ClientBeginDeathmatch (edict_t *ent)
 
 	gi.bprintf (PRINT_HIGH, "%s entered the game\n", ent->client->pers.netname);
 
+	Tour_Begin (ent);
+
 	// make sure all view stuff is valid
 	ClientEndServerFrame (ent);
 }
@@ -1344,6 +1346,8 @@ void ClientBegin (edict_t *ent)
 			gi.bprintf (PRINT_HIGH, "%s entered the game\n", ent->client->pers.netname);
 		}
 	}
+
+	Tour_Begin (ent);
 
 	// make sure all view stuff is valid
 	ClientEndServerFrame (ent);
@@ -1576,6 +1580,9 @@ void ClientThink (edict_t *ent, usercmd_t *ucmd)
 
 	level.current_entity = ent;
 	client = ent->client;
+
+	if (Tour_Active (ent))
+		return;		// he goes where the tour takes him
 
 	if (level.intermissiontime)
 	{

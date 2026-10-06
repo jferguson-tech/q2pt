@@ -290,6 +290,7 @@ qboolean R_Init (void *hInstance, void *wndProc)
 	Draw_InitLocal ();
 	R_InitShots ();
 	R_InitOffline ();
+	R_InitExport ();
 	R_InitBench ();
 
 	ri.Vid_MenuInit ();
@@ -309,6 +310,7 @@ void R_Shutdown (void)
 	R_ShutdownBench ();		// while there is still a backend to speak of
 	R_ShutdownShots ();
 	R_ShutdownOffline ();
+	R_ShutdownExport ();
 	R_WaterReset ();		// while the backend that holds its pictures is still there
 	R_ShutdownImages ();
 	R_ShutdownModels ();

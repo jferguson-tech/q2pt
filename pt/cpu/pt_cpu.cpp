@@ -1842,6 +1842,37 @@ const char *Stats(pt_backend_t *b)
 	return Self(b)->stats;
 }
 
+int ReadBuffer(pt_backend_t *b, int buffer, float *out, int max_pixels, int *width, int *height)
+{
+	CpuBackend *s = Self(b);
+	const size_t count = (size_t)s->rw * s->rh;
+	// the frame just made is the one history is kept in for the next
+	const Pixels &px = s->prev;
+	if (!s->have_history || !count || px.depth.size() != count || s->hdr.size() != count)
+		return 0;
+
+	*width = s->rw;
+	*height = s->rh;
+	if (!out || (size_t)max_pixels < count)
+		return 0;
+	for (size_t i = 0; i < count; i++, out += 4)
+	{
+		Vec3 v;
+		float a = 0.0f;
+		switch (buffer)
+		{
+		case PT_BUFFER_COLOUR: v = s->hdr[i]; a = 1.0f; break;
+		case PT_BUFFER_ALBEDO: v = px.albedo[kDiffuse][i]; a = px.roughness[i]; break;
+		case PT_BUFFER_SPECULAR: v = px.albedo[kSpecular][i]; break;
+		case PT_BUFFER_NORMAL: v = px.depth[i] >= 0.0f ? px.normal[i] : Vec3(); a = px.depth[i]; break;
+		case PT_BUFFER_POSITION: v = px.seen[i]; break;
+		default: return 0;
+		}
+		out[0] = v.x; out[1] = v.y; out[2] = v.z; out[3] = a;
+	}
+	return 1;
+}
+
 int Stages(pt_backend_t *b, pt_stage_t *stages, int max)
 {
 	CpuBackend *s = Self(b);
@@ -1876,6 +1907,7 @@ extern "C" pt_backend_t *pt_cpu_create(const pt_create_t *ci, char *err, int err
 	s->base.stats = Stats;
 	s->base.stages = Stages;
 	s->base.read_pixels = ReadPixels;
+	s->base.read_buffer = ReadBuffer;
 	NameDevice(s->device, sizeof(s->device), s->pool.Threads());
 	s->base.device = s->device;
 	s->log = ci->log;

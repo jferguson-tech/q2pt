@@ -536,6 +536,7 @@ void SpawnEntities (char *mapname, char *entities, char *spawnpoint)
 	SaveClientData ();
 
 	gi.FreeTags (TAG_LEVEL);
+	Tour_End ();		// its places went with the level
 
 	memset (&level, 0, sizeof(level));
 	memset (g_edicts, 0, game.maxentities * sizeof (g_edicts[0]));

@@ -2665,6 +2665,118 @@ int ReadPixels(pt_backend_t *b, uint32_t *pixels, int with_overlay)
 	return 1;
 }
 
+// a 16 bit float as the card keeps it
+float FromHalf(uint16_t h)
+{
+	const uint32_t sign = (uint32_t)(h & 0x8000u) << 16;
+	uint32_t exponent = (h >> 10) & 0x1fu, mantissa = h & 0x3ffu;
+	uint32_t bits;
+	if (exponent == 0)
+	{
+		if (mantissa == 0)
+			bits = sign;
+		else
+		{
+			// too small for the usual form: shift it up into it
+			exponent = 1;
+			while (!(mantissa & 0x400u))
+			{
+				mantissa <<= 1;
+				exponent--;
+			}
+			bits = sign | ((exponent + 112) << 23) | ((mantissa & 0x3ffu) << 13);
+		}
+	}
+	else if (exponent == 31)
+		bits = sign | 0x7f800000u | (mantissa << 13);
+	else
+		bits = sign | ((exponent + 112) << 23) | (mantissa << 13);
+	float f;
+	memcpy(&f, &bits, sizeof(f));
+	return f;
+}
+
+int ReadBuffer(pt_backend_t *b, int buffer, float *out, int max_pixels, int *width, int *height)
+{
+	RtxBackend *s = Self(b);
+	if (!s->targets[kHdr].image || !s->has_view || !s->trace_ready)
+		return 0;
+	const int tw = s->trace_width, th = s->trace_height;
+	const size_t count = (size_t)tw * th;
+	*width = tw;
+	*height = th;
+	if (!out || (size_t)max_pixels < count)
+		return 0;
+
+	int target;
+	switch (buffer)
+	{
+	case PT_BUFFER_COLOUR: target = kHdr; break;
+	case PT_BUFFER_ALBEDO: target = kAlbedo; break;
+	case PT_BUFFER_SPECULAR: target = kAlbedo + 1; break;
+	case PT_BUFFER_NORMAL: target = kSurface + s->parity; break;
+	case PT_BUFFER_POSITION: target = kSeen; break;
+	default: return 0;
+	}
+	const bool wide = target == kSeen;		// 32 bit floats; the rest are 16 bit
+	// roughness rides with the position on the card
+	const bool with_rough = buffer == PT_BUFFER_ALBEDO;
+
+	try
+	{
+		TraceNow(s);
+		const VkDeviceSize one = (VkDeviceSize)count * (wide ? 16 : 8);
+		const VkDeviceSize bytes = one + (with_rough ? (VkDeviceSize)count * 16 : 0);
+		vkQueueWaitIdle(s->queue);
+		if (!s->readback.buffer || s->readback.size < bytes)
+		{
+			FreeBuffer(s, s->readback);
+			s->readback = MakeBuffer(s, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, true);
+		}
+		VkCommandBuffer cmd = BeginOnce(s);
+		VkBufferImageCopy region{};
+		region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+		region.imageExtent = {(uint32_t)tw, (uint32_t)th, 1};
+		vkCmdCopyImageToBuffer(cmd, s->targets[target].image, VK_IMAGE_LAYOUT_GENERAL, s->readback.buffer, 1, &region);
+		if (with_rough)
+		{
+			region.bufferOffset = one;
+			vkCmdCopyImageToBuffer(cmd, s->targets[kSeen].image, VK_IMAGE_LAYOUT_GENERAL, s->readback.buffer, 1, &region);
+		}
+		EndOnce(s);
+
+		if (wide)
+			memcpy(out, s->readback.ptr, count * 16);
+		else
+		{
+			const uint16_t *in = static_cast<const uint16_t *>(s->readback.ptr);
+			for (size_t i = 0; i < count * 4; i++)
+				out[i] = FromHalf(in[i]);
+		}
+		if (with_rough)
+		{
+			const float *seen = reinterpret_cast<const float *>(static_cast<const char *>(s->readback.ptr) + one);
+			for (size_t i = 0; i < count; i++)
+				out[i * 4 + 3] = seen[i * 4 + 3];
+		}
+		else if (buffer == PT_BUFFER_SPECULAR || buffer == PT_BUFFER_POSITION)
+			for (size_t i = 0; i < count; i++)
+				out[i * 4 + 3] = 0.0f;
+		if (buffer == PT_BUFFER_NORMAL)
+			for (size_t i = 0; i < count; i++)
+				if (out[i * 4 + 3] < 0.0f)
+					out[i * 4] = out[i * 4 + 1] = out[i * 4 + 2] = 0.0f;
+	}
+	catch (const Fail &f)
+	{
+		Logf(s, "RTX path tracer: %s\n", f.msg.c_str());
+		return 0;
+	}
+	*width = tw;
+	*height = th;
+	return 1;
+}
+
 void Record(RtxBackend *s, uint32_t image_index)
 {
 	VkCommandBuffer cmd = s->cmd;
@@ -2867,6 +2979,7 @@ extern "C" pt_backend_t *pt_rtx_create(const pt_create_t *ci, char *err, int err
 	s->base.stats = Stats;
 	s->base.stages = Stages;
 	s->base.read_pixels = ReadPixels;
+	s->base.read_buffer = ReadBuffer;
 	s->textures.resize(kMaxTextures);
 	s->log = ci->log;
 	s->width = ci->width;

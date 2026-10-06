@@ -194,6 +194,23 @@ qboolean R_Offline (void);
 void	R_OfflineSettings (pt_view_t *view);
 void	R_OfflineRender (refdef_t *fd, pt_view_t *view);
 void	R_OfflineFinish (void);
+void	R_OfflineMomentsBegin (const pt_view_t *view);
+void	R_OfflineMoment (const pt_view_t *view, float t, pt_view_t *moment, pt_scene_t *moment_scene);
+
+//
+// rpt_export.c
+//
+typedef struct
+{
+	vec3_t	origin, forward, right, up;
+	float	fov_x, fov_y;
+} pt_camera_t;
+
+void	R_InitExport (void);
+void	R_ShutdownExport (void);
+qboolean R_Exporting (void);
+qboolean R_ExportRender (const pt_view_t *view, int paths, float blur, const pt_camera_t *last);
+qboolean R_ExportWrite (const char *path, int frame);
 
 //
 // rpt_bench.c
