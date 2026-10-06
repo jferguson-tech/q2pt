@@ -58,6 +58,23 @@ static menuframework_s *s_current_menu;
 static int				s_current_menu_index;
 
 static menulist_s		s_mode_list[2];
+
+// The list of video modes is shown smallest first. The modes are numbered
+// in the order they were added to the engine, so this says which mode each
+// line of the list is.
+static const int	s_mode_order[] = { 0, 1, 2, 3, 4, 5, 6, 7, 10, 8, 14, 15, 9, 11, 16, 12, 17, 19, 18, 13, 20 };
+#define	NUM_LISTED_MODES	( (int)( sizeof( s_mode_order ) / sizeof( s_mode_order[0] ) ) )
+
+// the line of the list a mode is on
+static int ModeToLine( int mode )
+{
+	int		i;
+
+	for ( i = 0 ; i < NUM_LISTED_MODES ; i++ )
+		if ( s_mode_order[i] == mode )
+			return i;
+	return 3;		// 640x480
+}
 static menulist_s		s_ref_list[2];
 static menuslider_s		s_tq_slider;
 static menuslider_s		s_screensize_slider[2];
@@ -138,8 +155,8 @@ static void ApplyChanges( void *unused )
 	Cvar_SetValue( "vid_fullscreen", s_fs_box[s_current_menu_index].curvalue );
 	Cvar_SetValue( "gl_ext_palettedtexture", s_paletted_texture_box.curvalue );
 	Cvar_SetValue( "gl_finish", s_finish_box.curvalue );
-	Cvar_SetValue( "sw_mode", s_mode_list[SOFTWARE_MENU].curvalue );
-	Cvar_SetValue( "gl_mode", s_mode_list[OPENGL_MENU].curvalue );
+	Cvar_SetValue( "sw_mode", s_mode_order[s_mode_list[SOFTWARE_MENU].curvalue] );
+	Cvar_SetValue( "gl_mode", s_mode_order[s_mode_list[OPENGL_MENU].curvalue] );
 
 	switch ( s_ref_list[s_current_menu_index].curvalue )
 	{
@@ -218,12 +235,19 @@ void VID_MenuInit( void )
 		"[960 720  ]",
 		"[1024 768 ]",
 		"[1152 864 ]",
-		"[1280 960 ]",
-		"[1600 1200]",
 		"[1280 720 ]",
+		"[1280 960 ]",
+		"[1366 768 ]",
+		"[1600 900 ]",
+		"[1600 1200]",
 		"[1920 1080]",
+		"[2560 1080]",
 		"[2560 1440]",
+		"[3440 1440]",
+		"[3840 1080]",
+		"[3840 1600]",
 		"[3840 2160]",
+		"[5120 1440]",
 		0
 	};
 	static const char *refs[] =
@@ -258,8 +282,8 @@ void VID_MenuInit( void )
 	if ( !sw_stipplealpha )
 		sw_stipplealpha = Cvar_Get( "sw_stipplealpha", "0", CVAR_ARCHIVE );
 
-	s_mode_list[SOFTWARE_MENU].curvalue = sw_mode->value;
-	s_mode_list[OPENGL_MENU].curvalue = gl_mode->value;
+	s_mode_list[SOFTWARE_MENU].curvalue = ModeToLine( (int)sw_mode->value );
+	s_mode_list[OPENGL_MENU].curvalue = ModeToLine( (int)gl_mode->value );
 
 	if ( !scr_viewsize )
 		scr_viewsize = Cvar_Get ("viewsize", "100", CVAR_ARCHIVE);

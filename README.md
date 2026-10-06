@@ -105,6 +105,10 @@ quake2.exe
 
 The 32-bit build is started from `run\x86` with `quake2.exe +set basedir ..`.
 
+The video menu lists the original 4:3 modes and wide ones from 1280x720 up
+to 3840x2160, with 21:9 and 32:9 modes up to 5120x1440. On a wide picture the
+view keeps its height and shows more to the sides.
+
 **F8** steps through the renderers: OpenGL, CPU path tracer, RTX. They are
 also in the video menu, which has a *path tracing options* page. Without an
 Nvidia RTX card the RTX renderer is skipped. Setting `PT_VK_VALIDATE` in the
