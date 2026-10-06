@@ -109,6 +109,11 @@ The video menu lists the original 4:3 modes and wide ones from 1280x720 up
 to 3840x2160, with 21:9 and 32:9 modes up to 5120x1440. On a wide picture the
 view keeps its height and shows more to the sides.
 
+The last mode, *desktop*, is the size of the desktop, whatever that is: full
+screen it fills the display exactly, a laptop's 16:10 one included, without
+changing the display mode. Sizes are in real pixels: where Windows is set to
+scale the display, as on most laptops, the game is not stretched by it.
+
 **F8** steps through the renderers: OpenGL, CPU path tracer, RTX. They are
 also in the video menu, which has a *path tracing options* page. Without an
 Nvidia RTX card the RTX renderer is skipped. Setting `PT_VK_VALIDATE` in the
@@ -176,11 +181,13 @@ were changed in 2026:
 | `win32/cd_win.c`, `conproc.c`, `net_wins.c`, `q_shwin.c`, `rw_imp.c`, `sys_win.c`, `q2.rc` | 64-bit port and building with current Windows headers |
 | `win32/vid_dll.c`, `win32/vid_menu.c` | loading the path traced renderers, switching between them, more video modes, closing the window |
 | `client/cl_scrn.c` | 64-bit port |
+| `client/console.c` | the console on a picture more than 2048 pixels wide |
 | `client/cl_main.c`, `client/client.h`, `client/keys.c`, `client/vid.h` | mouse look by default; hooks for offline demo rendering |
 | `client/menu.c` | menu pages for the path tracing options and for rendering a demo |
 | `client/snd_dma.c`, `snd_loc.h`, `snd_mem.c`, `snd_mix.c`, `sound.h` | 64-bit port; mixing the sound to a file in step with offline rendering |
 
-New beside them: `CMakeLists.txt` and `build.bat` (the build), `client/cl_render.c`,
+New beside them: `CMakeLists.txt` and `build.bat` (the build), `win32/quake2.manifest`
+(what the program tells Windows about itself), `client/cl_render.c`,
 `ref_pt/` and `pt/`. The full list is `git diff --name-status` between the first
 commit and `main`.
 
