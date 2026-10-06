@@ -2716,6 +2716,10 @@ int ReadBuffer(pt_backend_t *b, int buffer, float *out, int max_pixels, int *wid
 	case PT_BUFFER_SPECULAR: target = kAlbedo + 1; break;
 	case PT_BUFFER_NORMAL: target = kSurface + s->parity; break;
 	case PT_BUFFER_POSITION: target = kSeen; break;
+	case PT_BUFFER_DIFFUSE_LIGHT: target = kNoisy; break;
+	case PT_BUFFER_SPECULAR_LIGHT: target = kNoisy + 1; break;
+	case PT_BUFFER_LAYERS: target = kNoisy + 2; break;
+	case PT_BUFFER_EXACT: target = kExtra; break;
 	default: return 0;
 	}
 	const bool wide = target == kSeen;		// 32 bit floats; the rest are 16 bit
@@ -2759,7 +2763,7 @@ int ReadBuffer(pt_backend_t *b, int buffer, float *out, int max_pixels, int *wid
 			for (size_t i = 0; i < count; i++)
 				out[i * 4 + 3] = seen[i * 4 + 3];
 		}
-		else if (buffer == PT_BUFFER_SPECULAR || buffer == PT_BUFFER_POSITION)
+		else if (buffer != PT_BUFFER_COLOUR && buffer != PT_BUFFER_NORMAL)
 			for (size_t i = 0; i < count; i++)
 				out[i * 4 + 3] = 0.0f;
 		if (buffer == PT_BUFFER_NORMAL)

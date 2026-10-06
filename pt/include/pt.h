@@ -272,7 +272,13 @@ struct pt_backend_s
 #define PT_BUFFER_NORMAL	3	/* shading normal; a = distance along the view, under 0 for none */
 #define PT_BUFFER_POSITION	4	/* where the point seen was a frame ago, in the world: its
 								   place now, unless it is on something that moved */
-#define PT_NUM_BUFFERS		5
+/* The colour taken apart, as the tracer keeps it: colour is
+   albedo * diffuse light + specular * specular light + layers + exact */
+#define PT_BUFFER_DIFFUSE_LIGHT		5	/* noisy: light on the surface, its diffuse reflectance divided out */
+#define PT_BUFFER_SPECULAR_LIGHT	6	/* noisy: light it mirrors, its specular reflectance divided out */
+#define PT_BUFFER_LAYERS			7	/* noisy: light from see-through things in front, and from the air */
+#define PT_BUFFER_EXACT				8	/* without noise: what the surface emits, the frame's point lights, the sky */
+#define PT_NUM_BUFFERS		9
 
 /* both return NULL on failure with a reason in err */
 pt_backend_t *pt_cpu_create(const pt_create_t *ci, char *err, int errlen);

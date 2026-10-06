@@ -1866,6 +1866,10 @@ int ReadBuffer(pt_backend_t *b, int buffer, float *out, int max_pixels, int *wid
 		case PT_BUFFER_SPECULAR: v = px.albedo[kSpecular][i]; break;
 		case PT_BUFFER_NORMAL: v = px.depth[i] >= 0.0f ? px.normal[i] : Vec3(); a = px.depth[i]; break;
 		case PT_BUFFER_POSITION: v = px.seen[i]; break;
+		case PT_BUFFER_DIFFUSE_LIGHT: v = px.light[kDiffuse][i]; break;
+		case PT_BUFFER_SPECULAR_LIGHT: v = px.light[kSpecular][i]; break;
+		case PT_BUFFER_LAYERS: v = px.albedo[kOver][i] * px.light[kOver][i] + px.albedo[kFog][i] * px.light[kFog][i]; break;
+		case PT_BUFFER_EXACT: v = px.add[i]; break;
 		default: return 0;
 		}
 		out[0] = v.x; out[1] = v.y; out[2] = v.z; out[3] = a;

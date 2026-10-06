@@ -49,8 +49,10 @@ written that turns both into a video with ffmpeg.
 
 For a denoiser that works outside the game, `pt_render_export 1` makes
 `pt_render` save each frame's buffers instead of a picture: the noisy light
-at 4, 8 and 16 paths a pixel, what the surfaces reflect, their normals,
-distance and motion, and the light from all the paths asked for. Both
+at 4, 8 and 16 paths a pixel in the parts the tracer makes it in (diffuse,
+specular, see-through layers and air, and what has no noise), how much it
+varied, what the surfaces reflect, their normals, distance and motion, and
+the light from all the paths asked for. Both
 renderers write the same file. To make such frames without anyone playing,
 the game can take the player round a map along a path from a file
 (`tour_file`, see `game/g_tour.c`).
