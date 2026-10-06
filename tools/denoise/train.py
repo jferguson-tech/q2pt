@@ -80,7 +80,7 @@ def main():
     ap.add_argument('--out', required=True)
     ap.add_argument('--steps', type=int, default=30000)
     ap.add_argument('--batch', type=int, default=6)
-    ap.add_argument('--length', type=int, default=8)
+    ap.add_argument('--length', type=int, default=9)
     ap.add_argument('--size', type=int, default=256)
     ap.add_argument('--lr', type=float, default=3e-4)
     ap.add_argument('--workers', type=int, default=12)

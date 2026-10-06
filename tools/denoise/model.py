@@ -4,7 +4,11 @@
 its own last answer moved to where things are now.
 
 It works on the light with the surfaces' own colour divided out, so textures
-pass through untouched, and what it returns is a blend of a fresh estimate
+pass through untouched. Before the network sees a frame, the noisy light of
+the frames before is gathered into it: each pixel is followed back along
+its motion and, where it is still the same surface, averaged with what was
+there. A point that has been in view for eight frames of 16 paths comes to
+the network as 128. What the network returns is a blend of a fresh estimate
 and the last frame's answer, which is what keeps a film steady.
 """
 import math
@@ -14,7 +18,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 ALBEDO_FLOOR = 0.01      # reflectance is never taken to be less when dividing by it
-IN_CHANNELS = 3 + 3 + 3 + 1 + 3 + 1 + 1 + 1
+MAX_GATHERED = 12        # frames of noisy light averaged at most
+IN_CHANNELS = 3 + 3 + 3 + 3 + 1 + 3 + 1 + 1 + 1 + 1
 
 
 def squash(x):
@@ -101,29 +106,38 @@ class Denoiser(nn.Module):
         Returns the denoised light and the new state."""
         scale = scale.view(-1, 1, 1, 1)
         div = albedo + ALBEDO_FLOOR
-        lit = light / div * scale            # what falls on the surfaces
+        lit = light / div                    # what falls on the surfaces
         depth_f = depth_feature(depth)
 
         if state is None:
             last = torch.zeros_like(lit)
             have = torch.zeros_like(depth)
             depth_gap = torch.zeros_like(depth)
+            gathered, count = lit, torch.ones_like(depth)
         else:
-            last_lit, last_depth = state
-            both, inside = warp(torch.cat([last_lit, last_depth], dim=1), motion)
+            last_out, last_depth, last_normal, last_gathered, last_count = state
+            both, inside = warp(torch.cat([last_out, last_depth, last_normal, last_gathered, last_count], dim=1), motion)
             have = inside * known
-            last = both[:, 0:3] * scale * have
-            depth_gap = torch.clamp((both[:, 3:4] - depth_f).abs() * 20.0, max=1.0) * have
+            gap = (both[:, 3:4] - depth_f).abs()
+            depth_gap = torch.clamp(gap * 20.0, max=1.0) * have
+            # the same surface as a frame ago: about as far away and facing the same way
+            same = have * (gap < 0.012).to(lit.dtype) * ((both[:, 4:7] * normal).sum(1, keepdim=True) > 0.8).to(lit.dtype)
+            same = same * (depth > 0).to(lit.dtype)
+            last = both[:, 0:3] * have
+            before = torch.clamp(both[:, 10:11], max=MAX_GATHERED - 1) * same
+            count = before + 1.0
+            gathered = (both[:, 7:10] * before + lit) / count
 
         paths_f = (torch.log2(paths.float()) / 4.0).view(-1, 1, 1, 1).expand_as(depth)
-        x = torch.cat([squash(lit), albedo, normal, depth_f, squash(last), have, depth_gap, paths_f], dim=1)
+        base = squash(gathered * scale)
+        x = torch.cat([squash(lit * scale), base, albedo, normal, depth_f, squash(last * scale), have, depth_gap,
+                       torch.log2(count) / 4.0, paths_f], dim=1)
         y = self.net(x.to(memory_format=torch.channels_last)).float()
 
-        fresh = unsquash(y[:, 0:3] + squash(lit).float())
+        fresh = unsquash(y[:, 0:3] + base.float()) / scale
         keep = torch.sigmoid(y[:, 3:4]) * have
         out = fresh * (1.0 - keep) + last.float() * keep
-        out = out / scale
-        return out * div, (out, depth_f)
+        return out * div, (out, depth_f, normal, gathered, count)
 
 
 def pad_to(x, multiple=16):
