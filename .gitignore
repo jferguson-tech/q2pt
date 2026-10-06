@@ -21,3 +21,8 @@ run/
 *.lib
 *.exp
 *.obj
+
+# the denoiser's tools: Python's leftovers, exported frames, trained weights
+__pycache__/
+*.ptx
+*.pt
