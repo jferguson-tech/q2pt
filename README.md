@@ -184,6 +184,7 @@ Some console commands and variables:
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
 | `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time |
 | `pt_filter 0`-`2`, `pt_filter_cycle` (**F7**) | the picture as the paths alone make it, noise and all: `0` every frame on its own, `1` the same but frames add up while you stand still, `2` (the default) blended over time and filtered |
+| `pt_show_filter 1` | keep on screen the list of everything in the picture that depends on earlier frames, and whether each is on. It comes up by itself for a few seconds when one of them changes. `docs/ptdebug.cfg` binds a number pad key to each: copy it into `baseq2` and `exec ptdebug.cfg` |
 | `pt_stats 0` | hide the performance info, which is on by default (never shown in offline renders) |
 | `pt_simd 0`-`1` | CPU renderer: the build for AVX2 where the processor has it, or the one for any processor, to compare the two |
 | `pt_debug 1`-`11` | one part of the picture on its own |
