@@ -50,7 +50,7 @@ add_executable(quake2 WIN32
 	server/sv_main.c server/sv_send.c server/sv_user.c server/sv_world.c
 	win32/cd_win.c win32/conproc.c win32/in_win.c win32/net_wins.c
 	win32/q_shwin.c win32/snd_win.c win32/sys_win.c win32/vid_dll.c
-	win32/vid_menu.c win32/q2.rc
+	win32/vid_menu.c win32/q2.rc win32/quake2.manifest
 	game/m_flash.c ${SHARED_SRC})
 target_link_libraries(quake2 PRIVATE winmm wsock32 dxguid dsound dinput8)
 
