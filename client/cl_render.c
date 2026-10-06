@@ -141,7 +141,7 @@ void CL_RenderFrame (void)
 {
 	char	title[128];
 	char	*doing;
-	int		msec, elapsed, left;
+	int		msec, left;
 
 	if (render_quitframes && !--render_quitframes)
 		Cbuf_AddText ("quit\n");
@@ -216,7 +216,6 @@ void CL_RenderFrame (void)
 	if (render_bench && render_frame % 30)
 		return;
 	doing = render_bench ? "Timing" : "Rendering";
-	elapsed = (Sys_Milliseconds () - render_started) / 1000;
 	if (!render_keeping)
 		Com_sprintf (title, sizeof(title), "%s %s: playing up to the start, %i of %i - Esc stops",
 			doing, render_name, render_frame, render_first);

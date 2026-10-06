@@ -365,7 +365,7 @@ void CL_ParseBaseline (void)
 
 	memset (&nullstate, 0, sizeof(nullstate));
 
-	newnum = CL_ParseEntityBits (&bits);
+	newnum = CL_ParseEntityBits ((unsigned *)&bits);
 	es = &cl_entities[newnum].baseline;
 	CL_ParseDelta (&nullstate, es, newnum, bits);
 }
@@ -523,7 +523,10 @@ void CL_ParseConfigString (void)
 
 	i = MSG_ReadShort (&net_message);
 	if (i < 0 || i >= MAX_CONFIGSTRINGS)
+	{
 		Com_Error (ERR_DROP, "configstring > MAX_CONFIGSTRINGS");
+		return;
+	}
 	s = MSG_ReadString(&net_message);
 	strcpy (cl.configstrings[i], s);
 
