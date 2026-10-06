@@ -433,6 +433,14 @@ LRESULT CALLBACK MainWndProc (
 			}
 			return 0;
 		}
+		if ( wParam == VK_F4 )
+		{
+			// Alt+F4. Windows turns this into a request to close only for a
+			// window that has not captured the mouse, and while the game is
+			// being played this one has.
+			Cbuf_ExecuteText (EXEC_APPEND, "quit\n");
+			return 0;
+		}
 		// fall through
 	case WM_KEYDOWN:
 		Key_Event( MapKey( lParam ), true, sys_msg_time);
