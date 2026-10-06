@@ -1518,10 +1518,8 @@ void M_PtSwitch_f (void)
 		char	*create;	// its default, as the renderer makes it
 		int		flags;
 		float	off, on;
-		float	kept;		// what it was before it was switched off
-		qboolean	have_kept;
 	} switches[] = {
-		{ NULL },
+		{ NULL, NULL, 0, 0, 0 },
 		{ "pt_taa",				"1",	CVAR_ARCHIVE,	0, 1 },
 		{ "pt_history",			"32",	CVAR_ARCHIVE,	1, 32 },
 		{ "pt_denoise",			"4",	CVAR_ARCHIVE,	0, 4 },
@@ -1530,6 +1528,9 @@ void M_PtSwitch_f (void)
 		{ "pt_scale",			"0.5",	CVAR_ARCHIVE,	1, 0.5f },
 		{ "pt_debug",			"0",	0,				0, 7 },
 	};
+	// what each was before it was switched off
+	static float	kept[sizeof(switches) / sizeof(switches[0])];
+	static qboolean	have_kept[sizeof(switches) / sizeof(switches[0])];
 	const int	num = sizeof(switches) / sizeof(switches[0]);
 	float		value;
 	int			n, i;
@@ -1560,7 +1561,7 @@ void M_PtSwitch_f (void)
 			if ( i == 7 )
 				Cvar_SetValue( switches[i].name, 0 );
 			else if ( Cvar_VariableValue( switches[i].name ) == switches[i].off )
-				Cvar_SetValue( switches[i].name, switches[i].have_kept ? switches[i].kept : switches[i].on );
+				Cvar_SetValue( switches[i].name, have_kept[i] ? kept[i] : switches[i].on );
 		}
 		return;
 	}
@@ -1571,11 +1572,11 @@ void M_PtSwitch_f (void)
 	if ( n == 7 )
 		Cvar_SetValue( switches[n].name, value == 7 ? 0 : 7 );
 	else if ( value == switches[n].off )
-		Cvar_SetValue( switches[n].name, switches[n].have_kept ? switches[n].kept : switches[n].on );
+		Cvar_SetValue( switches[n].name, have_kept[n] ? kept[n] : switches[n].on );
 	else
 	{
-		switches[n].kept = value;
-		switches[n].have_kept = true;
+		kept[n] = value;
+		have_kept[n] = true;
 		Cvar_SetValue( switches[n].name, switches[n].off );
 	}
 }
@@ -4597,7 +4598,7 @@ void M_Init (void)
 		};
 		int		i;
 
-		for ( i = 0; i < sizeof(pad) / sizeof(pad[0]); i++ )
+		for ( i = 0; i < (int)( sizeof(pad) / sizeof(pad[0]) ); i++ )
 			if ( !keybindings[pad[i].key] )
 				Key_SetBinding (pad[i].key, pad[i].bind);
 	}
