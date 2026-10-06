@@ -30,13 +30,22 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	RPT_LABEL	"CPU PATH TRACER"
 #endif
 
+#ifdef _WIN32
 #define	WINDOW_CLASS_NAME	"Quake 2"
 #define	WINDOW_STYLE		(WS_OVERLAPPED|WS_BORDER|WS_CAPTION|WS_VISIBLE)
+#else
+// rpt_sdl.c
+qboolean R_SetMode (void);
+void R_DestroyWindow (void);
+void R_WindowHandles (pt_create_t *ci);
+void R_WindowActivate (qboolean active);
+#endif
 
 
 refimport_t	ri;
 rptstate_t	rpt;
 int			registration_sequence;
+
 
 static cvar_t	*vid_fullscreen;
 static cvar_t	*gl_mode;		// shared with ref_gl so toggling keeps the window size
@@ -58,6 +67,7 @@ static void R_BackendLog (const char *msg)
 	ri.Con_Printf (PRINT_ALL, "%s", (char *)msg);
 }
 
+#ifdef _WIN32
 /*
 ** R_DestroyWindow
 */
@@ -211,6 +221,7 @@ static qboolean R_SetMode (void)
 
 	return R_CreateWindow (width, height, fullscreen);
 }
+#endif
 
 /*
 ===============
@@ -224,8 +235,13 @@ qboolean R_Init (void *hInstance, void *wndProc)
 
 	ri.Con_Printf (PRINT_ALL, "ref_pt version: "REF_VERSION" ("RPT_LABEL")\n");
 
+#ifdef _WIN32
 	rpt.hInstance = (HINSTANCE)hInstance;
 	rpt.wndproc = wndProc;
+
+#else
+	rpt.window_slot = (void **)hInstance;
+#endif
 
 	vid_fullscreen = ri.Cvar_Get ("vid_fullscreen", "0", CVAR_ARCHIVE);
 	gl_mode = ri.Cvar_Get ("gl_mode", "3", CVAR_ARCHIVE);
@@ -248,8 +264,12 @@ qboolean R_Init (void *hInstance, void *wndProc)
 	memset (rpt.overlay, 0, rpt.width * rpt.height * sizeof(uint32_t));
 
 	memset (&ci, 0, sizeof(ci));
+#ifdef _WIN32
 	ci.hinstance = rpt.hInstance;
 	ci.hwnd = rpt.hWnd;
+#else
+	R_WindowHandles (&ci);
+#endif
 	ci.width = rpt.width;
 	ci.height = rpt.height;
 	ci.log = R_BackendLog;
@@ -555,6 +575,9 @@ void R_EndFrame (void)
 */
 void R_AppActivate (qboolean active)
 {
+#ifndef _WIN32
+	R_WindowActivate (active);
+#else
 	if (!rpt.hWnd)
 		return;
 
@@ -568,6 +591,7 @@ void R_AppActivate (qboolean active)
 		if (rpt.fullscreen)
 			ShowWindow (rpt.hWnd, SW_MINIMIZE);
 	}
+#endif
 }
 
 //=============================================================================

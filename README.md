@@ -3,7 +3,7 @@
 [![build](https://github.com/jferguson-tech/q2pt/actions/workflows/build.yml/badge.svg)](https://github.com/jferguson-tech/q2pt/actions/workflows/build.yml)
 
 A path traced renderer for the original Quake 2 source release (3.21), ported
-to 64-bit Windows. The game can be switched while it runs between the original
+to 64-bit Windows and Linux. The game can be switched while it runs between the original
 OpenGL renderer and a path tracer that lights every frame by tracing paths
 through the map: no lightmaps and no rasterized geometry. The path tracer
 runs on the CPU, or on the GPU with an Nvidia RTX card. The path tracing core is
@@ -74,15 +74,32 @@ half the width and height, 100 at a quarter.
 
 ## Requirements
 
+Your own copy of Quake 2 for the game data, on either system. None of it is
+in this repository.
+
+**Windows**
+
 * Windows 10 or 11
 * Visual Studio 2022 with the C++ desktop workload, including its CMake tools
   (they bring CMake and Ninja)
 * Optional: the [Vulkan SDK](https://vulkan.lunarg.com/), to build the RTX
   renderer. Without it that renderer is left out and everything else builds.
-* Your own copy of Quake 2 for the game data. None of it is in this
-  repository.
+
+**Linux** (64-bit, X11)
+
+* CMake, a C and C++ compiler, SDL2 and the X11 headers
+* For the RTX renderer: the Vulkan headers and loader, and a GLSL compiler
+  (`glslc` or `glslangValidator`). Without them that renderer is left out.
+* On Ubuntu: `sudo apt install cmake g++ libsdl2-dev libx11-dev libxext-dev
+  libvulkan-dev glslang-tools`
+
+The game and both path traced renderers are built on Linux. The original
+OpenGL and software renderers are not, so there the path tracer is the only
+way to see the game.
 
 ## Build
+
+**Windows**
 
 ```
 build.bat                 64-bit, with debug information
@@ -92,6 +109,16 @@ build.bat x86 Release     32-bit
 
 The 64-bit programs go to `run\`, the 32-bit ones to `run\x86\`, and the game
 library to `run\baseq2\`.
+
+**Linux**
+
+```
+cmake -S . -B build/linux
+cmake --build build/linux -j
+```
+
+`quake2`, `ref_ptcpu.so` and `ref_ptrtx.so` go to `run/`, and `gamex64.so` to
+`run/baseq2/`.
 
 ## Game data
 
@@ -103,7 +130,8 @@ git.
 
 ```
 cd run
-quake2.exe
+quake2.exe          Windows
+./quake2            Linux
 ```
 
 The 32-bit build is started from `run\x86` with `quake2.exe +set basedir ..`.
@@ -117,7 +145,7 @@ screen it fills the display exactly, a laptop's 16:10 one included, without
 changing the display mode. Sizes are in real pixels: where Windows is set to
 scale the display, as on most laptops, the game is not stretched by it.
 
-**F8** steps through the renderers: OpenGL, CPU path tracer, RTX. They are
+**F8** steps through the renderers: OpenGL (on Windows), CPU path tracer, RTX. They are
 also in the video menu, which has a *path tracing options* page. Without an
 Nvidia RTX card the RTX renderer is skipped. Setting `PT_VK_VALIDATE` in the
 environment turns on the Vulkan validation layer for it.
@@ -153,6 +181,8 @@ ref_pt/     the renderer DLLs (GPL): turns Quake 2's maps, models and
             per-frame scene into what pt.h asks for
 client/, server/, game/, qcommon/, win32/, ref_gl/, ref_soft/
             the original engine, ported to 64 bits
+linux/      the Linux build: the program's entry, video, input and sound
+            on SDL2 (new), beside id's own Linux sources
 ```
 
 Both path traced renderers are built from the same `ref_pt` sources and differ
@@ -177,6 +207,7 @@ were changed in 2026:
 | Files | What changed |
 | --- | --- |
 | `game/g_local.h`, `game/g_main.c`, `game/q_shared.c`, `game/q_shared.h` | 64-bit port: structure offsets, formatted printing into fixed buffers |
+| `game/g_items.c` | three variables declared one way in the header and another here, which gcc refuses |
 | `qcommon/common.c`, `qcommon/net_chan.c`, `qcommon/qcommon.h` | 64-bit port; leaving the game safely after an error |
 | `server/sv_game.c`, `server/sv_send.c`, `server/sv_world.c` | 64-bit port |
 | `ref_gl/gl_model.c`, `ref_gl/gl_rmain.c` | 64-bit port: memory for models, the renderer interface |
@@ -191,7 +222,8 @@ were changed in 2026:
 
 New beside them: `CMakeLists.txt` and `build.bat` (the build), `win32/quake2.manifest`
 (what the program tells Windows about itself), `client/cl_render.c`,
-`ref_pt/` and `pt/`. The full list is `git diff --name-status` between the first
+`ref_pt/` and `pt/`, and for Linux `linux/linux.cmake`, `linux/spv_inc.cmake`,
+`linux/sys_sdl.c`, `linux/vid_sdl.c` and `linux/snd_sdl.c`. The full list is `git diff --name-status` between the first
 commit and `main`.
 
 ## Credits

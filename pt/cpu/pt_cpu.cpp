@@ -8,9 +8,14 @@
 #include "pt_pool.h"
 #include "pt_trace.h"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#else
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#endif
 
 #include <algorithm>
 #include <cfloat>
@@ -138,10 +143,17 @@ struct CpuBackend
 {
 	pt_backend_t	base{};
 	pt_log_fn		log = nullptr;
+#ifdef _WIN32
 	HWND			hwnd = nullptr;
 	HDC				memdc = nullptr;
 	HBITMAP			dib = nullptr;
 	HGDIOBJ			olddib = nullptr;
+#else
+	Display			*display = nullptr;
+	Window			window = 0;
+	GC				gc = nullptr;
+	XImage			*image = nullptr;	// its data is dibbits
+#endif
 	uint32_t		*dibbits = nullptr;		// 0x00RRGGBB, top row first
 	int				width = 0, height = 0;
 	std::vector<uint32_t> scene;			// 0x00RRGGBB, window sized
@@ -184,6 +196,7 @@ CpuBackend *Self(pt_backend_t *b) { return reinterpret_cast<CpuBackend *>(b); }
 void Destroy(pt_backend_t *b)
 {
 	CpuBackend *s = Self(b);
+#ifdef _WIN32
 	if (s->memdc)
 	{
 		if (s->olddib)
@@ -192,6 +205,16 @@ void Destroy(pt_backend_t *b)
 	}
 	if (s->dib)
 		DeleteObject(s->dib);
+#else
+	if (s->image)
+	{
+		s->image->data = nullptr;	// ours, not Xlib's to free
+		XDestroyImage(s->image);
+	}
+	if (s->gc)
+		XFreeGC(s->display, s->gc);
+	free(s->dibbits);
+#endif
 	delete s;
 }
 
@@ -1727,12 +1750,17 @@ void Present(pt_backend_t *b, const uint32_t *overlay)
 	s->shown[0] = x0; s->shown[1] = y0; s->shown[2] = x1; s->shown[3] = y1;
 	s->has_view = false;
 
+#ifdef _WIN32
 	HDC dc = GetDC(s->hwnd);
 	if (dc)
 	{
 		BitBlt(dc, 0, 0, s->width, s->height, s->memdc, 0, 0, SRCCOPY);
 		ReleaseDC(s->hwnd, dc);
 	}
+#else
+	XPutImage(s->display, s->window, s->gc, s->image, 0, 0, 0, 0, s->width, s->height);
+	XFlush(s->display);
+#endif
 }
 
 int ReadPixels(pt_backend_t *b, uint32_t *pixels, int with_overlay)
@@ -1781,11 +1809,12 @@ extern "C" pt_backend_t *pt_cpu_create(const pt_create_t *ci, char *err, int err
 	s->base.stats = Stats;
 	s->base.read_pixels = ReadPixels;
 	s->log = ci->log;
-	s->hwnd = (HWND)ci->hwnd;
 	s->width = ci->width;
 	s->height = ci->height;
 	s->scene.assign((size_t)ci->width * ci->height, 0);
 
+#ifdef _WIN32
+	s->hwnd = (HWND)ci->hwnd;
 	BITMAPINFO bmi{};
 	bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
 	bmi.bmiHeader.biWidth = ci->width;
@@ -1806,11 +1835,37 @@ extern "C" pt_backend_t *pt_cpu_create(const pt_create_t *ci, char *err, int err
 	}
 	s->dibbits = (uint32_t *)bits;
 	s->olddib = SelectObject(s->memdc, s->dib);
+	const char *const presentation = "GDI";
+#else
+	// the picture is 0x00RRGGBB, which is what a 24 bit true colour X visual
+	// on a little endian machine takes as it is
+	s->display = (Display *)ci->hinstance;
+	s->window = (Window)(uintptr_t)ci->hwnd;
+	XWindowAttributes wa;
+	if (!s->display || !XGetWindowAttributes(s->display, s->window, &wa) || wa.depth != 24
+		|| wa.visual->red_mask != 0xff0000 || wa.visual->blue_mask != 0xff)
+	{
+		snprintf(err, errlen, "the window is not 24 bit true colour");
+		Destroy(&s->base);
+		return nullptr;
+	}
+	s->dibbits = (uint32_t *)calloc((size_t)ci->width * ci->height, sizeof(uint32_t));
+	s->gc = XCreateGC(s->display, s->window, 0, nullptr);
+	s->image = XCreateImage(s->display, wa.visual, 24, ZPixmap, 0, (char *)s->dibbits,
+		ci->width, ci->height, 32, ci->width * 4);
+	if (!s->dibbits || !s->gc || !s->image)
+	{
+		snprintf(err, errlen, "could not create a %dx%d framebuffer", ci->width, ci->height);
+		Destroy(&s->base);
+		return nullptr;
+	}
+	const char *const presentation = "X11";
+#endif
 
 	if (ci->log)
 	{
 		char msg[128];
-		snprintf(msg, sizeof(msg), "CPU path tracer: %d threads, GDI presentation\n", s->pool.Threads());
+		snprintf(msg, sizeof(msg), "CPU path tracer: %d threads, %s presentation\n", s->pool.Threads(), presentation);
 		ci->log(msg);
 	}
 	return &s->base;

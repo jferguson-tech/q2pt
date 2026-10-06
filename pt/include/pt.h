@@ -13,8 +13,8 @@ typedef void (*pt_log_fn)(const char *msg);
 
 typedef struct pt_create_s
 {
-	void		*hinstance;		/* HINSTANCE of the host */
-	void		*hwnd;			/* HWND to present into */
+	void		*hinstance;		/* Windows: HINSTANCE of the host. X11: the Display * */
+	void		*hwnd;			/* Windows: HWND to present into. X11: the Window, cast */
 	int			width, height;	/* client area in pixels */
 	pt_log_fn	log;			/* may be NULL */
 } pt_create_t;
