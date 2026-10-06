@@ -426,6 +426,65 @@ static void WaterBounce(const Scene &sc, const Surface &s, Vec3 y, Vec3 e, Lit &
 	}
 }
 
+#ifdef PT_AVX2_KERNELS
+
+// Where in the tables a light is looked for, DirectLights finds the place
+// with these in the AVX2 build. They come to the places std::upper_bound and
+// a search along the list come to, without the branches those take.
+
+// how many of the count sorted values come before the first above x
+static size_t FirstAbove(const float *sorted, size_t count, float x)
+{
+	size_t at = 0;
+	for (size_t n = count; n > 1; )
+	{
+		const size_t half = n / 2;
+		at = sorted[at + half - 1] <= x ? at + half : at;
+		n -= half;
+	}
+	return at + (count && sorted[at] <= x ? 1 : 0);
+}
+
+// the same of a cell's table, which has room for LightGrid::kPerCell, 24,
+// values whatever count is: all are looked at at once
+static_assert(LightGrid::kPerCell == 24, "the searches of a cell's tables take three lots of eight");
+
+static int FirstAboveInCell(const float *sorted, int count, float x)
+{
+	const __m256 xs = _mm256_set1_ps(x);
+	const unsigned below =
+		(unsigned)_mm256_movemask_ps(_mm256_cmp_ps(_mm256_loadu_ps(sorted), xs, _CMP_LE_OQ))
+		| (unsigned)_mm256_movemask_ps(_mm256_cmp_ps(_mm256_loadu_ps(sorted + 8), xs, _CMP_LE_OQ)) << 8
+		| (unsigned)_mm256_movemask_ps(_mm256_cmp_ps(_mm256_loadu_ps(sorted + 16), xs, _CMP_LE_OQ)) << 16;
+	// sorted, so those not above x are the first so many
+#ifdef _MSC_VER
+	return (int)__popcnt(below & ((1u << count) - 1));
+#else
+	return __builtin_popcount(below & ((1u << count) - 1));
+#endif
+}
+
+// the last of the first count places of a cell's list of lights that holds
+// this one, or -1
+static int LastPlaceOf(const uint32_t *list, int count, uint32_t light)
+{
+	const __m256i want = _mm256_set1_epi32((int)light);
+	unsigned found =
+		(unsigned)_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(_mm256_loadu_si256((const __m256i *)list), want)))
+		| (unsigned)_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(_mm256_loadu_si256((const __m256i *)(list + 8)), want))) << 8
+		| (unsigned)_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(_mm256_loadu_si256((const __m256i *)(list + 16)), want))) << 16;
+	found &= (1u << count) - 1;
+	if (!found)
+		return -1;
+#ifdef _MSC_VER
+	return 31 - (int)_lzcnt_u32(found);
+#else
+	return 31 - __builtin_clz(found);
+#endif
+}
+
+#endif	// PT_AVX2_KERNELS
+
 static Lit DirectLights(const Scene &sc, const Surface &s, Rng &rng, bool first_hit)
 {
 
@@ -455,15 +514,26 @@ static Lit DirectLights(const Scene &sc, const Surface &s, Rng &rng, bool first_
 		float cell_pdf = 0.0f;
 		if (rng.Float() < use_global)
 		{
+#ifdef PT_AVX2_KERNELS
+			li = std::min(FirstAbove(w.light_cdf.data(), w.light_cdf.size(), rng.Float()), w.lights.size() - 1);
+			const int j = in_cell ? LastPlaceOf(&g.light[cell * k], in_cell, (uint32_t)li) : -1;
+			if (j >= 0)
+				cell_pdf = g.pdf[cell * k + j];
+#else
 			li = std::min((size_t)(std::upper_bound(w.light_cdf.begin(), w.light_cdf.end(), rng.Float())
 				- w.light_cdf.begin()), w.lights.size() - 1);
 			for (int j = 0; j < in_cell; j++)
 				if (g.light[cell * k + j] == li)
 					cell_pdf = g.pdf[cell * k + j];
+#endif
 		}
 		else
 		{
+#ifdef PT_AVX2_KERNELS
+			const int j = std::min(FirstAboveInCell(cell_cdf, in_cell, rng.Float()), in_cell - 1);
+#else
 			const int j = std::min((int)(std::upper_bound(cell_cdf, cell_cdf + in_cell, rng.Float()) - cell_cdf), in_cell - 1);
+#endif
 			li = g.light[cell * k + j];
 			cell_pdf = g.pdf[cell * k + j];
 		}
