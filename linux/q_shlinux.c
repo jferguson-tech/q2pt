@@ -103,10 +103,13 @@ void Sys_Mkdir (char *path)
 
 char *strlwr (char *s)
 {
-	while (*s) {
-		*s = tolower(*s);
-		s++;
+	char *p = s;
+
+	while (*p) {
+		*p = tolower(*p);
+		p++;
 	}
+	return s;
 }
 
 //============================================
@@ -126,7 +129,8 @@ static qboolean CompareAttributes(char *path, char *name,
 	if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
 		return false;
 
-	sprintf(fn, "%s/%s", path, name);
+	if (snprintf(fn, sizeof(fn), "%s/%s", path, name) >= (int)sizeof(fn))
+		return false; // too long a name for the game
 	if (stat(fn, &st) == -1)
 		return false; // shouldn't happen
 
@@ -166,7 +170,8 @@ char *Sys_FindFirst (char *path, unsigned musthave, unsigned canhave)
 //			if (*findpattern)
 //				printf("%s matched %s\n", findpattern, d->d_name);
 			if (CompareAttributes(findbase, d->d_name, musthave, canhave)) {
-				sprintf (findpath, "%s/%s", findbase, d->d_name);
+				if (snprintf (findpath, sizeof(findpath), "%s/%s", findbase, d->d_name) >= (int)sizeof(findpath))
+					continue; // too long a name for the game
 				return findpath;
 			}
 		}
@@ -185,7 +190,8 @@ char *Sys_FindNext (unsigned musthave, unsigned canhave)
 //			if (*findpattern)
 //				printf("%s matched %s\n", findpattern, d->d_name);
 			if (CompareAttributes(findbase, d->d_name, musthave, canhave)) {
-				sprintf (findpath, "%s/%s", findbase, d->d_name);
+				if (snprintf (findpath, sizeof(findpath), "%s/%s", findbase, d->d_name) >= (int)sizeof(findpath))
+					continue; // too long a name for the game
 				return findpath;
 			}
 		}

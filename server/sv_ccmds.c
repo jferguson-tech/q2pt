@@ -339,6 +339,7 @@ void SV_WriteServerFile (qboolean autosave)
 	char	comment[32];
 	time_t	aclock;
 	struct tm	*newtime;
+	size_t	len, n;
 
 	Com_DPrintf("SV_WriteServerFile(%s)\n", autosave ? "true" : "false");
 
@@ -359,7 +360,13 @@ void SV_WriteServerFile (qboolean autosave)
 		Com_sprintf (comment,sizeof(comment), "%2i:%i%i %2i/%2i  ", newtime->tm_hour
 			, newtime->tm_min/10, newtime->tm_min%10,
 			newtime->tm_mon+1, newtime->tm_mday);
-		strncat (comment, sv.configstrings[CS_NAME], sizeof(comment)-1-strlen(comment) );
+		// the level name after the time, as much of it as fits
+		len = strlen(comment);
+		n = strlen(sv.configstrings[CS_NAME]);
+		if (n > sizeof(comment)-1-len)
+			n = sizeof(comment)-1-len;
+		memcpy (comment+len, sv.configstrings[CS_NAME], n);
+		comment[len+n] = 0;
 	}
 	else
 	{	// autosaved
@@ -925,7 +932,7 @@ void SV_ServerRecord_f (void)
 	//
 	// write a single giant fake message with all the startup info
 	//
-	SZ_Init (&buf, buf_data, sizeof(buf_data));
+	SZ_Init (&buf, (byte *)buf_data, sizeof(buf_data));
 
 	//
 	// serverdata needs to go over for all types of servers

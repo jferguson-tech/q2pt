@@ -455,7 +455,7 @@ byte *SCR_ReadNextFrame (void)
 	// decompress the next frame
 	FS_Read (&size, 4, cl.cinematic_file);
 	size = LittleLong(size);
-	if (size > sizeof(compressed) || size < 1)
+	if (size > (int)sizeof(compressed) || size < 1)
 		Com_Error (ERR_DROP, "Bad compressed frame size");
 	FS_Read (compressed, size, cl.cinematic_file);
 
@@ -554,7 +554,7 @@ qboolean SCR_DrawCinematic (void)
 
 	if (!cl.cinematicpalette_active)
 	{
-		re.CinematicSetPalette(cl.cinematicpalette);
+		re.CinematicSetPalette((const unsigned char *)cl.cinematicpalette);
 		cl.cinematicpalette_active = true;
 	}
 

@@ -309,7 +309,7 @@ static void deflate(out_t *o, const uint8_t *in, size_t size)
 
 	head = (int32_t *)malloc(HASH_SIZE * sizeof(int32_t));
 	prev = (int32_t *)malloc(WINDOW * sizeof(int32_t));
-	tokens = (uint32_t *)malloc(BLOCK_TOKENS * sizeof(uint32_t));
+	tokens = (uint32_t *)calloc(BLOCK_TOKENS, sizeof(uint32_t));
 	if (!head || !prev || !tokens)
 	{
 		o->failed = 1;

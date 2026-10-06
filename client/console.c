@@ -463,7 +463,6 @@ The input line scrolls horizontally if typing goes beyond the right edge
 */
 void Con_DrawInput (void)
 {
-	int		y;
 	int		i;
 	char	*text;
 
@@ -486,8 +485,6 @@ void Con_DrawInput (void)
 		text += 1 + key_linepos - con.linewidth;
 		
 // draw it
-	y = con.vislines-16;
-
 	for (i=0 ; i<con.linewidth ; i++)
 		re.DrawChar ( (i+1)<<3, con.vislines - 22, text[i]);
 
@@ -648,7 +645,7 @@ void Con_DrawConsole (float frac)
 		x = con.linewidth - ((con.linewidth * 7) / 40);
 		y = x - strlen(text) - 8;
 		i = con.linewidth/3;
-		if (strlen(text) > i) {
+		if ((int)strlen(text) > i) {
 			y = x - i - 11;
 			strncpy(dlbar, text, i);
 			dlbar[i] = 0;
@@ -676,7 +673,7 @@ void Con_DrawConsole (float frac)
 
 		// draw it
 		y = con.vislines-12;
-		for (i = 0; i < strlen(dlbar); i++)
+		for (i = 0; i < (int)strlen(dlbar); i++)
 			re.DrawChar ( (i+1)<<3, y, dlbar[i]);
 	}
 //ZOID

@@ -297,7 +297,7 @@ void BuildSkyChance(World &w)
 				ray.d = w.SampleSky(rng, pdf);
 				ray.tmin = 0.0f;
 				ray.tmax = FLT_MAX;
-				Hit hit;
+				Hit hit = {};
 				// glass and water let the sky through
 				if (w.bvh.IntersectIf(ray, hit, [&](uint32_t t, float, float) { return w.tris[t].mat->alpha >= 1.0f; })
 					&& (w.tris[hit.tri].mat->flags & PT_MAT_SKY))

@@ -63,8 +63,8 @@ static qboolean Mod_LoadAlias (model_t *mod, byte *buffer, int filelen)
 		goto bad;
 
 	end = filelen;
-	if ((int64_t)hdr->ofs_st + (int64_t)hdr->num_st * sizeof(dstvert_t) > end
-		|| (int64_t)hdr->ofs_tris + (int64_t)hdr->num_tris * sizeof(dtriangle_t) > end
+	if ((int64_t)hdr->ofs_st + (int64_t)hdr->num_st * (int64_t)sizeof(dstvert_t) > end
+		|| (int64_t)hdr->ofs_tris + (int64_t)hdr->num_tris * (int64_t)sizeof(dtriangle_t) > end
 		|| (int64_t)hdr->ofs_frames + (int64_t)hdr->num_frames * hdr->framesize > end
 		|| (int64_t)hdr->ofs_skins + (int64_t)hdr->num_skins * MAX_SKINNAME > end)
 		goto bad;
@@ -123,7 +123,7 @@ static qboolean Mod_LoadSprite (model_t *mod, byte *buffer, int filelen)
 	spr->numframes = LittleLong (spr->numframes);
 
 	if (spr->version != SPRITE_VERSION || spr->numframes <= 0 || spr->numframes > MAX_MD2SKINS
-		|| (int64_t)sizeof(*spr) + (int64_t)(spr->numframes - 1) * sizeof(dsprframe_t) > filelen)
+		|| (int64_t)sizeof(*spr) + (int64_t)(spr->numframes - 1) * (int64_t)sizeof(dsprframe_t) > filelen)
 	{
 		free (spr);
 		return false;
