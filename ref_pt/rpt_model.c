@@ -177,6 +177,25 @@ static void Mod_TouchImages (model_t *mod)
 }
 
 /*
+=============
+R_IsModel
+
+Is this one of the models this renderer has handed out and still holds?
+The client keeps what it was given, and something it kept from a renderer
+that has since been replaced points at memory that is no longer a model.
+=============
+*/
+qboolean R_IsModel (struct model_s *mod)
+{
+	size_t	offset;
+
+	if (mod < r_models || mod >= r_models + numr_models)
+		return false;
+	offset = (byte *)mod - (byte *)r_models;
+	return offset % sizeof(r_models[0]) == 0 && mod->registration_sequence != 0;
+}
+
+/*
 @@@@@@@@@@@@@@@@@@@@@
 R_RegisterModel
 
