@@ -108,6 +108,7 @@ def main():
     total = {kind: {n: Score() for n in names} for kind in ('sharp', 'blurred')}
     blur_ways = {n: Score() for n in ('blurred frames denoised', 'sharp frames denoised, then blurred', 'sharp reference, then blurred')}
     lines = []
+    by_frame = {}        # (name, frames into the clip) -> [sum of squared error, count]: does it gain as a film goes on?
 
     sharp_dirs = sorted(glob.glob(os.path.join(args.data, '*_s')))
     for sd in sharp_dirs:
@@ -141,6 +142,10 @@ def main():
                         shown = display(out[n], expo)
                         scores[n].add(shown, want, motion, known)
                         total[kind][n].add(shown, want, motion, known)
+                        if kind == 'sharp':
+                            e = by_frame.setdefault((n, i), [0.0, 0])
+                            e[0] += float(((shown - want) ** 2).mean())
+                            e[1] += 1
                     # one clip may follow another in total: do not compare across the join
                     if i == len(frames) - 1:
                         for n in names:
@@ -189,6 +194,9 @@ def main():
         for key, s in blur_ways.items():
             if s.n:
                 f.write('| %s | %s |\n' % (key, s.row()))
+        f.write('\n## PSNR by how far into a clip the frame is (sharp)\n\n| frame | ' + ' | '.join(names) + ' |\n|---|' + '---|' * len(names) + '\n')
+        for i in sorted({k[1] for k in by_frame}):
+            f.write('| %d | ' % (i + 1) + ' | '.join('%.2f' % (-10 * np.log10(by_frame[(n, i)][0] / by_frame[(n, i)][1])) for n in names) + ' |\n')
         f.write('\n## Each clip\n\n| clip | | PSNR | SSIM | flicker |\n|---|---|---|---|---|\n' + '\n'.join(lines) + '\n')
     print(open(os.path.join(args.out, 'results.md')).read().split('## Each clip')[0])
 

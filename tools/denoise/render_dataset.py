@@ -19,7 +19,7 @@ HELD_OUT = ['ware2', 'jail3', 'mine3', 'power2', 'city2', 'q2dm4']
 
 # tag, blur, fog, clips, frames a clip, frames a second
 TRAIN_JOBS = [('a', 0.0, 1, 5, 8, 30), ('b', 0.0, 0, 2, 8, 60), ('c', 0.5, 1, 2, 8, 30)]
-TEST_JOBS = [('s', 0.0, 1, 2, 24, 30), ('m', 0.5, 1, 2, 24, 30)]
+TEST_JOBS = [('s', 0.0, 1, 2, 16, 30), ('m', 0.5, 1, 2, 16, 30)]
 
 
 def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed):
@@ -44,6 +44,7 @@ def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed):
 
     with open(os.path.join(baseq2, 'q2dn_job.cfg'), 'w') as f:
         f.write('set fixedtime %d\n' % round(1000.0 / fps))
+        f.write('set in_ignore 1\n')            # a key pressed in the window must not stop the run
         f.write('set pt_render_export 1\nset pt_render_blur %g\nset pt_render_fog %d\n' % (blur, fog))
         f.write('set pt_render_bounces 6\nset pt_render_light_samples 16\n')
         f.write('set tour_file "%s"\nset tour_notarget 0\n' % tour)
