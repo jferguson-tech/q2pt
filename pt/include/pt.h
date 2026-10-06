@@ -215,6 +215,12 @@ typedef struct pt_stage_s
 	float		ms;
 } pt_stage_t;
 
+/* a rectangle of pixels */
+typedef struct pt_rect_s
+{
+	int		x, y, width, height;
+} pt_rect_t;
+
 /*
 A backend owns everything between "here is the scene" and pixels on screen.
 
@@ -242,7 +248,11 @@ struct pt_backend_s
 	void	(*texture_update)(pt_backend_t *self, int handle, const uint32_t *pixels);
 
 	void	(*render_view)(pt_backend_t *self, const pt_view_t *view);
-	void	(*present)(pt_backend_t *self, const uint32_t *overlay);
+	/* Shows the last view rendered with the overlay over it: width x height
+	   premultiplied R,G,B,A pixels. changed lists the parts of the overlay
+	   that may differ from the one given last time, so that a backend that
+	   keeps a copy has only those to fetch; num_changed < 0: any of it may. */
+	void	(*present)(pt_backend_t *self, const uint32_t *overlay, const pt_rect_t *changed, int num_changed);
 
 	/* about the last view rendered, valid until the next call: a few short
 	   lines of text separated by '|' */

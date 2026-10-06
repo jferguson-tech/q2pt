@@ -392,7 +392,7 @@ void R_BeginFrame (float camera_separation)
 		ref->modified = true;
 	}
 
-	memset (rpt.overlay, 0, rpt.width * rpt.height * sizeof(uint32_t));
+	Draw_ClearOverlay ();
 }
 
 static void R_DrawStats (refdef_t *fd);
@@ -573,7 +573,11 @@ R_EndFrame
 */
 void R_EndFrame (void)
 {
-	rpt.backend->present (rpt.backend, rpt.overlay);
+	pt_rect_t	*changed;
+	int			num;
+
+	num = Draw_Changed (&changed);
+	rpt.backend->present (rpt.backend, rpt.overlay, changed, num);
 	R_CountFrame ();
 	R_BenchFrame ();
 	R_ShotFinish ();

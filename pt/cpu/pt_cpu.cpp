@@ -2050,7 +2050,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	s->stages_new = true;
 }
 
-void Present(pt_backend_t *b, const uint32_t *overlay)
+void Present(pt_backend_t *b, const uint32_t *overlay, const pt_rect_t *, int)
 {
 	CpuBackend *s = Self(b);
 
