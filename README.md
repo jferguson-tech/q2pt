@@ -153,6 +153,11 @@ quake2.exe          Windows
 
 The 32-bit build is started from `run\x86` with `quake2.exe +set basedir ..`.
 
+W and S walk forward and back and A and D turn left and right, as the arrow
+keys do; the mouse looks around. The keys are put on once, where nothing of
+the player's own is on them, and can be changed in the options menu like any
+other. The game's own setup had looking up on A and the silencer on S.
+
 The video menu lists the original 4:3 modes and wide ones from 1280x720 up
 to 3840x2160, with 21:9 and 32:9 modes up to 5120x1440. On a wide picture the
 view keeps its height and shows more to the sides.
@@ -235,8 +240,8 @@ were changed in 2026:
 | `win32/vid_dll.c`, `win32/vid_menu.c` | loading the path traced renderers, switching between them, more video modes, closing the window |
 | `client/cl_scrn.c` | 64-bit port |
 | `client/console.c` | the console on a picture more than 2048 pixels wide |
-| `client/cl_main.c`, `client/client.h`, `client/keys.c`, `client/vid.h` | mouse look by default; hooks for offline demo rendering |
-| `client/menu.c` | menu pages for the path tracing options and for rendering a demo |
+| `client/cl_main.c`, `client/client.h`, `client/keys.c`, `client/keys.h`, `client/vid.h` | mouse look by default; W, A, S and D do what the arrow keys do; hooks for offline demo rendering |
+| `client/menu.c` | menu pages for the path tracing options and for rendering a demo; "reset defaults" keeps the WASD keys |
 | `client/snd_dma.c`, `snd_loc.h`, `snd_mem.c`, `snd_mix.c`, `sound.h` | 64-bit port; mixing the sound to a file in step with offline rendering |
 
 New beside them: `CMakeLists.txt` and `build.bat` (the build), `win32/quake2.manifest`

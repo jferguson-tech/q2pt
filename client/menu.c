@@ -1109,6 +1109,7 @@ static void ControlsResetDefaultsFunc( void *unused )
 {
 	Cbuf_AddText ("exec default.cfg\n");
 	Cbuf_Execute();
+	Key_ArrowsOnWASD (true);	// ours on top of the game's own
 
 	ControlsSetMenuItemValues();
 }
