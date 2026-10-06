@@ -358,6 +358,8 @@ struct RtxBackend
 	// for reading a frame back
 	Buffer					readback;
 	std::vector<uint32_t>	last_overlay;
+	std::vector<VkBufferImageCopy>	ov_regions;	// what of the overlay goes to the card this frame
+	bool					ov_behind = true;	// a frame's changes did not reach the card
 	int						view_rect[4] = {0, 0, 0, 0};	// x, y, width, height of this frame's view
 	int						shown[4] = {0, 0, 0, 0};		// and of the one last presented
 	bool					shown_traced = false;
@@ -2672,21 +2674,22 @@ void Record(RtxBackend *s, uint32_t image_index)
 	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	vkBeginCommandBuffer(cmd, &bi);
 
-	// upload this frame's overlay
+	// upload what has changed of the overlay
+	if (!s->ov_regions.empty())
+	{
 	Barrier(cmd, s->ov_image,
 		s->ov_initialized ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
 		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 		s->ov_initialized ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_2_NONE,
 		s->ov_initialized ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : VK_ACCESS_2_NONE,
 		VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-	VkBufferImageCopy region{};
-	region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-	region.imageExtent = {(uint32_t)s->width, (uint32_t)s->height, 1};
-	vkCmdCopyBufferToImage(cmd, s->staging, s->ov_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+	vkCmdCopyBufferToImage(cmd, s->staging, s->ov_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		(uint32_t)s->ov_regions.size(), s->ov_regions.data());
 	Barrier(cmd, s->ov_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
 		VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 	s->ov_initialized = true;
+	}
 
 	if (!s->pending.empty())
 		RecordUpdates(s, cmd);
@@ -2740,8 +2743,13 @@ void Record(RtxBackend *s, uint32_t image_index)
 	vkEndCommandBuffer(cmd);
 }
 
-void PresentFrame(RtxBackend *s, const uint32_t *overlay)
+void PresentFrame(RtxBackend *s, const uint32_t *overlay, const pt_rect_t *changed, int num_changed)
 {
+	// a frame that is not shown, for whatever reason, leaves the card's
+	// overlay behind: the next one that is takes all of it
+	const bool behind = s->ov_behind;
+	s->ov_behind = true;
+
 	if (!s->swapchain)
 	{
 		CreateSwapchain(s);		// window may have been minimized
@@ -2761,8 +2769,46 @@ void PresentFrame(RtxBackend *s, const uint32_t *overlay)
 	if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR)
 		Check(r, "vkAcquireNextImageKHR");
 
-	memcpy(s->staging_ptr, overlay, (size_t)s->width * s->height * 4);
-	s->last_overlay.assign(overlay, overlay + (size_t)s->width * s->height);	// for reading the frame back
+	// The card keeps the overlay from frame to frame, and so does the copy
+	// here that a frame is read back with: only what has changed is fetched.
+	// Most frames that is a status bar and a few lines of text, where all of
+	// it is tens of megabytes, copied while the card waits.
+	const size_t count = (size_t)s->width * s->height;
+	s->ov_regions.clear();
+	if (behind || num_changed < 0 || !changed || !s->ov_initialized || s->last_overlay.size() != count)
+	{
+		memcpy(s->staging_ptr, overlay, count * 4);
+		s->last_overlay.assign(overlay, overlay + count);
+		VkBufferImageCopy region{};
+		region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+		region.imageExtent = {(uint32_t)s->width, (uint32_t)s->height, 1};
+		s->ov_regions.push_back(region);
+	}
+	else
+	{
+		for (int i = 0; i < num_changed; i++)
+		{
+			const int x0 = std::max(changed[i].x, 0), y0 = std::max(changed[i].y, 0);
+			const int x1 = std::min(changed[i].x + changed[i].width, s->width);
+			const int y1 = std::min(changed[i].y + changed[i].height, s->height);
+			if (x0 >= x1 || y0 >= y1)
+				continue;
+			for (int y = y0; y < y1; y++)
+			{
+				const size_t at = (size_t)y * s->width + x0;
+				memcpy(static_cast<uint32_t *>(s->staging_ptr) + at, overlay + at, (size_t)(x1 - x0) * 4);
+				memcpy(s->last_overlay.data() + at, overlay + at, (size_t)(x1 - x0) * 4);
+			}
+			// the buffer is laid out as the picture is
+			VkBufferImageCopy region{};
+			region.bufferOffset = ((VkDeviceSize)y0 * s->width + x0) * 4;
+			region.bufferRowLength = (uint32_t)s->width;
+			region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+			region.imageOffset = {x0, y0, 0};
+			region.imageExtent = {(uint32_t)(x1 - x0), (uint32_t)(y1 - y0), 1};
+			s->ov_regions.push_back(region);
+		}
+	}
 	vkResetFences(s->device, 1, &s->fence);
 	vkResetCommandBuffer(s->cmd, 0);
 	Record(s, index);
@@ -2795,14 +2841,15 @@ void PresentFrame(RtxBackend *s, const uint32_t *overlay)
 		RecreateSwapchain(s);
 	else
 		Check(r, "vkQueuePresentKHR");
+	s->ov_behind = false;		// the commands with the overlay's changes were sent
 }
 
-void Present(pt_backend_t *b, const uint32_t *overlay)
+void Present(pt_backend_t *b, const uint32_t *overlay, const pt_rect_t *changed, int num_changed)
 {
 	RtxBackend *s = Self(b);
 	try
 	{
-		PresentFrame(s, overlay);
+		PresentFrame(s, overlay, changed, num_changed);
 	}
 	catch (const Fail &f)
 	{
