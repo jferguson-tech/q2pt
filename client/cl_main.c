@@ -1485,6 +1485,16 @@ void CL_InitLocal (void)
 
 	cl_vwep = Cvar_Get ("cl_vwep", "1", CVAR_ARCHIVE);
 
+	// W, A, S and D take what the arrow keys do. Once: config.cfg has been
+	// read by now and keeps every key, so a player who has been here before
+	// would otherwise never get them, and after this the keys are theirs to
+	// bind as they like. cl_wasd 0 does it again at the next start.
+	if (!Cvar_Get ("cl_wasd", "0", CVAR_ARCHIVE)->value)
+	{
+		Key_ArrowsOnWASD (false);
+		Cvar_Set ("cl_wasd", "1");
+	}
+
 
 	//
 	// register our commands

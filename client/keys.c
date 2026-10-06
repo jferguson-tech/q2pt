@@ -639,6 +639,45 @@ void Key_Bindlist_f (void)
 
 /*
 ===================
+Key_ArrowsOnWASD
+
+W, A, S and D are given what the arrow keys do: walking forward and back
+and turning left and right. The default.cfg that comes with the game's
+data, which is not ours to change, has nothing on W and D, looking up on A
+and the silencer on S.
+
+Unless always is set a key is left alone when the player has put something
+of their own on it: it is taken only if it has nothing on it or what
+default.cfg put there.
+===================
+*/
+void Key_ArrowsOnWASD (qboolean always)
+{
+	static struct
+	{
+		int		key;
+		char	*command;
+		char	*stock;		// what default.cfg has on the key
+	} keys[] =
+	{
+		{'w', "+forward", ""},
+		{'s', "+back", "use silencer"},
+		{'a', "+left", "+lookup"},
+		{'d', "+right", ""}
+	};
+	int		i;
+	char	*now;
+
+	for (i=0 ; i<sizeof(keys)/sizeof(keys[0]) ; i++)
+	{
+		now = keybindings[keys[i].key];
+		if (always || !now || !now[0] || !Q_stricmp (now, keys[i].stock))
+			Key_SetBinding (keys[i].key, keys[i].command);
+	}
+}
+
+/*
+===================
 Key_Init
 ===================
 */
