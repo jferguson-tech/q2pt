@@ -48,7 +48,7 @@ field_t fields[] = {
 	{"count", FOFS(count), F_INT, 0},
 	{"health", FOFS(health), F_INT, 0},
 	{"sounds", FOFS(sounds), F_INT, 0},
-	{"light", 0, F_IGNORE},
+	{"light", 0, F_IGNORE, 0},
 	{"dmg", FOFS(dmg), F_INT, 0},
 	{"mass", FOFS(mass), F_INT, 0},
 	{"volume", FOFS(volume), F_FLOAT, 0},
@@ -128,7 +128,7 @@ field_t		levelfields[] =
 	{"sound_entity", LLOFS(sound_entity), F_EDICT, 0},
 	{"sound2_entity", LLOFS(sound2_entity), F_EDICT, 0},
 
-	{NULL, 0, F_INT}
+	{NULL, 0, F_INT, 0}
 };
 
 field_t		clientfields[] =
@@ -137,7 +137,7 @@ field_t		clientfields[] =
 	{"pers.lastweapon", CLOFS(pers.lastweapon), F_ITEM, 0},
 	{"newweapon", CLOFS(newweapon), F_ITEM, 0},
 
-	{NULL, 0, F_INT}
+	{NULL, 0, F_INT, 0}
 };
 
 /*
@@ -314,6 +314,8 @@ void WriteField2 (FILE *f, field_t *field, byte *base)
 			fwrite (*(char **)p, len, 1, f);
 		}
 		break;
+	default:
+		break;
 	}
 }
 
@@ -343,7 +345,8 @@ void ReadField (FILE *f, field_t *field, byte *base)
 		else
 		{
 			*(char **)p = gi.TagMalloc (len, TAG_LEVEL);
-			fread (*(char **)p, len, 1, f);
+			if (fread (*(char **)p, len, 1, f) != 1)
+				gi.error ("ReadField: short read");
 		}
 		break;
 	case F_EDICT:
@@ -435,7 +438,8 @@ void ReadClient (FILE *f, gclient_t *client)
 {
 	field_t		*field;
 
-	fread (client, sizeof(*client), 1, f);
+	if (fread (client, sizeof(*client), 1, f) != 1)
+		gi.error ("ReadClient: short read");
 
 	for (field=clientfields ; field->name ; field++)
 	{
@@ -496,7 +500,8 @@ void ReadGame (char *filename)
 	if (!f)
 		gi.error ("Couldn't open %s", filename);
 
-	fread (str, sizeof(str), 1, f);
+	if (fread (str, sizeof(str), 1, f) != 1)
+		gi.error ("ReadGame: short read");
 	if (strcmp (str, __DATE__))
 	{
 		fclose (f);
@@ -506,7 +511,8 @@ void ReadGame (char *filename)
 	g_edicts =  gi.TagMalloc (game.maxentities * sizeof(g_edicts[0]), TAG_GAME);
 	globals.edicts = g_edicts;
 
-	fread (&game, sizeof(game), 1, f);
+	if (fread (&game, sizeof(game), 1, f) != 1)
+		gi.error ("ReadGame: short read");
 	game.clients = gi.TagMalloc (game.maxclients * sizeof(game.clients[0]), TAG_GAME);
 	for (i=0 ; i<game.maxclients ; i++)
 		ReadClient (f, &game.clients[i]);
@@ -592,7 +598,8 @@ void ReadEdict (FILE *f, edict_t *ent)
 {
 	field_t		*field;
 
-	fread (ent, sizeof(*ent), 1, f);
+	if (fread (ent, sizeof(*ent), 1, f) != 1)
+		gi.error ("ReadEdict: short read");
 
 	for (field=fields ; field->name ; field++)
 	{
@@ -611,7 +618,8 @@ void ReadLevelLocals (FILE *f)
 {
 	field_t		*field;
 
-	fread (&level, sizeof(level), 1, f);
+	if (fread (&level, sizeof(level), 1, f) != 1)
+		gi.error ("ReadLevelLocals: short read");
 
 	for (field=levelfields ; field->name ; field++)
 	{
@@ -700,7 +708,8 @@ void ReadLevel (char *filename)
 	globals.num_edicts = maxclients->value+1;
 
 	// check edict size
-	fread (&i, sizeof(i), 1, f);
+	if (fread (&i, sizeof(i), 1, f) != 1)
+		gi.error ("ReadLevel: short read");
 	if (i != sizeof(edict_t))
 	{
 		fclose (f);
@@ -708,7 +717,8 @@ void ReadLevel (char *filename)
 	}
 
 	// check function pointer base address
-	fread (&base, sizeof(base), 1, f);
+	if (fread (&base, sizeof(base), 1, f) != 1)
+		gi.error ("ReadLevel: short read");
 #ifdef _WIN32
 	if (base != (void *)InitGame)
 	{
