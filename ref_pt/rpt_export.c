@@ -25,7 +25,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 //
 //   four sets of 4 paths a pixel, each on its own: the noisy light, what
 //   the surfaces reflect, and their normals. One set is a picture of 4
-//   paths, two together one of 8, all four one of 16.
+//   paths, two together one of 8, all four one of 16. A film of fewer than
+//   16 paths has fewer sets (the header says how many) and the rest are 0.
 //   the distance to what is seen, and where on the last frame's picture it
 //   was (in pixels from where it is now)
 //   the light again from all the paths asked for: what the noisy sets
@@ -167,7 +168,7 @@ qboolean R_ExportRender (const pt_view_t *view, int paths, float blur, const pt_
 	pt_view_t	pass, base;
 	pt_scene_t	moment_scene;
 	int			width = 0, height = 0;
-	int			k, set, made, n, c;
+	int			k, set, made, n, c, sets;
 	size_t		size, i;
 	float		t, *plane;
 
@@ -191,10 +192,17 @@ qboolean R_ExportRender (const pt_view_t *view, int paths, float blur, const pt_
 	if (blur > 0)
 		R_OfflineMomentsBegin (view);
 
+	// as many sets as the paths asked for fill, and at least one
+	sets = (paths + EXPORT_SET_PATHS - 1) / EXPORT_SET_PATHS;
+	if (sets < 1)
+		sets = 1;
+	if (sets > EXPORT_SETS)
+		sets = EXPORT_SETS;
+
 	made = 0;
-	for (k=0 ; made<paths || k<EXPORT_SETS*EXPORT_SET_PATHS ; k++)
+	for (k=0 ; made<paths || k<sets*EXPORT_SET_PATHS ; k++)
 	{
-		set = k < EXPORT_SETS * EXPORT_SET_PATHS ? k / EXPORT_SET_PATHS : -1;
+		set = k < sets * EXPORT_SET_PATHS ? k / EXPORT_SET_PATHS : -1;
 		n = set >= 0 ? 1 : (paths - made < EXPORT_PASS_PATHS ? paths - made : EXPORT_PASS_PATHS);
 
 		if (blur > 0)
@@ -304,7 +312,7 @@ qboolean R_ExportRender (const pt_view_t *view, int paths, float blur, const pt_
 	exp_header.width = exp_width;
 	exp_header.height = exp_height;
 	exp_header.planes = EXPORT_PLANES;
-	exp_header.sets = EXPORT_SETS;
+	exp_header.sets = sets;
 	exp_header.set_paths = EXPORT_SET_PATHS;
 	exp_header.paths = made;
 	exp_header.flags = (last ? 1 : 0) | (blur > 0 ? 2 : 0);
@@ -407,7 +415,7 @@ qboolean R_ExportWrite (const char *path, int frame)
 	}
 
 	// where each point was on the last frame's picture
-	scale = 1.0f / (EXPORT_SETS * EXPORT_SET_PATHS);
+	scale = 1.0f / (exp_header.sets * EXPORT_SET_PATHS);
 	tx = tan (last[12] * M_PI / 360.0);
 	ty = tan (last[13] * M_PI / 360.0);
 	for (p=0 ; p<2 ; p++)
