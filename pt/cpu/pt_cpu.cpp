@@ -1392,6 +1392,7 @@ void ResolveRow(CpuBackend *s, const Camera &cam, const Camera &prev_cam, bool h
 
 				// this view pixel moved as its traced sample did
 				float hx = ox + (fx - sx) * to_view_x, hy = oy + (fy - sy) * to_view_y;
+				bool here = false;
 
 				// Something that moves with the eye, like the weapon in hand,
 				// was not where the world says: it was on this same pixel. Take
@@ -1410,10 +1411,32 @@ void ResolveRow(CpuBackend *s, const Camera &cam, const Camera &prev_cam, bool h
 					{
 						hx = (float)ox;
 						hy = (float)oy;
+						here = true;
 					}
 				}
 
-				if (hx >= 0.0f && hy >= 0.0f && hx <= vw - 1.0f && hy <= vh - 1.0f)
+				// Was it this point that was seen there, or something in
+				// front of it? Where the weapon or a door has just moved
+				// aside, what the picture held was the weapon or the door:
+				// nothing to do with what shows now. Last frame's traced
+				// picture knows how far off what it showed was, to within a
+				// traced pixel of where.
+				bool there = sky || here;
+				if (!there)
+				{
+					const float expected = std::sqrt(Dot(v, v));
+					const int qx = (int)std::floor(fx + 0.5f), qy = (int)std::floor(fy + 0.5f);
+					for (int t = 0; t < 9 && !there; t++)
+					{
+						const int x = qx + t % 3 - 1, y = qy + t / 3 - 1;
+						if (x < 0 || y < 0 || x >= rw || y >= rh)
+							continue;
+						const float held = was.depth[(size_t)y * rw + x];
+						there = held >= 0.0f && std::fabs(held - expected) <= 0.1f * expected;
+					}
+				}
+
+				if (there && hx >= 0.0f && hy >= 0.0f && hx <= vw - 1.0f && hy <= vh - 1.0f)
 				{
 					const int ix = std::min((int)hx, vw - 2 < 0 ? 0 : vw - 2), iy = std::min((int)hy, vh - 2 < 0 ? 0 : vh - 2);
 					const int ix1 = std::min(ix + 1, vw - 1), iy1 = std::min(iy + 1, vh - 1);
