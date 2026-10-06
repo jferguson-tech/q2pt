@@ -62,7 +62,7 @@ static menulist_s		s_mode_list[2];
 // The list of video modes is shown smallest first. The modes are numbered
 // in the order they were added to the engine, so this says which mode each
 // line of the list is.
-static const int	s_mode_order[] = { 0, 1, 2, 3, 4, 5, 6, 7, 10, 8, 14, 15, 9, 11, 16, 12, 17, 19, 18, 13, 20 };
+static const int	s_mode_order[] = { 0, 1, 2, 3, 4, 5, 6, 7, 10, 8, 14, 15, 9, 11, 16, 12, 17, 19, 18, 13, 20, 21 };
 #define	NUM_LISTED_MODES	( (int)( sizeof( s_mode_order ) / sizeof( s_mode_order[0] ) ) )
 
 // the line of the list a mode is on
@@ -248,6 +248,7 @@ void VID_MenuInit( void )
 		"[3840 1600]",
 		"[3840 2160]",
 		"[5120 1440]",
+		"[desktop  ]",
 		0
 	};
 	static const char *refs[] =
