@@ -544,7 +544,8 @@ vidmode_t vid_modes[] =
 	{ "Mode 17: 3440x1440", 3440, 1440, 17 },
 	{ "Mode 18: 3840x1600", 3840, 1600, 18 },
 	{ "Mode 19: 3840x1080", 3840, 1080, 19 },
-	{ "Mode 20: 5120x1440", 5120, 1440, 20 }
+	{ "Mode 20: 5120x1440", 5120, 1440, 20 },
+	{ "Mode 21: desktop", 0, 0, 21 }
 };
 
 qboolean VID_GetModeInfo( int *width, int *height, int mode )
@@ -554,6 +555,15 @@ qboolean VID_GetModeInfo( int *width, int *height, int mode )
 
 	*width  = vid_modes[mode].width;
 	*height = vid_modes[mode].height;
+
+	// The mode without a size is whatever the desktop is, so that full
+	// screen fits any display, a laptop's included, with no change of
+	// display mode.
+	if ( !*width )
+	{
+		*width  = GetSystemMetrics( SM_CXSCREEN );
+		*height = GetSystemMetrics( SM_CYSCREEN );
+	}
 
 	return true;
 }

@@ -152,6 +152,14 @@ static qboolean R_CreateWindow (int width, int height, qboolean fullscreen)
 	SetForegroundWindow (rpt.hWnd);
 	SetFocus (rpt.hWnd);
 
+	// Windows makes no window bigger than the desktop. The picture is made
+	// the size the window turned out, or its right and bottom would be cut off.
+	if (GetClientRect (rpt.hWnd, &r) && r.right > 0 && r.bottom > 0)
+	{
+		width = r.right;
+		height = r.bottom;
+	}
+
 	rpt.width = width;
 	rpt.height = height;
 	rpt.fullscreen = fullscreen;
