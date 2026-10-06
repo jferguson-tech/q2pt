@@ -50,7 +50,7 @@ jobs:
             test -f "$f" || { echo "::error::missing $f"; exit 1; }
           done
 
-  # The game and both path traced renderers on Linux. There is no ray tracing
+  # The game, the OpenGL renderer and both path traced renderers on Linux. There is no ray tracing
   # card on the runner, so the RTX renderer and its shaders are compiled but
   # nothing is run.
   linux-x64:
@@ -60,14 +60,14 @@ jobs:
       - name: Install what the build needs
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ libsdl2-dev libx11-dev libxext-dev libvulkan-dev glslang-tools
+          sudo apt-get install -y cmake g++ libsdl2-dev libx11-dev libxext-dev libgl-dev libglu1-mesa-dev libvulkan-dev glslang-tools
       - name: Build
         run: |
           cmake -S . -B build/linux
           cmake --build build/linux -j
       - name: Check that everything was built
         run: |
-          for f in run/quake2 run/ref_ptcpu.so run/ref_ptrtx.so run/baseq2/gamex64.so; do
+          for f in run/quake2 run/ref_gl.so run/ref_ptcpu.so run/ref_ptrtx.so run/baseq2/gamex64.so; do
             test -f "$f" || { echo "::error::missing $f"; exit 1; }
           done
 

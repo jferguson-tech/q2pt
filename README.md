@@ -100,15 +100,15 @@ in this repository.
 
 **Linux** (64-bit, X11)
 
-* CMake, a C and C++ compiler, SDL2 and the X11 headers
+* CMake, a C and C++ compiler, SDL2, and the X11 and OpenGL headers
 * For the RTX renderer: the Vulkan headers and loader, and a GLSL compiler
   (`glslc` or `glslangValidator`). Without them that renderer is left out.
 * On Ubuntu: `sudo apt install cmake g++ libsdl2-dev libx11-dev libxext-dev
-  libvulkan-dev glslang-tools`
+  libgl-dev libglu1-mesa-dev libvulkan-dev glslang-tools`
 
-The game and both path traced renderers are built on Linux. The original
-OpenGL and software renderers are not, so there the path tracer is the only
-way to see the game.
+The game, the original OpenGL renderer and both path traced renderers are
+built on Linux. The software renderer is not. The OpenGL renderer there uses
+no extensions, so it draws walls and their lighting in two passes.
 
 ## Build
 
@@ -158,7 +158,7 @@ screen it fills the display exactly, a laptop's 16:10 one included, without
 changing the display mode. Sizes are in real pixels: where Windows is set to
 scale the display, as on most laptops, the game is not stretched by it.
 
-**F8** steps through the renderers: OpenGL (on Windows), CPU path tracer, RTX. They are
+**F8** steps through the renderers: OpenGL, CPU path tracer, RTX. They are
 also in the video menu, which has a *path tracing options* page. Without an
 Nvidia RTX card the RTX renderer is skipped. Setting `PT_VK_VALIDATE` in the
 environment turns on the Vulkan validation layer for it.
@@ -237,7 +237,7 @@ were changed in 2026:
 New beside them: `CMakeLists.txt` and `build.bat` (the build), `win32/quake2.manifest`
 (what the program tells Windows about itself), `client/cl_render.c`,
 `ref_pt/` and `pt/`, and for Linux `linux/linux.cmake`, `linux/spv_inc.cmake`,
-`linux/sys_sdl.c`, `linux/vid_sdl.c` and `linux/snd_sdl.c`. The full list is `git diff --name-status` between the first
+`linux/sys_sdl.c`, `linux/vid_sdl.c`, `linux/snd_sdl.c` and `linux/gl_sdl.c`. The full list is `git diff --name-status` between the first
 commit and `main`.
 
 ## Credits
