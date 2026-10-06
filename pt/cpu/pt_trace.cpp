@@ -53,6 +53,35 @@ float Visible(const Scene &sc, const Surface &s, Vec3 target, Rng &rng)
 			through *= sc.Caustic(*t.mat, t.p0 + t.e1 * u + t.e2 * v);
 		return false;
 	};
+
+#ifdef PT_AVX2_KERNELS
+	// The trees with eight children answer sooner, and say the same or that
+	// they are unsure, as when a surface that light gets through by chance is
+	// in the way: see Bvh::AnyHit8. The trees below are then asked, as they
+	// always were.
+	const auto kind = [&](const Tri &t, float u, float v)
+	{
+		if (IsHole(t, u, v) || BackOfGlass(t, shadow.d))
+			return 0;
+		return t.mat->alpha >= 1.0f ? 1 : 2;
+	};
+	const int world = sc.world->bvh.AnyHit8(shadow, [&](uint32_t i, float u, float v) { return kind(sc.world->tris[i], u, v); });
+	if (world == 1)
+		return 0.0f;
+	if (world == 0)
+	{
+		const int frame = sc.frame->bvh.AnyHit8(shadow, [&](uint32_t i, float u, float v) { return kind(sc.frame->tris[i], u, v); });
+		if (frame == 1)
+			return 0.0f;
+		if (frame == 0)
+			return through;
+		// nothing of the world's was in the way, so only the frame is left to ask
+		if (sc.frame->bvh.AnyHit(shadow, [&](uint32_t i, float u, float v) { return blocks(sc.frame->tris[i], u, v); }))
+			return 0.0f;
+		return through;
+	}
+#endif
+
 	if (sc.world->bvh.AnyHit(shadow, [&](uint32_t i, float u, float v) { return blocks(sc.world->tris[i], u, v); }))
 		return 0.0f;
 	if (sc.frame->bvh.AnyHit(shadow, [&](uint32_t i, float u, float v) { return blocks(sc.frame->tris[i], u, v); }))
@@ -151,14 +180,31 @@ bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &
 {
 	for (int skips = 0; ; skips++)
 	{
-		bool found = sc.world->bvh.IntersectIf(ray, hit,
-			[&](uint32_t t, float, float) { return !BackOfGlass(sc.world->tris[t], ray.d); });
+		const auto in_world = [&](uint32_t t, float, float) { return !BackOfGlass(sc.world->tris[t], ray.d); };
+		const auto in_frame = [&](uint32_t t, float, float) { return !BackOfGlass(sc.frame->tris[t], ray.d); };
+#ifdef PT_AVX2_KERNELS
+		// The trees with eight children find the same triangle sooner, or say
+		// that they cannot be sure of it: see Bvh::Intersect8. The trees below
+		// are then asked, as they always were.
+		bool unsure;
+		bool found = sc.world->bvh.Intersect8(ray, hit, in_world, unsure);
+		if (unsure)
+			found = sc.world->bvh.IntersectIf(ray, hit, in_world);
+#else
+		bool found = sc.world->bvh.IntersectIf(ray, hit, in_world);
+#endif
 		Ray r = ray;
 		if (found)
 			r.tmax = hit.t;
 		Hit h;
-		if (sc.frame->bvh.IntersectIf(r, h,
-			[&](uint32_t t, float, float) { return !BackOfGlass(sc.frame->tris[t], ray.d); }))
+#ifdef PT_AVX2_KERNELS
+		bool found_frame = sc.frame->bvh.Intersect8(r, h, in_frame, unsure);
+		if (unsure)
+			found_frame = sc.frame->bvh.IntersectIf(r, h, in_frame);
+#else
+		const bool found_frame = sc.frame->bvh.IntersectIf(r, h, in_frame);
+#endif
+		if (found_frame)
 		{
 			hit = h;
 			hit.tri |= kDynamic;
