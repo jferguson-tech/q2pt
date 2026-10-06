@@ -340,7 +340,7 @@ void R_ViewSettings (pt_view_t *view)
 What of the picture depends on earlier frames, on screen
 
 Each of these can be switched on its own to find which one a fault in the
-picture comes from (see pt_filter, and the keys bound in ptdebug.cfg). When
+picture comes from (pt_filter, and pt_switch on the number pad). When
 one of them changes, a panel lists them all for a few seconds, what is on
 and what is off, with the one that changed marked. pt_show_filter 1 keeps
 the panel up.

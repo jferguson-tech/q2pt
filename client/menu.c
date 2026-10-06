@@ -1499,6 +1499,87 @@ void M_PtFilterCycle_f (void)
 	Com_Printf( "Path traced picture: %s\n", names[next] );
 }
 
+/*
+=================
+M_PtSwitch_f
+
+pt_switch <n>: switches one of the things in the path traced picture that
+depend on earlier frames off, or back to what it was, to find which of them
+a fault in the picture comes from. The renderer shows what they all are when
+one changes. 0 puts them all back on; 9 keeps the list on screen.
+=================
+*/
+void M_PtSwitch_f (void)
+{
+	// the variable, what "off" is, what "on" is until it has been seen set to something else
+	static struct
+	{
+		char	*name;
+		char	*create;	// its default, as the renderer makes it
+		int		flags;
+		float	off, on;
+		float	kept;		// what it was before it was switched off
+		qboolean	have_kept;
+	} switches[] = {
+		{ NULL },
+		{ "pt_taa",				"1",	CVAR_ARCHIVE,	0, 1 },
+		{ "pt_history",			"32",	CVAR_ARCHIVE,	1, 32 },
+		{ "pt_denoise",			"4",	CVAR_ARCHIVE,	0, 4 },
+		{ "pt_adaptive",		"2",	CVAR_ARCHIVE,	1, 4 },
+		{ "pt_auto_exposure",	"1",	CVAR_ARCHIVE,	0, 1 },
+		{ "pt_scale",			"0.5",	CVAR_ARCHIVE,	1, 0.5f },
+		{ "pt_debug",			"0",	0,				0, 7 },
+	};
+	const int	num = sizeof(switches) / sizeof(switches[0]);
+	float		value;
+	int			n, i;
+
+	if ( Cmd_Argc() != 2 )
+	{
+		Com_Printf( "pt_switch <1-7>: anti-aliasing, light history, noise filter, adaptive sampling,\n"
+			"auto exposure, upscaling, history view. 0: all back on. 9: keep the list on screen\n" );
+		return;
+	}
+	n = atoi( Cmd_Argv( 1 ) );
+	for ( i = 1; i < num; i++ )
+		Cvar_Get( switches[i].name, switches[i].create, switches[i].flags );
+
+	if ( n == 9 )
+	{
+		Cvar_Get( "pt_show_filter", "0", 0 );
+		Cvar_SetValue( "pt_show_filter", !Cvar_VariableValue( "pt_show_filter" ) );
+		return;
+	}
+	if ( n == 0 )
+	{
+		Cvar_Get( "pt_filter", "2", CVAR_ARCHIVE );
+		Cvar_SetValue( "pt_filter", 2 );
+		for ( i = 1; i < num; i++ )
+		{
+			// the history view is the one that is on when it is not showing
+			if ( i == 7 )
+				Cvar_SetValue( switches[i].name, 0 );
+			else if ( Cvar_VariableValue( switches[i].name ) == switches[i].off )
+				Cvar_SetValue( switches[i].name, switches[i].have_kept ? switches[i].kept : switches[i].on );
+		}
+		return;
+	}
+	if ( n < 1 || n >= num )
+		return;
+
+	value = Cvar_VariableValue( switches[n].name );
+	if ( n == 7 )
+		Cvar_SetValue( switches[n].name, value == 7 ? 0 : 7 );
+	else if ( value == switches[n].off )
+		Cvar_SetValue( switches[n].name, switches[n].have_kept ? switches[n].kept : switches[n].on );
+	else
+	{
+		switches[n].kept = value;
+		switches[n].have_kept = true;
+		Cvar_SetValue( switches[n].name, switches[n].off );
+	}
+}
+
 static void PT_StatsFunc( void *unused )
 {
 	Cvar_SetValue( "pt_stats", s_pt_stats_box.curvalue );
@@ -4506,6 +4587,20 @@ void M_Init (void)
 	Cmd_AddCommand ("pt_filter_cycle", M_PtFilterCycle_f);
 	if ( !keybindings[K_F7] )
 		Key_SetBinding (K_F7, "pt_filter_cycle");
+	Cmd_AddCommand ("pt_switch", M_PtSwitch_f);
+	{
+		// the number pad, as the keys are numbered, where it is not in use
+		static const struct { int key; char *bind; } pad[] = {
+			{ K_KP_END, "pt_switch 1" }, { K_KP_DOWNARROW, "pt_switch 2" }, { K_KP_PGDN, "pt_switch 3" },
+			{ K_KP_LEFTARROW, "pt_switch 4" }, { K_KP_5, "pt_switch 5" }, { K_KP_RIGHTARROW, "pt_switch 6" },
+			{ K_KP_HOME, "pt_switch 7" }, { K_KP_INS, "pt_switch 0" }, { K_KP_DEL, "pt_switch 9" },
+		};
+		int		i;
+
+		for ( i = 0; i < sizeof(pad) / sizeof(pad[0]); i++ )
+			if ( !keybindings[pad[i].key] )
+				Key_SetBinding (pad[i].key, pad[i].bind);
+	}
 	Cmd_AddCommand ("menu_game", M_Menu_Game_f);
 		Cmd_AddCommand ("menu_loadgame", M_Menu_LoadGame_f);
 		Cmd_AddCommand ("menu_savegame", M_Menu_SaveGame_f);

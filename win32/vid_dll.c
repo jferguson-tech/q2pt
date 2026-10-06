@@ -196,6 +196,10 @@ int MapKey (int key)
 
 	result = scantokey[modified];
 
+	// Num Lock has Pause's scan code, told apart by this bit: it is not Pause
+	if ( is_extended && result == K_PAUSE )
+		return 0;
+
 	if ( !is_extended )
 	{
 		switch ( result )
