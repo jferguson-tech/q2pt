@@ -38,6 +38,10 @@ pixel, motion blur, 60 frames a second.*
   console variable (`pt_*`).
 * On-screen performance info: frame rate, frame times and where the time
   goes, on either path tracer.
+* The 64-bit renderer holds two builds of the tracer and picks one when it
+  starts: one for processors with AVX2 and FMA, which puts rays to a tree
+  with eight children to a node and filters eight pixels at a time, and one
+  for any processor. `pt_bench` says which one ran.
 
 **Offline demo rendering**
 
@@ -175,6 +179,7 @@ Some console commands and variables:
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
 | `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time |
 | `pt_stats 0` | hide the performance info, which is on by default (never shown in offline renders) |
+| `pt_simd 0`-`1` | CPU renderer: the build for AVX2 where the processor has it, or the one for any processor, to compare the two |
 | `pt_debug 1`-`11` | one part of the picture on its own |
 | `screenshot`, `pt_screenshot [paths]` | the frame as shown, or rendered again at high quality |
 | `record <name>`, `stop` | record a demo (the game's own commands) |

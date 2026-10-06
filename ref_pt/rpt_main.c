@@ -273,6 +273,11 @@ qboolean R_Init (void *hInstance, void *wndProc)
 	ci.width = rpt.width;
 	ci.height = rpt.height;
 	ci.log = R_BackendLog;
+	// A setting the backend is made with is marked as taken where it is read,
+	// here, and not in R_SetMode, of which each system has its own: a mark left
+	// standing has R_BeginFrame ask for a new renderer every frame.
+	ci.simd = (int)pt_simd->value;
+	pt_simd->modified = false;
 
 	err[0] = 0;
 	rpt.backend = RPT_CREATE (&ci, err, sizeof(err));
@@ -376,9 +381,10 @@ R_BeginFrame
 void R_BeginFrame (float camera_separation)
 {
 	/*
-	** change modes if necessary
+	** change modes if necessary, or make the backend again with a setting
+	** it is made with (R_Init takes the mark off those)
 	*/
-	if (gl_mode->modified || vid_fullscreen->modified)
+	if (gl_mode->modified || vid_fullscreen->modified || pt_simd->modified)
 	{	// FIXME: only restart if CDS is required
 		cvar_t	*ref;
 

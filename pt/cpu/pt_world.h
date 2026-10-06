@@ -10,7 +10,7 @@
 #include <memory>
 #include <vector>
 
-namespace pt {
+namespace PT_NS {
 
 const uint32_t kDynamic = 0x80000000u;	// triangle index bit: belongs to the frame, not the world
 
@@ -291,4 +291,4 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in);
 void BuildFrame(Frame &f, const pt_scene_t *in, const std::vector<std::unique_ptr<Texture>> &textures);
 uint32_t HashBytes(const void *data, size_t bytes, uint32_t h);
 
-} // namespace pt
+} // namespace PT_NS

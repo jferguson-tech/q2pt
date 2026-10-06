@@ -2,10 +2,12 @@
 // Copyright (c) 2026 Jonathan Ferguson
 #pragma once
 
+#include "pt_ns.h"
+
 #include <cmath>
 #include <cstdint>
 
-namespace pt {
+namespace PT_NS {
 
 const float kPi = 3.14159265358979323846f;
 const float kInvPi = 1.0f / kPi;
@@ -87,4 +89,4 @@ inline uint32_t Hash(uint32_t a, uint32_t b)
 	return h;
 }
 
-} // namespace pt
+} // namespace PT_NS

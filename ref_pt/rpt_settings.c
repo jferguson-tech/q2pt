@@ -27,6 +27,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 cvar_t	*pt_stats;				// 1: frame rate and timings on screen, 2: and in the console
 cvar_t	*pt_debug;				// one component of the picture, see below
+cvar_t	*pt_simd;				// CPU path tracer: 1 = the build for SSE even where there is AVX2
 
 static cvar_t	*pt_quality;			// 0 low, 1 medium, 2 high, 3 ultra, -1 custom
 static cvar_t	*pt_quality_applied;	// the preset the variables were last set from
@@ -121,6 +122,9 @@ void R_InitSettings (void)
 	// 5 unfiltered extras, 6 normals, 7 history length, 8 layer history length,
 	// 9 seen through water, 10 depth
 	pt_debug = ri.Cvar_Get ("pt_debug", "0", 0);
+	// which build of the CPU path tracer runs is settled when it starts, so
+	// changing this starts the renderer again: see R_BeginFrame
+	pt_simd = ri.Cvar_Get ("pt_simd", "0", 0);
 
 	pt_quality = ri.Cvar_Get ("pt_quality", "1", CVAR_ARCHIVE);
 	pt_quality_applied = ri.Cvar_Get ("pt_quality_applied", "1", CVAR_ARCHIVE);
