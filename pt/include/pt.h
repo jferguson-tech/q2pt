@@ -206,6 +206,13 @@ typedef struct pt_view_s
 	float	bloom;				/* glow around what is brighter than white; 0 = none */
 } pt_view_t;
 
+/* one part of the work on a view, and how long it took */
+typedef struct pt_stage_s
+{
+	const char	*name;		/* a short word, the same from frame to frame */
+	float		ms;
+} pt_stage_t;
+
 /*
 A backend owns everything between "here is the scene" and pixels on screen.
 
@@ -220,6 +227,7 @@ typedef struct pt_backend_s pt_backend_t;
 struct pt_backend_s
 {
 	const char	*name;
+	const char	*device;	/* what does the tracing: the processor, or the card */
 	void	(*destroy)(pt_backend_t *self);
 
 	/* copies everything it needs; NULL unloads the world */
@@ -237,6 +245,12 @@ struct pt_backend_s
 	/* about the last view rendered, valid until the next call: a few short
 	   lines of text separated by '|' */
 	const char *(*stats)(pt_backend_t *self);
+
+	/* Where the time went on the latest view whose times are known; a card
+	   only knows them a frame late. Fills in up to max stages, in the order
+	   they ran, and returns how many: 0 if there is nothing new since it was
+	   last asked. */
+	int		(*stages)(pt_backend_t *self, pt_stage_t *stages, int max);
 
 	/* the picture last presented: width*height pixels, bytes R,G,B,A, top row
 	   first, with or without the overlay. Returns 0 if it cannot. */

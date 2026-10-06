@@ -290,6 +290,7 @@ qboolean R_Init (void *hInstance, void *wndProc)
 	Draw_InitLocal ();
 	R_InitShots ();
 	R_InitOffline ();
+	R_InitBench ();
 
 	ri.Vid_MenuInit ();
 
@@ -305,6 +306,7 @@ Also called by the engine after a failed R_Init
 */
 void R_Shutdown (void)
 {
+	R_ShutdownBench ();		// while there is still a backend to speak of
 	R_ShutdownShots ();
 	R_ShutdownOffline ();
 	R_WaterReset ();		// while the backend that holds its pictures is still there
@@ -459,6 +461,7 @@ void R_RenderFrame (refdef_t *fd)
 	{	// more than once only for a screenshot
 		for (i=R_ShotPasses (&view) ; i>0 ; i--)
 			rpt.backend->render_view (rpt.backend, &view);
+		R_BenchView ();
 	}
 
 	// damage flashes, underwater tint and the like
@@ -566,6 +569,7 @@ void R_EndFrame (void)
 {
 	rpt.backend->present (rpt.backend, rpt.overlay);
 	R_CountFrame ();
+	R_BenchFrame ();
 	R_ShotFinish ();
 	R_OfflineFinish ();
 }
