@@ -1619,6 +1619,11 @@ void CL_FixCvarCheats (void)
 		|| !cl.configstrings[CS_MAXCLIENTS][0] )
 		return;		// single player can cheat
 
+	// a demo being rendered or timed is stepped with fixedtime, and is no
+	// game to cheat at
+	if (CL_RenderBusy ())
+		return;
+
 	// find all the cvars if we haven't done it yet
 	if (!numcheatvars)
 	{
