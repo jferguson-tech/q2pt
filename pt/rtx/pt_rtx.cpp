@@ -54,6 +54,9 @@ const uint32_t bloom_comp_spv[] =
 const uint32_t resolve_comp_spv[] =
 #include "resolve.comp.inc"
 ;
+const uint32_t grade_comp_spv[] =
+#include "grade.comp.inc"
+;
 
 const uint32_t VENDOR_NVIDIA = 0x10DE;
 
@@ -96,6 +99,7 @@ struct FrameBlock
 	float	output_f[4];
 	int32_t	frame_has[4], size[4];
 	float	water_rect[8][4], water_at[8][4];
+	int32_t	out_size[4];
 };
 
 // one triangle, one material and one light as the shaders read them (std430)
@@ -137,7 +141,7 @@ struct GpuLight
 
 const uint32_t kBitEmissive = 1, kBitSampled = 2;	// GpuMaterial::bits
 const int kNumStyles = 256;							// light styles, at the start of the tables
-const uint32_t kNumBindings = 29;
+const uint32_t kNumBindings = 30;
 
 // The pictures kept per pixel between the passes, in the order the shaders'
 // bindings take them; see scene.glsl.
@@ -154,7 +158,8 @@ enum
 	kHdr = 22,
 	kBloom = 23,	// 2
 	kSteady = 25,	// 2
-	kNumTargets = 27
+	kGraded = 27,
+	kNumTargets = 28
 };
 
 const uint32_t kMaxTextures = 4096;
@@ -305,7 +310,8 @@ struct RtxBackend
 	// the passes and the pictures they hand on
 	Target					targets[kNumTargets];
 	VkSampler				trace_sampler = VK_NULL_HANDLE;
-	int						trace_width = 0, trace_height = 0;
+	int						trace_width = 0, trace_height = 0;	// what is traced
+	int						out_width = 0, out_height = 0;		// the finished picture: the size of the view
 	VkDescriptorSetLayout	trace_dsl = VK_NULL_HANDLE;
 	VkDescriptorPool		trace_dpool = VK_NULL_HANDLE;
 	VkDescriptorSet			trace_dset = VK_NULL_HANDLE;
@@ -313,6 +319,7 @@ struct RtxBackend
 	VkPipeline				trace_pipeline = VK_NULL_HANDLE, temporal_pipeline = VK_NULL_HANDLE;
 	VkPipeline				atrous_pipeline = VK_NULL_HANDLE, compose_pipeline = VK_NULL_HANDLE;
 	VkPipeline				bloom_pipeline = VK_NULL_HANDLE, resolve_pipeline = VK_NULL_HANDLE;
+	VkPipeline				grade_pipeline = VK_NULL_HANDLE;
 	bool					bloom_on = false;
 	float					camera[16] = {};		// the last view, to tell whether it has moved
 	FrameBlock				block{};				// what the shaders were last told
@@ -1442,14 +1449,17 @@ void FreeTargets(RtxBackend *s)
 	}
 }
 
-// Everything kept per pixel, at the size the picture is traced at. They
+// Everything kept per pixel: most of it at the size the picture is traced
+// at, the finished picture and its history at the size of the view. They
 // stay in the one layout all passes can use.
-void MakeTargets(RtxBackend *s, int width, int height)
+void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_height)
 {
 	vkQueueWaitIdle(s->queue);
 	FreeTargets(s);
 	s->trace_width = width;
 	s->trace_height = height;
+	s->out_width = out_width;
+	s->out_height = out_height;
 	s->has_history = false;
 
 	for (int i = 0; i < kNumTargets; i++)
@@ -1461,7 +1471,8 @@ void MakeTargets(RtxBackend *s, int width, int height)
 		VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
 		ici.imageType = VK_IMAGE_TYPE_2D;
 		ici.format = format;
-		ici.extent = {(uint32_t)width, (uint32_t)height, 1};
+		const bool full = i == kPicture || i == kSteady || i == kSteady + 1;
+		ici.extent = {(uint32_t)(full ? out_width : width), (uint32_t)(full ? out_height : height), 1};
 		ici.mipLevels = 1;
 		ici.arrayLayers = 1;
 		ici.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -1497,7 +1508,7 @@ void MakeTargets(RtxBackend *s, int width, int height)
 	const struct { uint32_t binding, first, count; } groups[] = {
 		{17, kSurface, 2}, {18, kSeen, 1}, {19, kAlbedo, 2}, {20, kNoisy, 3},
 		{21, kExtra, 1}, {22, kKept, 6}, {23, kFilter, 6}, {24, kPicture, 1},
-		{26, kHdr, 1}, {27, kBloom, 2}, {28, kSteady, 2},
+		{26, kHdr, 1}, {27, kBloom, 2}, {28, kSteady, 2}, {29, kGraded, 1},
 	};
 	VkDescriptorImageInfo info[kNumTargets];
 	for (const auto &g : groups)
@@ -1616,6 +1627,7 @@ void CreateScene(RtxBackend *s)
 	s->compose_pipeline = MakeComputePipeline(s, compose_comp_spv, sizeof(compose_comp_spv));
 	s->bloom_pipeline = MakeComputePipeline(s, bloom_comp_spv, sizeof(bloom_comp_spv));
 	s->resolve_pipeline = MakeComputePipeline(s, resolve_comp_spv, sizeof(resolve_comp_spv));
+	s->grade_pipeline = MakeComputePipeline(s, grade_comp_spv, sizeof(grade_comp_spv));
 
 	// every texture slot shows something from the start
 	const uint32_t white = 0xffffffffu;
@@ -1676,7 +1688,7 @@ void CreateScene(RtxBackend *s)
 	Reserve(s, s->world, 1, 1, kWorldBuild, false);
 	Reserve(s, s->frame, 1, 1, kFrameBuild, true);
 	ShowBuffers(s);
-	MakeTargets(s, s->width, s->height);
+	MakeTargets(s, s->width, s->height, s->width, s->height);
 }
 
 void DestroyScene(RtxBackend *s)
@@ -1698,7 +1710,7 @@ void DestroyScene(RtxBackend *s)
 	FreeTexture(s, s->blank);
 	FreeTargets(s);
 	for (VkPipeline p : {s->trace_pipeline, s->temporal_pipeline, s->atrous_pipeline, s->compose_pipeline,
-		s->bloom_pipeline, s->resolve_pipeline})
+		s->bloom_pipeline, s->resolve_pipeline, s->grade_pipeline})
 		if (p)
 			vkDestroyPipeline(s->device, p, nullptr);
 	if (s->trace_playout) vkDestroyPipelineLayout(s->device, s->trace_playout, nullptr);
@@ -1974,8 +1986,8 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	const float scale = view->scale < 0.05f ? 0.05f : (view->scale > 1.0f ? 1.0f : view->scale);
 	const int rw = std::max(1, (int)(view->width * scale + 0.5f));
 	const int rh = std::max(1, (int)(view->height * scale + 0.5f));
-	if (rw != s->trace_width || rh != s->trace_height)
-		MakeTargets(s, rw, rh);
+	if (rw != s->trace_width || rh != s->trace_height || view->width != s->out_width || view->height != s->out_height)
+		MakeTargets(s, rw, rh, view->width, view->height);
 	if (view->restart)
 		s->has_history = false;
 
@@ -2113,8 +2125,11 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 			}
 			return r;
 		};
-		f.right[3] = halton((s->frame_index + 1) % 16 + 1, 2) - 0.5f;
-		f.up[3] = halton((s->frame_index + 1) % 16 + 1, 3) - 0.5f;
+		// the more the picture is enlarged, the more places within a traced
+		// pixel have to be visited before every full size pixel has had one
+		const uint32_t places = (uint32_t)std::min(64.0f, std::max(16.0f, 8.0f / (scale * scale)));
+		f.right[3] = halton((s->frame_index + 1) % places + 1, 2) - 0.5f;
+		f.up[3] = halton((s->frame_index + 1) % places + 1, 3) - 0.5f;
 	}
 
 	for (int i = 0; i < 4; i++)
@@ -2220,6 +2235,8 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	s->bloom_on = view->bloom > 0.0f && !view->debug;
 	f.size[0] = rw;
 	f.size[1] = rh;
+	f.out_size[0] = s->out_width;
+	f.out_size[1] = s->out_height;
 	f.size[2] = s->num_waters;
 	memcpy(f.water_rect, s->water_rect, sizeof(f.water_rect));
 	memcpy(f.water_at, s->water_at, sizeof(f.water_at));
@@ -2228,8 +2245,8 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	s->prev_time = view->time;
 	s->trace_ready = true;
 	s->trace_pending = true;
-	snprintf(s->stats, sizeof(s->stats), "%dx%d %dspp %db|%u + %u triangles, %d + %u lights|exp %.2f%s",
-		rw, rh, paths, bounces, s->world.num_solid + s->world.num_glass, n, s->num_world_lights, num_lights,
+	snprintf(s->stats, sizeof(s->stats), "%dx%d to %dx%d %dspp %db|%u + %u triangles, %d + %u lights|exp %.2f%s",
+		rw, rh, s->out_width, s->out_height, paths, bounces, s->world.num_solid + s->world.num_glass, n, s->num_world_lights, num_lights,
 		s->exposure_used, still ? " still" : "");
 }
 
@@ -2298,12 +2315,13 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 	const uint32_t gx = ((uint32_t)s->trace_width + 7) / 8, gy = ((uint32_t)s->trace_height + 7) / 8;
 	const VkAccessFlags2 rw = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s->trace_playout, 0, 1, &s->trace_dset, 0, nullptr);
+	uint32_t groups_x = gx, groups_y = gy;
 	const auto run = [&](VkPipeline pipeline, int a, int b, int c)
 	{
 		const PassPush push{a, b, c, 0};
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 		vkCmdPushConstants(cmd, s->trace_playout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-		vkCmdDispatch(cmd, gx, gy, 1);
+		vkCmdDispatch(cmd, groups_x, groups_y, 1);
 	};
 
 	// a ray and its paths for every pixel
@@ -2342,8 +2360,14 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 		}
 	}
 
-	// and graded for the screen, edges smoothed over frames
-	run(s->resolve_pipeline, s->bloom_on ? 1 : 0, 0, 0);
+	// graded for the screen
+	run(s->grade_pipeline, s->bloom_on ? 1 : 0, 0, 0);
+	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
+
+	// and built up to the size of the view, edges smoothed over frames
+	groups_x = ((uint32_t)s->out_width + 7) / 8;
+	groups_y = ((uint32_t)s->out_height + 7) / 8;
+	run(s->resolve_pipeline, 0, 0, 0);
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
 	s->has_history = true;
@@ -2448,7 +2472,7 @@ int ReadPixels(pt_backend_t *b, uint32_t *pixels, int with_overlay)
 	try
 	{
 		TraceNow(s);
-		const int tw = s->trace_width, th = s->trace_height;
+		const int tw = s->out_width, th = s->out_height;		// the finished picture
 		const VkDeviceSize bytes = (VkDeviceSize)tw * th * 4;
 		vkQueueWaitIdle(s->queue);
 		if (!s->readback.buffer || s->readback.size < bytes)

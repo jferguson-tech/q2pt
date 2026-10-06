@@ -65,9 +65,12 @@ about a quarter of a second each, some twenty times faster than on the CPU.
 Not yet on the GPU: the separate history the CPU renderer keeps for mirror
 reflections. Adaptive sampling there goes by how long a point has been in
 view, not also by how noisy it is. Its denoiser decides how far to smooth
-from how long a pixel has been in view rather than from measured noise, and
-at a lower internal resolution the picture is stretched rather than rebuilt
-at full size.
+from how long a pixel has been in view rather than from measured noise.
+
+Like the CPU renderer it can trace a smaller picture than the window and
+build the full size one from it over a few frames (`pt_scale`). At 5120x1440
+on the RTX 4090, medium preset: 20 frames a second traced at full size, 49 at
+half the width and height, 100 at a quarter.
 
 ## Requirements
 
