@@ -2,6 +2,8 @@
 // Copyright (c) 2026 Jonathan Ferguson
 #pragma once
 
+#include "pt_ns.h"
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -11,7 +13,7 @@
 #include <thread>
 #include <vector>
 
-namespace pt {
+namespace PT_NS {
 
 // Runs "for i in [0, count)" across all cores; the caller takes part.
 //
@@ -131,4 +133,4 @@ private:
 	std::atomic<bool>			quit_{false};
 };
 
-} // namespace pt
+} // namespace PT_NS

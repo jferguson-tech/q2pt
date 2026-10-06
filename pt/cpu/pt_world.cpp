@@ -7,7 +7,7 @@
 #include <cfloat>
 #include <utility>
 
-namespace pt {
+namespace PT_NS {
 
 float g_to_linear[256];
 
@@ -523,4 +523,4 @@ void BuildFrame(Frame &f, const pt_scene_t *in, const std::vector<std::unique_pt
 	f.bvh.Build(soup.data(), (uint32_t)f.tris.size());
 }
 
-} // namespace pt
+} // namespace PT_NS

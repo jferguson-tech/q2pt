@@ -17,6 +17,8 @@ typedef struct pt_create_s
 	void		*hwnd;			/* Windows: HWND to present into. X11: the Window, cast */
 	int			width, height;	/* client area in pixels */
 	pt_log_fn	log;			/* may be NULL */
+	int			simd;			/* CPU backend: 0 = built for the widest instructions the
+								   processor has, 1 = for SSE only, to compare the two */
 } pt_create_t;
 
 /*

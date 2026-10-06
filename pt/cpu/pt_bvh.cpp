@@ -7,7 +7,7 @@
 #include <cfloat>
 #include <limits>
 
-namespace pt {
+namespace PT_NS {
 
 namespace {
 
@@ -286,4 +286,4 @@ uint32_t Bvh::Collapse(const std::vector<Node2> &src, uint32_t index)
 	return node;
 }
 
-} // namespace pt
+} // namespace PT_NS

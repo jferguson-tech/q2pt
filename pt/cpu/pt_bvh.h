@@ -7,7 +7,7 @@
 #include <immintrin.h>
 #include <vector>
 
-namespace pt {
+namespace PT_NS {
 
 struct Ray
 {
@@ -259,4 +259,4 @@ bool Bvh::AnyHit(const Ray &ray, F blocks) const
 	}
 }
 
-} // namespace pt
+} // namespace PT_NS

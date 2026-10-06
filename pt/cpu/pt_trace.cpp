@@ -7,7 +7,7 @@
 #include <cfloat>
 #include <cstring>
 
-namespace pt {
+namespace PT_NS {
 
 namespace {
 
@@ -738,4 +738,4 @@ Vec3 Radiance(const Scene &sc, Ray ray, Rng &rng, bool camera, bool count_emitte
 	}
 }
 
-} // namespace pt
+} // namespace PT_NS

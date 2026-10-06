@@ -84,16 +84,45 @@ set(REF_PT_SRC
 	pt/water/pt_water.c pt/png/pt_png.c
 	linux/q_shlinux.c linux/glob.c ${SHARED_SRC})
 
-option(PT_AVX2 "Build the CPU path tracer for AVX2" ON)
-set(PT_CXX_FLAGS -O2 -ffast-math -fno-finite-math-only)
+option(PT_AVX2 "Build the CPU path tracer for AVX2 as well as for any processor" ON)
+set(PT_BASE_FLAGS -O2 -ffast-math -fno-finite-math-only)
+set(PT_CXX_FLAGS ${PT_BASE_FLAGS})
 if(PT_AVX2)
 	list(APPEND PT_CXX_FLAGS -mavx2 -mfma)
 endif()
 
-add_library(pt_cpu STATIC pt/cpu/pt_cpu.cpp pt/cpu/pt_bvh.cpp pt/cpu/pt_world.cpp pt/cpu/pt_trace.cpp)
-target_compile_options(pt_cpu PRIVATE ${PT_CXX_FLAGS})
-target_include_directories(pt_cpu PRIVATE ${X11_INCLUDE_DIR})
-target_link_libraries(pt_cpu PUBLIC ${X11_LIBRARIES} Threads::Threads)
+# The CPU path tracer is built twice into ref_ptcpu: for processors with
+# AVX2 and for any other, with pt/cpu/pt_cpu_pick.cpp to pick one when the
+# renderer starts. Each build has a namespace of its own (PT_NS). What the
+# two still share, the standard library's templates, the linker takes from
+# whichever objects it meets first: those built for any processor are listed
+# first, so that none of the code the older processors run is built for AVX2.
+set(PT_CPU_SRC pt/cpu/pt_cpu.cpp pt/cpu/pt_bvh.cpp pt/cpu/pt_world.cpp pt/cpu/pt_trace.cpp)
+if(PT_AVX2)
+	add_library(pt_cpu_sse OBJECT ${PT_CPU_SRC})
+	target_compile_options(pt_cpu_sse PRIVATE ${PT_BASE_FLAGS})
+	target_compile_definitions(pt_cpu_sse PRIVATE PT_NS=pt_sse PT_CPU_CREATE=pt_cpu_create_sse)
+	add_library(pt_cpu_avx2 OBJECT ${PT_CPU_SRC})
+	target_compile_options(pt_cpu_avx2 PRIVATE ${PT_CXX_FLAGS})
+	target_compile_definitions(pt_cpu_avx2 PRIVATE PT_NS=pt_avx2 PT_CPU_CREATE=pt_cpu_create_avx2 PT_AVX2_KERNELS)
+	add_library(pt_cpu_pick OBJECT pt/cpu/pt_cpu_pick.cpp)
+	target_compile_options(pt_cpu_pick PRIVATE ${PT_BASE_FLAGS})
+	set(PT_CPU_PARTS pt_cpu_sse pt_cpu_avx2)
+	set(PT_CPU_OBJECTS $<TARGET_OBJECTS:pt_cpu_pick> $<TARGET_OBJECTS:pt_cpu_sse> $<TARGET_OBJECTS:pt_cpu_avx2>)
+else()
+	add_library(pt_cpu_one OBJECT ${PT_CPU_SRC})
+	target_compile_options(pt_cpu_one PRIVATE ${PT_BASE_FLAGS})
+	set(PT_CPU_PARTS pt_cpu_one)
+	set(PT_CPU_OBJECTS $<TARGET_OBJECTS:pt_cpu_one>)
+endif()
+foreach(part ${PT_CPU_PARTS})
+	target_include_directories(${part} PRIVATE ${X11_INCLUDE_DIR})
+endforeach()
+
+# what a renderer links to get the CPU backend: its objects, in that order
+add_library(pt_cpu INTERFACE)
+target_sources(pt_cpu INTERFACE ${PT_CPU_OBJECTS})
+target_link_libraries(pt_cpu INTERFACE ${X11_LIBRARIES} Threads::Threads)
 
 function(q2_ref name backend)
 	add_library(${name} SHARED ${REF_PT_SRC})

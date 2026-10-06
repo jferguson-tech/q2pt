@@ -191,6 +191,7 @@ static qboolean R_SetMode (void)
 	fullscreen = vid_fullscreen->value != 0;
 	gl_mode->modified = false;
 	vid_fullscreen->modified = false;
+	pt_simd->modified = false;
 
 	ri.Con_Printf (PRINT_ALL, "...setting mode %d:", (int)gl_mode->value);
 	if (!ri.Vid_GetModeInfo (&width, &height, gl_mode->value))
@@ -273,6 +274,7 @@ qboolean R_Init (void *hInstance, void *wndProc)
 	ci.width = rpt.width;
 	ci.height = rpt.height;
 	ci.log = R_BackendLog;
+	ci.simd = (int)pt_simd->value;
 
 	err[0] = 0;
 	rpt.backend = RPT_CREATE (&ci, err, sizeof(err));
@@ -378,7 +380,7 @@ void R_BeginFrame (float camera_separation)
 	/*
 	** change modes if necessary
 	*/
-	if (gl_mode->modified || vid_fullscreen->modified)
+	if (gl_mode->modified || vid_fullscreen->modified || pt_simd->modified)
 	{	// FIXME: only restart if CDS is required
 		cvar_t	*ref;
 

@@ -32,7 +32,7 @@
 
 namespace {
 
-using namespace pt;
+using namespace PT_NS;
 
 const int kMaxFilterPasses = 4;
 
@@ -234,7 +234,13 @@ void NameDevice(char *out, size_t size, int threads)
 	size_t len = strlen(first);
 	while (len && first[len - 1] == ' ')
 		len--;
-	snprintf(out, size, "%.*s%s%d threads", (int)len, first, len ? ", " : "", threads);
+	// and which of the two builds of this backend is the one running
+#ifdef PT_AVX2_KERNELS
+	const char *const built_for = "AVX2";
+#else
+	const char *const built_for = "SSE";
+#endif
+	snprintf(out, size, "%.*s%s%d threads, %s", (int)len, first, len ? ", " : "", threads, built_for);
 }
 
 void Destroy(pt_backend_t *b)
@@ -1860,7 +1866,13 @@ int Stages(pt_backend_t *b, pt_stage_t *stages, int max)
 
 } // namespace
 
-extern "C" pt_backend_t *pt_cpu_create(const pt_create_t *ci, char *err, int errlen)
+// built twice into one program, each build is made under a name of its own
+// and pt_cpu_create picks between them: see pt_cpu_pick.cpp
+#ifndef PT_CPU_CREATE
+#define PT_CPU_CREATE pt_cpu_create
+#endif
+
+extern "C" pt_backend_t *PT_CPU_CREATE(const pt_create_t *ci, char *err, int errlen)
 {
 	InitTables();
 
