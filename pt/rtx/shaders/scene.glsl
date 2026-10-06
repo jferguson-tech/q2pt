@@ -101,6 +101,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	ivec4	size;			// xy: of the picture being traced; z: simulated bodies of liquid
 	vec4	water_rect[8];	// each body's extent: min x, min y, max x, max y
 	vec4	water_at[8];	// x: the height of its surface; y: the material that carries its maps
+	ivec4	out_size;		// xy: of the finished picture, the size of the view
 } fr;
 
 // the map and what moves, each as three corners per triangle, what goes with
@@ -137,7 +138,9 @@ layout(set = 0, binding = 24, rgba8) uniform image2D img_picture;
 layout(std430, set = 0, binding = 25) buffer Meter { uint v[]; } meter;	// sums for the exposure
 layout(set = 0, binding = 26, rgba16f) uniform image2D img_hdr;			// the picture put together, exposed, before grading
 layout(set = 0, binding = 27, rgba16f) uniform image2D img_bloom[2];	// its glow, at half size in the corner of each
-layout(set = 0, binding = 28, rgba16f) uniform image2D img_steady[2];	// the graded picture gathered over frames; a: frames
+// these two are the size of the view, which may be larger than what is traced
+layout(set = 0, binding = 28, rgba16f) uniform image2D img_steady[2];	// the finished picture gathered over frames; a: how much stands behind it
+layout(set = 0, binding = 29, rgba16f) uniform image2D img_graded;		// the picture graded for the screen, as traced
 
 float Luminance(vec3 c)
 {
