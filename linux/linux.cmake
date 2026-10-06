@@ -19,7 +19,8 @@ find_package(SDL2 REQUIRED)
 find_package(X11 REQUIRED)
 find_package(Threads REQUIRED)
 
-add_compile_definitions(C_ONLY stricmp=strcasecmp strnicmp=strncasecmp _stricmp=strcasecmp)
+# _GNU_SOURCE: q_shlinux.c needs the declaration of mremap, which returns a pointer
+add_compile_definitions(_GNU_SOURCE C_ONLY stricmp=strcasecmp strnicmp=strncasecmp _stricmp=strcasecmp)
 # The engine is C of 1997: it relies on signed overflow wrapping, on reading
 # one type through a pointer to another, and on a char that is signed.
 set(Q2_C_FLAGS -fno-strict-aliasing -fwrapv -fsigned-char -fcommon -w)
@@ -55,6 +56,21 @@ target_link_options(game PRIVATE ${Q2_LINK_FLAGS})
 target_link_libraries(game PRIVATE m)
 set_target_properties(game PROPERTIES PREFIX "" OUTPUT_NAME gamex64
 	LIBRARY_OUTPUT_DIRECTORY ${Q2_OUT}/baseq2)
+
+# -------------------------------------------------------------------- ref_gl
+# The original OpenGL renderer, in a window and context made by SDL.
+find_package(OpenGL REQUIRED)
+add_library(ref_gl SHARED
+	ref_gl/gl_draw.c ref_gl/gl_image.c ref_gl/gl_light.c ref_gl/gl_mesh.c
+	ref_gl/gl_model.c ref_gl/gl_rmain.c ref_gl/gl_rmisc.c ref_gl/gl_rsurf.c
+	ref_gl/gl_warp.c
+	linux/gl_sdl.c linux/qgl_linux.c linux/q_shlinux.c linux/glob.c
+	${SHARED_SRC})
+target_compile_options(ref_gl PRIVATE ${Q2_C_FLAGS})
+target_include_directories(ref_gl PRIVATE ${SDL2_INCLUDE_DIRS})
+target_link_options(ref_gl PRIVATE ${Q2_LINK_FLAGS})
+target_link_libraries(ref_gl PRIVATE OpenGL::GL ${SDL2_LIBRARIES} m)
+set_target_properties(ref_gl PROPERTIES PREFIX "")
 
 # -------------------------------------------------------------- path tracers
 enable_language(CXX)

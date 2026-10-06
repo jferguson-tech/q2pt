@@ -109,25 +109,34 @@ void VID_Restart_f (void)
 ============
 VID_PtCycle_f
 
-Steps CPU path traced -> RTX path traced -> CPU. The original renderers are
-not built here. The RTX step is skipped once it has failed to start in this
-session.
+Steps original -> CPU path traced -> RTX path traced -> original. The RTX
+step is skipped once it has failed to start in this session.
 ============
 */
 static qboolean	vid_rtx_failed;
 
 void VID_PtCycle_f (void)
 {
+	char	*next, *label;
+
 	if ( strcmp (vid_ref->string, "ptcpu") == 0 && !vid_rtx_failed )
 	{
-		Com_Printf ("Renderer: RTX path traced\n");
-		Cvar_Set ("vid_ref", "ptrtx");
+		next = "ptrtx";
+		label = "RTX path traced";
 	}
-	else if ( strcmp (vid_ref->string, "ptcpu") != 0 )
+	else if ( strcmp (vid_ref->string, "ptcpu") == 0 || strcmp (vid_ref->string, "ptrtx") == 0 )
 	{
-		Com_Printf ("Renderer: CPU path traced\n");
-		Cvar_Set ("vid_ref", "ptcpu");
+		next = "gl";
+		label = "original (OpenGL)";
 	}
+	else
+	{
+		next = "ptcpu";
+		label = "CPU path traced";
+	}
+
+	Com_Printf ("Renderer: %s\n", label);
+	Cvar_Set ("vid_ref", next);
 }
 
 /*
@@ -280,7 +289,7 @@ qboolean VID_LoadRefresh( char *name )
 
 	Com_Printf( "------------------------------------\n");
 	reflib_active = true;
-	vidref_val = VIDREF_OTHER;
+	vidref_val = strcmp (vid_ref->string, "gl") == 0 ? VIDREF_GL : VIDREF_OTHER;
 	mouse_active = false;		// the new window has not taken the mouse yet
 
 	return true;
@@ -330,21 +339,22 @@ void VID_CheckChanges (void)
 		Com_sprintf( name, sizeof(name), "./ref_%s.so", vid_ref->string );
 		if ( !VID_LoadRefresh( name ) )
 		{
-			// anything -> ptrtx -> ptcpu
-			if ( strcmp (vid_ref->string, "ptcpu") == 0 )
-				Com_Error (ERR_FATAL, "Couldn't start the CPU path tracer either");
+			const char *fallback;
 
+			if ( strcmp (vid_ref->string, "gl") == 0 )
+				Com_Error (ERR_FATAL, "Couldn't start the OpenGL renderer either");
+
+			// ptrtx -> ptcpu -> gl; the software renderer is not built here
 			if ( strcmp (vid_ref->string, "ptrtx") == 0 )
 			{
+				fallback = "ptcpu";
 				vid_rtx_failed = true;
-				Com_Printf ("Couldn't start ref_ptrtx, falling back to ref_ptcpu\n");
-				Cvar_Set( "vid_ref", "ptcpu" );
 			}
 			else
-			{
-				Com_Printf ("ref_%s is not built here, using ref_ptrtx\n", vid_ref->string);
-				Cvar_Set( "vid_ref", "ptrtx" );
-			}
+				fallback = "gl";
+
+			Com_Printf ("Couldn't start ref_%s, falling back to ref_%s\n", vid_ref->string, fallback);
+			Cvar_Set( "vid_ref", (char *)fallback );
 		}
 		cls.disable_screen = false;
 	}
