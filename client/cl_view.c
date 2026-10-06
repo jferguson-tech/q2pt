@@ -263,8 +263,14 @@ void CL_PrepRefresh (void)
 	strcpy (mapname, cl.configstrings[CS_MODELS+1] + 5);	// skip "maps/"
 	mapname[strlen(mapname)-4] = 0;		// cut off ".bsp"
 
+	// Explosions, beams and the like that are still in the air hold the
+	// models the renderer gave out for them. A renderer that has just been
+	// loaded in place of another knows nothing of those: its predecessor's
+	// models went with it, and drawing one would read memory that is gone.
+	CL_ClearTEnts ();
+
 	// register models, pics, and skins
-	Com_Printf ("Map: %s\r", mapname); 
+	Com_Printf ("Map: %s\r", mapname);
 	SCR_UpdateScreen ();
 	re.BeginRegistration (mapname);
 	Com_Printf ("                                     \r");

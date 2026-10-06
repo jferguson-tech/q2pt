@@ -712,6 +712,9 @@ void R_BuildScene (refdef_t *fd, pt_scene_t *scene)
 		mod = e->model;
 		if (!mod)
 			continue;
+		// not one of ours: see R_IsModel. Better not drawn than read.
+		if (!R_IsModel (mod))
+			continue;
 
 		switch (mod->type)
 		{

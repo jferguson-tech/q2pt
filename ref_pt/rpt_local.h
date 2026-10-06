@@ -221,6 +221,7 @@ float	R_EntityMoved (int index, entity_t *e);
 // rpt_model.c
 //
 struct model_s *R_RegisterModel (char *name);
+qboolean R_IsModel (struct model_s *mod);
 void	R_BeginModelRegistration (void);
 void	R_FreeUnusedModels (void);
 void	R_ShutdownModels (void);
