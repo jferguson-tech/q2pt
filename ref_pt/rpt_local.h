@@ -186,6 +186,14 @@ void	R_OfflineRender (refdef_t *fd, pt_view_t *view);
 void	R_OfflineFinish (void);
 
 //
+// rpt_bench.c
+//
+void	R_InitBench (void);
+void	R_ShutdownBench (void);
+void	R_BenchView (void);
+void	R_BenchFrame (void);
+
+//
 // rpt_water.c
 //
 void	R_WaterReset (void);

@@ -33,6 +33,17 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 //	frame00000.png ...	the pictures
 //	sound.wav			the sound
 //	render.bat			makes a video of the two with ffmpeg
+//
+//	pt_bench [demo] [seconds] [quit]
+//
+// plays a demo the same way, a sixtieth of a second to each frame drawn, but
+// drawn as the game is when played and as fast as the renderer goes, to find
+// out how fast that is. Every machine draws the same frames, so what they
+// take can be compared. The renderer does the timing while pt_bench_run is set
+// and says what it found when that is cleared (ref_pt/rpt_bench.c). The
+// first second of the demo is played before the timing starts, for the
+// picture to settle; demo1 and twenty seconds unless told otherwise, 0 for
+// all of it.
 
 #include "client.h"
 
@@ -54,6 +65,9 @@ static int		render_started;			// when, by the clock on the wall
 static qboolean	render_loading;			// the demo has begun to load
 static qboolean	render_sound;
 static float	render_fixedtime;		// what fixedtime was before
+static qboolean	render_bench;			// the frames are timed, not kept
+static qboolean	render_thenquit;		// leave the game when the timing is done
+static int		render_quitframes;		// how many frames from now
 
 qboolean CL_RenderBusy (void)
 {
@@ -71,10 +85,20 @@ static void CL_RenderEnd (qboolean complete)
 
 	Cvar_SetValue ("fixedtime", render_fixedtime);
 	Cvar_Set ("pt_offline", "0");
+	Cvar_Set ("pt_bench_run", "0");		// at which the renderer says what it found
 	S_CaptureStop ();
 	VID_SetTitle (NULL);
 
-	if (render_state == RENDER_RUNNING)
+	if (render_bench)
+	{
+		if (render_state != RENDER_RUNNING)
+			Com_Printf ("Could not play %s to time it.\n", render_name);
+		else if (!render_keeping)
+			Com_Printf ("%s was over before the timing began, a second into it.\n", render_name);
+		if (render_state == RENDER_RUNNING && complete && render_thenquit)
+			render_quitframes = 3;		// after the renderer has had its say
+	}
+	else if (render_state == RENDER_RUNNING)
 	{
 		seconds = (Sys_Milliseconds () - render_started) / 1000;
 		Com_Printf ("\n%s %s: %i frames (%.1f seconds at %i a second) in %i:%02i:%02i\n",
@@ -116,7 +140,11 @@ Called at the start of every client frame
 void CL_RenderFrame (void)
 {
 	char	title[128];
+	char	*doing;
 	int		msec, elapsed, left;
+
+	if (render_quitframes && !--render_quitframes)
+		Cbuf_AddText ("quit\n");
 
 	if (render_state == RENDER_WAITING)
 	{
@@ -157,10 +185,18 @@ void CL_RenderFrame (void)
 		return;
 	}
 	if (!render_keeping && render_frame >= render_first)
-	{	// from here on the frames are made properly and saved
-		Cvar_Set ("pt_offline_dir", render_dir);
-		Cvar_SetValue ("pt_offline", render_paths);
-		render_sound = S_CaptureStart (va("%s/sound.wav", render_dir));
+	{
+		if (render_bench)
+		{	// from here on the frames are timed
+			Cvar_Set ("pt_bench_demo", render_name);
+			Cvar_Set ("pt_bench_run", "1");
+		}
+		else
+		{	// from here on the frames are made properly and saved
+			Cvar_Set ("pt_offline_dir", render_dir);
+			Cvar_SetValue ("pt_offline", render_paths);
+			render_sound = S_CaptureStart (va("%s/sound.wav", render_dir));
+		}
 		render_keeping = true;
 	}
 
@@ -175,11 +211,15 @@ void CL_RenderFrame (void)
 		S_CaptureStep (render_frame - render_first, render_fps);
 	render_frame++;
 
-	// progress goes in the title bar, where it is not in the picture
+	// progress goes in the title bar, where it is not in the picture; now
+	// and then is enough while frames are timed, so as not to add to them
+	if (render_bench && render_frame % 30)
+		return;
+	doing = render_bench ? "Timing" : "Rendering";
 	elapsed = (Sys_Milliseconds () - render_started) / 1000;
 	if (!render_keeping)
-		Com_sprintf (title, sizeof(title), "Rendering %s: playing up to the start, %i of %i - Esc stops",
-			render_name, render_frame, render_first);
+		Com_sprintf (title, sizeof(title), "%s %s: playing up to the start, %i of %i - Esc stops",
+			doing, render_name, render_frame, render_first);
 	else if (render_frame - render_first > 4 && render_expected > render_frame)
 	{
 		// only the frames kept take any time to speak of
@@ -187,11 +227,11 @@ void CL_RenderFrame (void)
 			render_kept_since = Sys_Milliseconds ();
 		left = (int)((double)(Sys_Milliseconds () - render_kept_since) / 1000 * (render_expected - render_frame)
 			/ (render_frame - render_first));
-		Com_sprintf (title, sizeof(title), "Rendering %s: frame %i of about %i, about %i:%02i:%02i left - Esc stops",
-			render_name, render_frame - render_first, render_expected - render_first, left / 3600, left / 60 % 60, left % 60);
+		Com_sprintf (title, sizeof(title), "%s %s: frame %i of about %i, about %i:%02i:%02i left - Esc stops",
+			doing, render_name, render_frame - render_first, render_expected - render_first, left / 3600, left / 60 % 60, left % 60);
 	}
 	else
-		Com_sprintf (title, sizeof(title), "Rendering %s: frame %i - Esc stops", render_name, render_frame - render_first);
+		Com_sprintf (title, sizeof(title), "%s %s: frame %i - Esc stops", doing, render_name, render_frame - render_first);
 	VID_SetTitle (title);
 }
 
@@ -233,12 +273,13 @@ static void CL_RenderBatch (void)
 
 /*
 ===============
-CL_RenderStart
+CL_RenderBegin
 
-Returns false, having said why, if it cannot begin
+To make a film of a demo or, with bench, to time the frames of it as they are
+drawn in play. Returns false, having said why, if it cannot begin.
 ===============
 */
-qboolean CL_RenderStart (char *demo, int fps, int paths, float start, float duration)
+static qboolean CL_RenderBegin (char *demo, int fps, int paths, float start, float duration, qboolean bench)
 {
 	char	name[MAX_OSPATH];
 	char	*s;
@@ -247,12 +288,13 @@ qboolean CL_RenderStart (char *demo, int fps, int paths, float start, float dura
 
 	if (render_state != RENDER_IDLE)
 	{
-		Com_Printf ("Already rendering %s. pt_render_stop or Esc stops it.\n", render_name);
+		Com_Printf ("Already %s %s. pt_render_stop or Esc stops it.\n", render_bench ? "timing" : "rendering", render_name);
 		return false;
 	}
 	if (Q_strncasecmp (Cvar_VariableString ("vid_ref"), "pt", 2))
 	{
-		Com_Printf ("Demos are rendered by the path traced renderers: pick one in the video menu first.\n");
+		Com_Printf ("Demos are %s the path traced renderers: pick one in the video menu first.\n",
+			bench ? "timed with" : "rendered by");
 		return false;
 	}
 
@@ -304,21 +346,29 @@ qboolean CL_RenderStart (char *demo, int fps, int paths, float start, float dura
 		render_expected = render_first + render_count;
 	render_keeping = false;
 	render_kept_since = 0;
+	render_bench = bench;
+	render_thenquit = false;
+	render_quitframes = 0;
 
-	Com_sprintf (render_dir, sizeof(render_dir), "%s/render/%s", FS_Gamedir (), render_name);
-	FS_CreatePath (va("%s/x", render_dir));
+	if (bench)
+		Com_Printf ("Timing about %i frames of %s\n", render_expected - render_first, render_name);
+	else
+	{
+		Com_sprintf (render_dir, sizeof(render_dir), "%s/render/%s", FS_Gamedir (), render_name);
+		FS_CreatePath (va("%s/x", render_dir));
 
-	// frames left from an earlier, longer render would end up in the video
-	Com_sprintf (name, sizeof(name), "%s/frame*.png", render_dir);
-	for (s = Sys_FindFirst (name, 0, 0) ; s ; s = Sys_FindNext (0, 0))
-		remove (s);
-	Sys_FindClose ();
-	remove (va("%s/sound.wav", render_dir));
+		// frames left from an earlier, longer render would end up in the video
+		Com_sprintf (name, sizeof(name), "%s/frame*.png", render_dir);
+		for (s = Sys_FindFirst (name, 0, 0) ; s ; s = Sys_FindNext (0, 0))
+			remove (s);
+		Sys_FindClose ();
+		remove (va("%s/sound.wav", render_dir));
 
-	CL_RenderBatch ();
+		CL_RenderBatch ();
 
-	Com_Printf ("Rendering %s at %i frames a second, %i paths a pixel: about %i frames\n",
-		render_name, render_fps, render_paths, render_expected - render_first);
+		Com_Printf ("Rendering %s at %i frames a second, %i paths a pixel: about %i frames\n",
+			render_name, render_fps, render_paths, render_expected - render_first);
+	}
 
 	render_fixedtime = Cvar_VariableValue ("fixedtime");
 	render_loading = false;
@@ -328,6 +378,20 @@ qboolean CL_RenderStart (char *demo, int fps, int paths, float start, float dura
 	M_ForceMenuOff ();
 	Cbuf_AddText (va("demomap %s.dm2\n", render_name));
 	return true;
+}
+
+qboolean CL_RenderStart (char *demo, int fps, int paths, float start, float duration)
+{
+	return CL_RenderBegin (demo, fps, paths, start, duration, false);
+}
+
+static void CL_Bench_f (void)
+{
+	// sixty frames to a second of the demo, the first of them before the
+	// timing starts
+	if (CL_RenderBegin (Cmd_Argc () > 1 ? Cmd_Argv (1) : "demo1", 60, 0, 1,
+		Cmd_Argc () > 2 ? atof (Cmd_Argv (2)) : 20, true))
+		render_thenquit = Cmd_Argc () > 3 && !Q_stricmp (Cmd_Argv (3), "quit");
 }
 
 static void CL_Render_f (void)
@@ -349,4 +413,5 @@ void CL_InitRender (void)
 {
 	Cmd_AddCommand ("pt_render", CL_Render_f);
 	Cmd_AddCommand ("pt_render_stop", CL_RenderStop);
+	Cmd_AddCommand ("pt_bench", CL_Bench_f);
 }

@@ -20,6 +20,7 @@
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -163,6 +164,12 @@ enum
 };
 
 const uint32_t kMaxTextures = 4096;
+
+// The parts a view's time is counted in. The first is spent here, getting
+// the view ready; the rest on the card, which notes the time between them.
+const int kNumStages = 6;
+const uint32_t kNumStamps = kNumStages;		// one before each of the card's parts and one after the last
+const char *const kStageNames[kNumStages] = {"scene", "build", "trace", "history", "filter", "out"};
 
 struct Buffer
 {
@@ -341,7 +348,18 @@ struct RtxBackend
 	int						shown[4] = {0, 0, 0, 0};		// and of the one last presented
 	bool					shown_traced = false;
 
-	char		stats[200] = "";
+	// where the time goes
+	VkQueryPool	stamps = VK_NULL_HANDLE;	// null if the card keeps no time
+	double		stamp_ms = 0.0;				// milliseconds to one tick of its clock
+	uint64_t	stamp_mask = ~0ull;			// the bits of a reading that count
+	bool		stamps_asked = false;		// a view's times were asked for and are not yet read
+	float		scene_ms = 0.0f;			// getting that view ready here
+	float		stage_ms[kNumStages] = {};	// the latest known
+	bool		stages_known = false;
+	bool		stages_new = false;			// and nobody has asked since
+
+	char		device_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE] = "";
+	char		stats[320] = "";
 };
 
 RtxBackend *Self(pt_backend_t *b) { return reinterpret_cast<RtxBackend *>(b); }
@@ -486,6 +504,7 @@ void PickDevice(RtxBackend *s)
 		{
 			s->gpu = gpu;
 			s->queue_family = family;
+			snprintf(s->device_name, sizeof(s->device_name), "%s", props.deviceName);
 			Logf(s, "RTX path tracer: using %s\n", props.deviceName);
 			return;
 		}
@@ -1689,10 +1708,39 @@ void CreateScene(RtxBackend *s)
 	Reserve(s, s->frame, 1, 1, kFrameBuild, true);
 	ShowBuffers(s);
 	MakeTargets(s, s->width, s->height, s->width, s->height);
+
+	// The card times the parts of the tracing itself, if its clock can be
+	// read from the queue the work is done on.
+	{
+		uint32_t n = 0;
+		vkGetPhysicalDeviceQueueFamilyProperties(s->gpu, &n, nullptr);
+		std::vector<VkQueueFamilyProperties> families(n);
+		vkGetPhysicalDeviceQueueFamilyProperties(s->gpu, &n, families.data());
+		const uint32_t bits = s->queue_family < n ? families[s->queue_family].timestampValidBits : 0;
+		VkPhysicalDeviceProperties props;
+		vkGetPhysicalDeviceProperties(s->gpu, &props);
+
+		if (bits && props.limits.timestampPeriod > 0.0f)
+		{
+			VkQueryPoolCreateInfo qpci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+			qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+			qpci.queryCount = kNumStamps;
+			Check(vkCreateQueryPool(s->device, &qpci, nullptr, &s->stamps), "vkCreateQueryPool");
+			s->stamp_ms = (double)props.limits.timestampPeriod * 1.0e-6;	// it is given in nanoseconds
+			s->stamp_mask = bits >= 64 ? ~0ull : (1ull << bits) - 1;
+
+			// nothing may be read from a query that was never reset
+			VkCommandBuffer cmd = BeginOnce(s);
+			vkCmdResetQueryPool(cmd, s->stamps, 0, kNumStamps);
+			EndOnce(s);
+		}
+	}
 }
 
 void DestroyScene(RtxBackend *s)
 {
+	if (s->stamps)
+		vkDestroyQueryPool(s->device, s->stamps, nullptr);
 	FreeGeometry(s, s->world);
 	FreeGeometry(s, s->frame);
 	FreeAccel(s, s->tlas);
@@ -1965,6 +2013,24 @@ void TraceNow(RtxBackend *s)
 	s->trace_pending = false;
 }
 
+// the card's own times for the view it traced last, once it has finished it
+void ReadStamps(RtxBackend *s)
+{
+	if (!s->stamps || !s->stamps_asked)
+		return;
+	uint64_t at[kNumStamps];
+	if (vkGetQueryPoolResults(s->device, s->stamps, 0, kNumStamps, sizeof(at), at, sizeof(at[0]),
+		VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+		return;		// not all there yet
+	s->stamps_asked = false;
+
+	s->stage_ms[0] = s->scene_ms;
+	for (uint32_t i = 0; i + 1 < kNumStamps; i++)
+		s->stage_ms[1 + i] = (float)((double)((at[i + 1] - at[i]) & s->stamp_mask) * s->stamp_ms);
+	s->stages_known = true;
+	s->stages_new = true;
+}
+
 // what moves this frame, and the view: all the tracer needs to be told
 void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 {
@@ -1982,6 +2048,8 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 
 	// the card may still be reading last frame's buffers
 	vkWaitForFences(s->device, 1, &s->fence, VK_TRUE, UINT64_MAX);
+	ReadStamps(s);		// and once it is done, how long that frame took it is known
+	const auto began = std::chrono::steady_clock::now();
 
 	const float scale = view->scale < 0.05f ? 0.05f : (view->scale > 1.0f ? 1.0f : view->scale);
 	const int rw = std::max(1, (int)(view->width * scale + 0.5f));
@@ -2245,9 +2313,18 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	s->prev_time = view->time;
 	s->trace_ready = true;
 	s->trace_pending = true;
-	snprintf(s->stats, sizeof(s->stats), "%dx%d to %dx%d %dspp %db|%u + %u triangles, %d + %u lights|exp %.2f%s",
-		rw, rh, s->out_width, s->out_height, paths, bounces, s->world.num_solid + s->world.num_glass, n, s->num_world_lights, num_lights,
+
+	// the times shown are the last known: this view's are not, until the
+	// card has traced it
+	char times[128] = "";
+	if (s->stages_known)
+		snprintf(times, sizeof(times), "|scene %.1f build %.1f trace %.1f history %.1f filter %.1f out %.1f",
+			s->stage_ms[0], s->stage_ms[1], s->stage_ms[2], s->stage_ms[3], s->stage_ms[4], s->stage_ms[5]);
+	snprintf(s->stats, sizeof(s->stats), "%dx%d to %dx%d %dspp %db%s|%u + %u triangles, %d + %u lights|exp %.2f%s",
+		rw, rh, s->out_width, s->out_height, paths, bounces, times,
+		s->world.num_solid + s->world.num_glass, n, s->num_world_lights, num_lights,
 		s->exposure_used, still ? " still" : "");
+	s->scene_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - began).count();
 }
 
 // what one pass has written, the next may read
@@ -2292,6 +2369,17 @@ void RecordUpdates(RtxBackend *s, VkCommandBuffer cmd)
 // traces the view and makes the picture of it; part of the frame's commands
 void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 {
+	// the card notes the time before each part of the work, and after the last
+	uint32_t stamp = 0;
+	const auto mark = [&]()
+	{
+		if (s->stamps)
+			vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, s->stamps, stamp++);
+	};
+	if (s->stamps)
+		vkCmdResetQueryPool(cmd, s->stamps, 0, kNumStamps);
+	mark();
+
 	// the acceleration structures of what moves, then the one over everything
 	const struct { const Accel *blas; VkDeviceAddress corners; uint32_t count; } parts[2] = {
 		{&s->frame.solid, s->frame.corners.address, s->frame.num_solid},
@@ -2325,14 +2413,17 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 	};
 
 	// a ray and its paths for every pixel
+	mark();
 	run(s->trace_pipeline, 0, 0, 0);
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
 
 	// gathered with what earlier frames saw
+	mark();
 	run(s->temporal_pipeline, 0, 0, 0);
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
 
 	// filtered, each pass reading what the one before wrote
+	mark();
 	int source = 0;
 	for (int i = 0; i < s->filter_passes; i++)
 	{
@@ -2342,6 +2433,7 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 	}
 
 	// put together
+	mark();
 	run(s->compose_pipeline, source, 0, 0);
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
 
@@ -2369,6 +2461,8 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 	groups_y = ((uint32_t)s->out_height + 7) / 8;
 	run(s->resolve_pipeline, 0, 0, 0);
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	mark();
+	s->stamps_asked = s->stamps != VK_NULL_HANDLE;
 
 	s->has_history = true;
 }
@@ -2408,6 +2502,22 @@ void LoadWorld(pt_backend_t *b, const pt_world_t *world)
 const char *Stats(pt_backend_t *b)
 {
 	return Self(b)->stats;
+}
+
+int Stages(pt_backend_t *b, pt_stage_t *stages, int max)
+{
+	RtxBackend *s = Self(b);
+	if (!s->stages_new)
+		return 0;
+	s->stages_new = false;
+
+	const int count = std::min(max, kNumStages);
+	for (int i = 0; i < count; i++)
+	{
+		stages[i].name = kStageNames[i];
+		stages[i].ms = s->stage_ms[i];
+	}
+	return count;
 }
 
 int TextureCreate(pt_backend_t *b, const pt_texture_t *texture)
@@ -2732,6 +2842,7 @@ extern "C" pt_backend_t *pt_rtx_create(const pt_create_t *ci, char *err, int err
 {
 	RtxBackend *s = new RtxBackend;
 	s->base.name = "RTX path tracer";
+	s->base.device = s->device_name;
 	s->base.destroy = Destroy;
 	s->base.load_world = LoadWorld;
 	s->base.texture_create = TextureCreate;
@@ -2740,6 +2851,7 @@ extern "C" pt_backend_t *pt_rtx_create(const pt_create_t *ci, char *err, int err
 	s->base.render_view = RenderView;
 	s->base.present = Present;
 	s->base.stats = Stats;
+	s->base.stages = Stages;
 	s->base.read_pixels = ReadPixels;
 	s->textures.resize(kMaxTextures);
 	s->log = ci->log;

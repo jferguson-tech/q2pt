@@ -36,7 +36,8 @@ pixel, motion blur, 60 frames a second.*
   auto exposure, bloom and a choice of tone mapping.
 * Quality presets and a menu page for the main settings; everything else is a
   console variable (`pt_*`).
-* On-screen performance info: frame rate, frame times and where the time goes.
+* On-screen performance info: frame rate, frame times and where the time
+  goes, on either path tracer.
 
 **Offline demo rendering**
 
@@ -45,6 +46,18 @@ settings far too slow to play with: `pt_render <demo> [fps] [paths per pixel]`.
 Each frame is built from nothing at full resolution and saved as a PNG, with
 optional motion blur. The sound is mixed in step into a WAV, and a script is
 written that turns both into a video with ffmpeg.
+
+**Benchmark**
+
+`pt_bench [demo] [seconds]` plays a demo as fast as the renderer goes and
+says how fast that was: frames a second, how the frame times are spread
+(average, median, the slowest one in a hundred, the worst) and the average
+and worst time of each part of the work, for either path tracer. The demo is
+stepped a sixtieth of a second per frame however long a frame takes, so every
+machine and both renderers draw the same frames. The report names the
+processor or the card and the settings that matter, and is added to
+`baseq2\pt_bench.txt`. To compare two machines, give both the same video mode
+and `pt_quality`.
 
 **RTX renderer** (`ref_ptrtx.dll`)
 
@@ -139,6 +152,7 @@ Some console commands and variables:
 | `record <name>`, `stop` | record a demo (the game's own commands) |
 | `pt_render <demo> [fps] [paths] [start] [length]` | render a demo offline into `baseq2\render\<demo>\`; start and length, in seconds, pick a part of it |
 | `pt_render_blur 0`-`1` | motion blur for offline rendering |
+| `pt_bench [demo] [seconds] [quit]` | time a demo: `demo1` and 20 seconds unless given, 0 for all of it; `quit` leaves the game afterwards, for scripts (`quake2 +pt_bench demo1 20 quit`) |
 
 ## How it is put together
 

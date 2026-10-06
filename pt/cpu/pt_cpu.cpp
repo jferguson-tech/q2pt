@@ -11,6 +11,9 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#include <intrin.h>
+#endif
 
 #include <algorithm>
 #include <cfloat>
@@ -35,6 +38,8 @@ const float kMinDemodulate = 0.02f;		// reflectance floor when lighting is divid
 // reflectance of its own to be multiplied by
 // kFog: light scattered towards the eye by the air in front of the surface
 enum { kDiffuse, kSpecular, kOver, kFog, kChannels };
+
+const int kNumStages = 5;		// the parts a view's time is counted in
 
 uint8_t g_to_display[4097];
 
@@ -177,9 +182,38 @@ struct CpuBackend
 	uint32_t				prev_hash = 0;
 	uint32_t				frame_index = 0;
 	char					stats[160] = "";
+	float					stage_ms[kNumStages] = {};	// where the last view's time went
+	bool					stages_new = false;			// and nobody has asked since
+	char					device[96] = "";
 };
 
+const char *const kStageNames[kNumStages] = {"build", "trace", "history", "filter", "out"};
+
 CpuBackend *Self(pt_backend_t *b) { return reinterpret_cast<CpuBackend *>(b); }
+
+// the processor as it names itself, and how many threads trace
+void NameDevice(char *out, size_t size, int threads)
+{
+	char brand[49] = "";
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+	int regs[4];
+	__cpuid(regs, 0x80000000);
+	if ((unsigned)regs[0] >= 0x80000004u)
+		for (int i = 0; i < 3; i++)
+		{
+			__cpuid(regs, 0x80000002 + i);
+			memcpy(brand + i * 16, regs, 16);
+		}
+#endif
+	// it comes padded with spaces
+	const char *first = brand;
+	while (*first == ' ')
+		first++;
+	size_t len = strlen(first);
+	while (len && first[len - 1] == ' ')
+		len--;
+	snprintf(out, size, "%.*s%s%d threads", (int)len, first, len ? ", " : "", threads);
+}
 
 void Destroy(pt_backend_t *b)
 {
@@ -1686,6 +1720,13 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		rw, rh, samples, bounces, ms(start, end), ms(start, built), ms(built, traced), ms(traced, accumulated),
 		ms(accumulated, filtered), ms(filtered, end),
 		s->frame.tris.size(), typical, exposure, still ? " still" : "");
+
+	s->stage_ms[0] = (float)ms(start, built);
+	s->stage_ms[1] = (float)ms(built, traced);
+	s->stage_ms[2] = (float)ms(traced, accumulated);
+	s->stage_ms[3] = (float)ms(accumulated, filtered);
+	s->stage_ms[4] = (float)ms(filtered, end);
+	s->stages_new = true;
 }
 
 void Present(pt_backend_t *b, const uint32_t *overlay)
@@ -1763,6 +1804,22 @@ const char *Stats(pt_backend_t *b)
 	return Self(b)->stats;
 }
 
+int Stages(pt_backend_t *b, pt_stage_t *stages, int max)
+{
+	CpuBackend *s = Self(b);
+	if (!s->stages_new)
+		return 0;
+	s->stages_new = false;
+
+	const int count = std::min(max, kNumStages);
+	for (int i = 0; i < count; i++)
+	{
+		stages[i].name = kStageNames[i];
+		stages[i].ms = s->stage_ms[i];
+	}
+	return count;
+}
+
 } // namespace
 
 extern "C" pt_backend_t *pt_cpu_create(const pt_create_t *ci, char *err, int errlen)
@@ -1779,7 +1836,10 @@ extern "C" pt_backend_t *pt_cpu_create(const pt_create_t *ci, char *err, int err
 	s->base.render_view = RenderView;
 	s->base.present = Present;
 	s->base.stats = Stats;
+	s->base.stages = Stages;
 	s->base.read_pixels = ReadPixels;
+	NameDevice(s->device, sizeof(s->device), s->pool.Threads());
+	s->base.device = s->device;
 	s->log = ci->log;
 	s->hwnd = (HWND)ci->hwnd;
 	s->width = ci->width;
