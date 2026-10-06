@@ -17,9 +17,11 @@ import make_tours
 
 HELD_OUT = ['ware2', 'jail3', 'mine3', 'power2', 'city2', 'q2dm4']
 
-# tag, blur, fog, clips, frames a clip, frames a second
-TRAIN_JOBS = [('a', 0.0, 1, 5, 8, 30), ('b', 0.0, 0, 2, 8, 60), ('c', 0.5, 1, 2, 8, 30)]
-TEST_JOBS = [('s', 0.0, 1, 2, 16, 30), ('m', 0.5, 1, 2, 16, 30)]
+# tag, blur, fog, clips, frames a clip, frames a second, paths a pixel in the reference
+TRAIN_JOBS = [('a', 0.0, 1, 4, 12, 30, 512), ('b', 0.0, 0, 1, 12, 60, 512), ('c', 0.5, 1, 2, 12, 30, 512)]
+# The test references have to be far cleaner than anything being compared
+# with them: at 2048 paths they were the limit of what could be measured.
+TEST_JOBS = [('s', 0.0, 1, 1, 12, 30, 16384), ('m', 0.5, 1, 1, 12, 30, 4096)]
 
 
 def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed):
@@ -73,11 +75,11 @@ def main():
     ap.add_argument('--game', required=True, help='the folder quake2 runs from')
     ap.add_argument('--out', required=True)
     ap.add_argument('--split', choices=['train', 'test'], required=True)
-    ap.add_argument('--paths', type=int, default=0, help='paths a pixel in the reference; 512 for train, 2048 for test')
+    ap.add_argument('--paths', type=int, default=0, help="paths a pixel in the reference, in place of each job's own")
     ap.add_argument('--mode', type=int, default=10, help='gl_mode: 10 is 1280x720')
     ap.add_argument('--maps', default='')
     ap.add_argument('--seed', type=int, default=1)
-    ap.add_argument('--timeout', type=int, default=3600)
+    ap.add_argument('--timeout', type=int, default=7200)
     args = ap.parse_args()
     args.game = os.path.abspath(args.game)
     args.out = os.path.abspath(args.out)
@@ -86,10 +88,10 @@ def main():
     maps = sorted(n[5:-4] for n in files if n.startswith('maps/') and n.endswith('.bsp'))
     if args.split == 'train':
         maps = [m for m in maps if m not in HELD_OUT]
-        jobs, paths = TRAIN_JOBS, args.paths or 512
+        jobs = TRAIN_JOBS
     else:
         maps = [m for m in maps if m in HELD_OUT]
-        jobs, paths = TEST_JOBS, args.paths or 2048
+        jobs = TEST_JOBS
     if args.maps:
         maps = [m for m in maps if m in args.maps.split(',')]
 
@@ -99,11 +101,11 @@ def main():
     if os.path.exists(config) and not os.path.exists(backup):
         shutil.copy(config, backup)
     try:
-        for tag, blur, fog, clips, frames, fps in jobs:
+        for tag, blur, fog, clips, frames, fps, paths in jobs:
             for m in maps:
                 # a test tour is the same sharp and blurred, to compare them
                 tour_tag = 'test' if args.split == 'test' else tag
-                run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, args.seed)
+                run_job(args, m, tag, blur, fog, clips, frames, fps, args.paths or paths, tour_tag, args.seed)
     finally:
         if os.path.exists(backup):
             shutil.move(backup, config)

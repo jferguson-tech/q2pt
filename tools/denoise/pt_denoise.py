@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from PIL import Image
 
 import ptx
-from model import Denoiser, TYPICAL_TARGET, display, pad_to
+from model import Denoiser, TYPICAL_TARGET, display, pad_to, picture
 
 
 def load_model(weights, device):
@@ -49,29 +49,29 @@ class Film:
         self.model, self.device, self.paths = model, device, paths
         self.state = None
         self.last_number = None
-        self.typical = None
+        self.scales = None
 
     @torch.no_grad()
     def step(self, frame):
-        """returns the denoised light [3,H,W] and the motion [2,H,W], known [1,H,W], on the device"""
+        """returns the denoised picture [3,H,W] as linear light, and the motion [2,H,W] and known [1,H,W], on the device"""
         sets, from_all = choose_sets(frame, self.paths)
-        light, albedo, normal, depth, motion, known = ptx.features(frame, sets, light_from_all=from_all)
+        a = ptx.inputs(frame, sets, light_from_all=from_all)
         count = frame.paths if from_all else len(sets) * frame.set_paths
-        h, w = light.shape[1:]
-        t = lambda a: pad_to(torch.from_numpy(np.ascontiguousarray(a)).to(self.device)[None])
+        h, w = a['depth'].shape[1:]
+        f = {k: pad_to(torch.from_numpy(np.ascontiguousarray(v)).to(self.device)[None]) for k, v in a.items()}
         # a cut, or a frame missing: nothing to carry over
         if not frame.follows or self.last_number is None or frame.frame != self.last_number + 1:
             self.state = None
-            self.typical = None
+            self.scales = None
         self.last_number = frame.frame
         # brightness for the network: followed slowly, so that it does not jump
-        now = ptx.typical(light[:, ::8, ::8])
-        self.typical = now if self.typical is None else self.typical * 0.8 + now * 0.2
-        scale = torch.tensor([0.05 / self.typical], device=self.device)
+        now = ptx.scales(a['light'])
+        self.scales = now if self.scales is None else self.scales * 0.8 + now * 0.2
+        scales = torch.from_numpy(self.scales).to(self.device)[None]
         with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=self.device.type == 'cuda'):
-            out, self.state = self.model(t(light), t(albedo), t(normal), t(depth), t(motion), t(known),
-                                         torch.tensor([min(count, 16)], device=self.device), scale, self.state)
-        return out[0, :, :h, :w].float(), t(motion)[0, :, :h, :w], t(known)[0, :, :h, :w]
+            light, self.state = self.model(f, torch.tensor([min(count, 16)], device=self.device), scales, self.state)
+        out = picture(light, f['albedo'], f['specular'], f['exact'])
+        return out[0, :, :h, :w].float(), f['motion'][0, :, :h, :w], f['known'][0, :, :h, :w]
 
 
 def motion_blur(image, motion, share, taps=16):

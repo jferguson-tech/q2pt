@@ -104,7 +104,7 @@ def main():
     device = torch.device('cuda')
     model = load_model(args.weights, device)
     os.makedirs(args.out, exist_ok=True)
-    names = ['noisy 4', 'noisy 16', 'ours 4', 'ours 8', 'ours 16'] + (['OIDN 16'] if args.oidn else [])
+    names = ['noisy 4', 'noisy 16', 'ours 4', 'ours 8', 'ours 16'] + (['OIDN 4', 'OIDN 16'] if args.oidn else [])
     total = {kind: {n: Score() for n in names} for kind in ('sharp', 'blurred')}
     blur_ways = {n: Score() for n in ('blurred frames denoised', 'sharp frames denoised, then blurred', 'sharp reference, then blurred')}
     lines = []
@@ -122,22 +122,24 @@ def main():
                 if not paths:
                     continue
                 frames = [ptx.Frame(p) for p in paths]
-                expo = exposure_for(ptx.typical(ptx.reference(frames[0])[:, ::8, ::8]))
+                expo = exposure_for(ptx.typical(ptx.reference(frames[0])[1][:, ::8, ::8]))
                 films = {4: Film(model, device, 4), 8: Film(model, device, 8), 16: Film(model, device, 16)}
                 scores = {n: Score() for n in names}
                 post = Score(), Score()
                 for i, f in enumerate(frames):
-                    ref = torch.from_numpy(ptx.reference(f)).to(device)
+                    ref = torch.from_numpy(ptx.reference(f)[1]).to(device)
                     want = display(ref, expo)
                     out = {}
                     for n, film in films.items():
                         light, motion, known = film.step(f)
                         out['ours %d' % n] = light
                     for n in (4, 16):
-                        out['noisy %d' % n] = torch.from_numpy(ptx.features(f, list(range(n // 4)))[0]).to(device)
-                    if args.oidn:
-                        l, a, nrm = ptx.features(f, [0, 1, 2, 3])[:3]
-                        out['OIDN 16'] = torch.from_numpy(oidn(args.oidn, l, a, nrm)).to(device)
+                        a = ptx.inputs(f, list(range(n // 4)))
+                        noisy = ptx.picture(a['light'], a['albedo'], a['specular'], a['exact'])
+                        out['noisy %d' % n] = torch.from_numpy(noisy).to(device)
+                        if args.oidn:
+                            # as anyone would use it: the whole picture, with the surface colour and normal beside it
+                            out['OIDN %d' % n] = torch.from_numpy(oidn(args.oidn, noisy, a['albedo'] + a['specular'], a['normal'])).to(device)
                     for n in names:
                         shown = display(out[n], expo)
                         scores[n].add(shown, want, motion, known)
@@ -158,8 +160,9 @@ def main():
                         mp = os.path.join(md, clip, os.path.basename(f.path))
                         if os.path.exists(mp):
                             mf = ptx.Frame(mp)
-                            mwant = display(torch.from_numpy(ptx.reference(mf)).to(device), expo)
-                            mm, mk = (torch.from_numpy(a).to(device) for a in ptx.features(mf, [0])[4:6])
+                            mwant = display(torch.from_numpy(ptx.reference(mf)[1]).to(device), expo)
+                            ma = ptx.inputs(mf, [0])
+                            mm, mk = torch.from_numpy(ma['motion']).to(device), torch.from_numpy(ma['known']).to(device)
                             share = mf.blur if mf.blurred else 0.5
                             for key, src in (('sharp frames denoised, then blurred', out['ours 16']), ('sharp reference, then blurred', ref)):
                                 blurred = motion_blur(src, motion * known, share)
