@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 project(q2pt C)
 
+# Linux: the game and the two path traced renderers, on SDL2 and X11. The
+# original OpenGL and software renderers are Windows only so far.
 if(NOT WIN32)
-	message(FATAL_ERROR "Only the Windows build is set up so far")
+	include(${CMAKE_SOURCE_DIR}/linux/linux.cmake)
+	return()
 endif()
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
