@@ -22,7 +22,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // engine independent path tracers in ../pt. Built twice: ref_ptcpu.dll and,
 // with RPT_RTX defined, ref_ptrtx.dll.
 
+#ifdef _WIN32
 #include <windows.h>
+#endif
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #include <stdio.h>
 #include <math.h>
 
@@ -83,9 +88,14 @@ typedef struct model_s
 
 typedef struct
 {
+#ifdef _WIN32
 	HINSTANCE	hInstance;
 	void		*wndproc;
 	HWND		hWnd;
+#else
+	void		**window_slot;		// the engine's own note of the window, see rpt_sdl.c
+	void		*window;			// SDL_Window
+#endif
 	qboolean	fullscreen;
 	qboolean	changed_display;	// we called ChangeDisplaySettings
 

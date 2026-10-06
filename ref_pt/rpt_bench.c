@@ -29,6 +29,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // average and the worst of each part of the work.
 
 #include "rpt_local.h"
+#include <time.h>
 
 #define	MAX_BENCH_STAGES	12
 
@@ -50,10 +51,28 @@ static benchstage_t	bench_stages[MAX_BENCH_STAGES];
 static int		bench_numstages;
 static qboolean	bench_viewed;			// this frame has a view in it
 static qboolean	bench_timing;			// and so had the one before, shown at bench_last
-static LARGE_INTEGER	bench_last;
+static double	bench_last;				// in milliseconds, by Bench_Now
 static char		bench_demo[MAX_QPATH];
 static char		bench_what[80];			// the backend's own words for the picture it makes
 static FILE		*bench_file;
+
+// the time in milliseconds, from a clock fine enough to time a frame by and
+// that never goes back
+static double Bench_Now (void)
+{
+#ifdef _WIN32
+	LARGE_INTEGER	now, freq;
+
+	QueryPerformanceCounter (&now);
+	QueryPerformanceFrequency (&freq);
+	return (double)now.QuadPart * 1000.0 / (double)freq.QuadPart;
+#else
+	struct timespec	now;
+
+	clock_gettime (CLOCK_MONOTONIC, &now);
+	return (double)now.tv_sec * 1000.0 + (double)now.tv_nsec * 1.0e-6;
+#endif
+}
 
 void R_InitBench (void)
 {
@@ -210,7 +229,7 @@ After the frame has been shown
 */
 void R_BenchFrame (void)
 {
-	LARGE_INTEGER	now, freq;
+	double			now;
 	pt_stage_t		stages[MAX_BENCH_STAGES];
 	qboolean		on;
 	char			*s;
@@ -235,12 +254,9 @@ void R_BenchFrame (void)
 		return;
 	}
 
-	QueryPerformanceCounter (&now);
+	now = Bench_Now ();
 	if (bench_viewed && bench_timing)
-	{
-		QueryPerformanceFrequency (&freq);
-		Bench_AddFrame ((float)((double)(now.QuadPart - bench_last.QuadPart) * 1000.0 / freq.QuadPart));
-	}
+		Bench_AddFrame ((float)(now - bench_last));
 	// a frame with no view in it (a map being loaded) is not one to count,
 	// and nor is the wait for the next one after it
 	bench_timing = bench_viewed;

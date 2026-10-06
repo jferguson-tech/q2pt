@@ -13,11 +13,26 @@
 #include "../include/pt.h"
 #include "../cpu/pt_world.h"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <windows.h>
+#define PT_SURFACE_EXTENSION VK_KHR_WIN32_SURFACE_EXTENSION_NAME
+#else
+#define VK_USE_PLATFORM_XLIB_KHR
+#include <X11/Xlib.h>
+#define PT_SURFACE_EXTENSION VK_KHR_XLIB_SURFACE_EXTENSION_NAME
+#endif
 #include <vulkan/vulkan.h>
+#ifndef _WIN32
+// names Xlib takes for itself
+#undef None
+#undef Bool
+#undef Status
+#undef Always
+#undef Success
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -230,7 +245,6 @@ struct RtxBackend
 {
 	pt_backend_t	base{};
 	pt_log_fn		log = nullptr;
-	HWND			hwnd = nullptr;
 	int				width = 0, height = 0;
 
 	VkInstance			instance = VK_NULL_HANDLE;
@@ -2855,7 +2869,6 @@ extern "C" pt_backend_t *pt_rtx_create(const pt_create_t *ci, char *err, int err
 	s->base.read_pixels = ReadPixels;
 	s->textures.resize(kMaxTextures);
 	s->log = ci->log;
-	s->hwnd = (HWND)ci->hwnd;
 	s->width = ci->width;
 	s->height = ci->height;
 
@@ -2868,7 +2881,7 @@ extern "C" pt_backend_t *pt_rtx_create(const pt_create_t *ci, char *err, int err
 		// PT_VK_VALIDATE in the environment turns on Vulkan's own checking,
 		// if the SDK's layer is installed; what it finds goes to the log
 		const bool validate = getenv("PT_VK_VALIDATE") != nullptr && HasValidationLayer();
-		const char *const iexts[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+		const char *const iexts[] = {VK_KHR_SURFACE_EXTENSION_NAME, PT_SURFACE_EXTENSION,
 			VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
 		const char *const layers[] = {"VK_LAYER_KHRONOS_validation"};
 		VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
@@ -2881,10 +2894,17 @@ extern "C" pt_backend_t *pt_rtx_create(const pt_create_t *ci, char *err, int err
 		if (validate)
 			CreateMessenger(s);
 
+#ifdef _WIN32
 		VkWin32SurfaceCreateInfoKHR wci{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
 		wci.hinstance = (HINSTANCE)ci->hinstance;
-		wci.hwnd = s->hwnd;
+		wci.hwnd = (HWND)ci->hwnd;
 		Check(vkCreateWin32SurfaceKHR(s->instance, &wci, nullptr, &s->surface), "vkCreateWin32SurfaceKHR");
+#else
+		VkXlibSurfaceCreateInfoKHR xci{VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR};
+		xci.dpy = (Display *)ci->hinstance;
+		xci.window = (Window)(uintptr_t)ci->hwnd;
+		Check(vkCreateXlibSurfaceKHR(s->instance, &xci, nullptr, &s->surface), "vkCreateXlibSurfaceKHR");
+#endif
 
 		PickDevice(s);
 		CreateDevice(s);
