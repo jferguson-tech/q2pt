@@ -21,9 +21,19 @@ find_package(Threads REQUIRED)
 
 # _GNU_SOURCE: q_shlinux.c needs the declaration of mremap, which returns a pointer
 add_compile_definitions(_GNU_SOURCE C_ONLY stricmp=strcasecmp strnicmp=strncasecmp _stricmp=strcasecmp)
+# Every warning is an error, so that none is left to pile up. Unused
+# parameters are not warned about: the engine's callbacks take arguments a
+# given one has no use for, as on Windows at /W3. Q2_WERROR OFF lets a newer
+# compiler with a new warning build the thing while that warning is dealt with.
+option(Q2_WERROR "Treat compiler warnings as errors" ON)
+set(Q2_WARN_FLAGS -Wall -Wextra -Wno-unused-parameter)
+if(Q2_WERROR)
+	list(APPEND Q2_WARN_FLAGS -Werror)
+endif()
+
 # The engine is C of 1997: it relies on signed overflow wrapping, on reading
 # one type through a pointer to another, and on a char that is signed.
-set(Q2_C_FLAGS -fno-strict-aliasing -fwrapv -fsigned-char -fcommon -w)
+set(Q2_C_FLAGS -fno-strict-aliasing -fwrapv -fsigned-char -fcommon ${Q2_WARN_FLAGS})
 # every library keeps to its own copy of the functions they all have
 set(Q2_LINK_FLAGS -Wl,-Bsymbolic)
 
@@ -85,7 +95,7 @@ set(REF_PT_SRC
 	linux/q_shlinux.c linux/glob.c ${SHARED_SRC})
 
 option(PT_AVX2 "Build the CPU path tracer for AVX2 as well as for any processor" ON)
-set(PT_BASE_FLAGS -O2 -ffast-math -fno-finite-math-only)
+set(PT_BASE_FLAGS -O2 -ffast-math -fno-finite-math-only ${Q2_WARN_FLAGS})
 set(PT_CXX_FLAGS ${PT_BASE_FLAGS})
 if(PT_AVX2)
 	list(APPEND PT_CXX_FLAGS -mavx2 -mfma)
@@ -165,7 +175,9 @@ if(Vulkan_FOUND AND (PT_GLSLC OR PT_GLSLANG))
 	endforeach()
 
 	add_library(pt_rtx STATIC pt/rtx/pt_rtx.cpp pt/cpu/pt_world.cpp pt/cpu/pt_bvh.cpp ${PT_SHADER_INC})
-	target_compile_options(pt_rtx PRIVATE ${PT_CXX_FLAGS})
+	# Vulkan's structures are set up as { VK_STRUCTURE_TYPE_... } and left zero
+	# from there on, which is what the API expects of them
+	target_compile_options(pt_rtx PRIVATE ${PT_CXX_FLAGS} -Wno-missing-field-initializers)
 	target_include_directories(pt_rtx PRIVATE ${PT_SHADER_DIR} ${X11_INCLUDE_DIR})
 	target_link_libraries(pt_rtx PUBLIC Vulkan::Vulkan ${X11_LIBRARIES} Threads::Threads)
 
