@@ -38,6 +38,7 @@ static cvar_t	*pt_taa;				// temporal anti-aliasing
 static cvar_t	*pt_filter;				// 2 filtered, 1 raw but adding up at rest, 0 raw
 static cvar_t	*pt_show_filter;		// keep the panel of what depends on earlier frames on screen
 static cvar_t	*pt_framegen;			// a picture made up between each two frames
+static cvar_t	*pt_low_latency;		// wait for the card before reading the mouse, not after
 static cvar_t	*pt_denoise;			// passes of the spatial filter, 0-4
 static cvar_t	*pt_history;			// frames of lighting kept while things change
 static cvar_t	*pt_exposure;
@@ -143,6 +144,11 @@ void R_InitSettings (void)
 	// frames a picture is shown that is made up from them. What is seen is
 	// half a frame later for it. The RTX renderer only.
 	pt_framegen = ri.Cvar_Get ("pt_framegen", "0", CVAR_ARCHIVE);
+	// The game reads the mouse, builds a frame and then has to wait for the
+	// card to finish the one before: what is shown is that much staler. With
+	// this the wait is taken first, at the end of the frame before, so the
+	// mouse is read just in time. The RTX renderer only.
+	pt_low_latency = ri.Cvar_Get ("pt_low_latency", "1", CVAR_ARCHIVE);
 	pt_denoise = ri.Cvar_Get ("pt_denoise", "4", CVAR_ARCHIVE);
 	pt_history = ri.Cvar_Get ("pt_history", "32", CVAR_ARCHIVE);
 	pt_exposure = ri.Cvar_Get ("pt_exposure", "2", CVAR_ARCHIVE);
@@ -311,6 +317,7 @@ void R_ViewSettings (pt_view_t *view)
 	view->antialias = pt_taa->value != 0;
 	view->filter = pt_filter->value;
 	view->frame_generation = pt_framegen->value;
+	view->low_latency = pt_low_latency->value != 0;
 	view->debug = pt_debug->value;
 
 	view->reflections = pt_reflections->value;

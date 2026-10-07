@@ -176,6 +176,8 @@ typedef struct pt_view_s
 	int		frame_generation;	/* 1: show a picture made up between each two frames, for
 						   twice the pictures a second. 2: show the made up ones
 						   alone, to see what they are like. A backend may not have it */
+	int		low_latency;	/* hold the game back until the card is nearly free, so that
+						   what it draws next is drawn from fresher input */
 	int		filter;		/* what is done about noise. 2: frames are blended over time and the
 						   picture filtered. 1: neither; a frame stands alone, except
 						   that while the eye is at rest frames add up. 0: neither, ever */

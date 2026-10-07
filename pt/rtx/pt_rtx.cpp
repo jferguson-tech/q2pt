@@ -296,6 +296,17 @@ struct RtxBackend
 	bool					have_shown = false;
 	std::chrono::steady_clock::time_point	shown_at;	// when the last frame was shown
 	double					frame_seconds = 1.0 / 60.0;	// between frames shown, smoothed
+
+	// How stale what is shown is: from the game being let go on to its next
+	// frame, which is when it reads the mouse, to the card having drawn that
+	// frame. Kept for the stats, and to time the wait that shortens it.
+	bool					have_returned = false;
+	std::chrono::steady_clock::time_point	returned_at;	// the game was let go on
+	std::chrono::steady_clock::time_point	trace_sent_at;	// its view went to the card
+	double					waited_seconds = 0.0;	// of that, spent waiting for the card
+	double					work_seconds = 0.002;	// and the rest, the game's own work, smoothed
+	double					sent_after = 0.0;		// from let go to sent, for the view being traced
+	double					lag_ms = 0.0, lag_worst_ms = 0.0;
 	VkDescriptorSet			dset_between = VK_NULL_HANDLE;	// as dset, with the picture made up in place of the frame
 
 	VkSwapchainKHR		swapchain = VK_NULL_HANDLE;
@@ -780,6 +791,8 @@ void CreateSwapchain(RtxBackend *s)
 	// one more than is asked for at the least, and another for the second
 	// picture a frame has when pictures are made up between frames
 	uint32_t count = caps.minImageCount + 2;
+	Logf(s, "RTX path tracer: pictures go to the screen %s\n", mode == VK_PRESENT_MODE_MAILBOX_KHR ? "as they come, the newest at each refresh"
+		: (mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "as they come, at once" : "in turn, one a refresh (vsync)"));
 	if (caps.maxImageCount && count > caps.maxImageCount)
 		count = caps.maxImageCount;
 
@@ -2194,6 +2207,15 @@ void SubmitTrace(RtxBackend *s)
 	vkResetFences(s->device, 1, &s->fence_trace);
 	s->trace_pending = false;
 	Check(QueueSubmit(s, 1, &si, s->fence_trace), "vkQueueSubmit2");
+
+	s->trace_sent_at = std::chrono::steady_clock::now();
+	if (s->have_returned)
+	{
+		s->sent_after = std::chrono::duration<double>(s->trace_sent_at - s->returned_at).count();
+		const double work = s->sent_after - s->waited_seconds;
+		if (work > 0.0 && work < 0.1)
+			s->work_seconds += (work - s->work_seconds) * 0.1;
+	}
 }
 
 // the card's own times for the view it traced last, once it has finished it
@@ -2212,6 +2234,16 @@ void ReadStamps(RtxBackend *s)
 		s->stage_ms[1 + i] = (float)((double)((at[i + 1] - at[i]) & s->stamp_mask) * s->stamp_ms);
 	s->stages_known = true;
 	s->stages_new = true;
+
+	float card = 0.0f;
+	for (int i = 1; i < kNumStages; i++)
+		card += s->stage_ms[i];
+	const double lag = s->sent_after * 1000.0 + card;
+	if (lag > 0.0 && lag < 1000.0)
+	{
+		s->lag_ms += (lag - s->lag_ms) * 0.05;
+		s->lag_worst_ms = std::max(lag, s->lag_worst_ms * 0.995);
+	}
 }
 
 // what moves this frame, and the view: all the tracer needs to be told
@@ -2230,7 +2262,11 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 		return;
 
 	// the card may still be tracing the last view from these buffers
-	vkWaitForFences(s->device, 1, &s->fence_trace, VK_TRUE, UINT64_MAX);
+	{
+		const auto before = std::chrono::steady_clock::now();
+		vkWaitForFences(s->device, 1, &s->fence_trace, VK_TRUE, UINT64_MAX);
+		s->waited_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - before).count();
+	}
 	ReadStamps(s);		// and once it is done, how long that frame took it is known
 	const auto began = std::chrono::steady_clock::now();
 
@@ -2530,10 +2566,10 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	if (s->stages_known)
 		snprintf(times, sizeof(times), "|scene %.1f build %.1f trace %.1f history %.1f filter %.1f out %.1f",
 			s->stage_ms[0], s->stage_ms[1], s->stage_ms[2], s->stage_ms[3], s->stage_ms[4], s->stage_ms[5]);
-	snprintf(s->stats, sizeof(s->stats), "%dx%d to %dx%d %dspp %db%s|%u + %u triangles, %d + %u lights|exp %.2f%s%s",
+	snprintf(s->stats, sizeof(s->stats), "%dx%d to %dx%d %dspp %db%s|%u + %u triangles, %d + %u lights|exp %.2f%s%s  lag %.0f ms, worst %.0f",
 		rw, rh, s->out_width, s->out_height, paths, bounces, times,
 		s->world.num_solid + s->world.num_glass, n, s->num_world_lights, num_lights,
-		s->exposure_used, still ? " still" : "", s->gen_wanted ? "  2 pictures a frame" : "");
+		s->exposure_used, still ? " still" : "", s->gen_wanted ? "  2 pictures a frame" : "", s->lag_ms, s->lag_worst_ms);
 	s->scene_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - began).count();
 }
 
@@ -2772,8 +2808,12 @@ void TextureUpdate(pt_backend_t *b, int handle, const uint32_t *pixels)
 		// the card may still be copying from here for the last frame
 		if (s->pending.empty())
 		{
+			// (this is where the game mostly waits for the card, where a map
+			// has water that is simulated: its new pixels come before the view)
+			const auto before = std::chrono::steady_clock::now();
 			const VkFence both[2] = {s->fence, s->fence_trace};
 			vkWaitForFences(s->device, 2, both, VK_TRUE, UINT64_MAX);
+			s->waited_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - before).count();
 		}
 		if (!s->updates.buffer || s->updates_used + bytes > s->updates.size)
 		{
@@ -3100,6 +3140,31 @@ void PresentFrame(RtxBackend *s, const uint32_t *overlay, const pt_rect_t *chang
 	else
 		Check(r, "vkQueuePresentKHR");
 	s->ov_behind = false;		// the commands with the overlay's changes were sent
+
+	// The game goes on from here to read the mouse and build its next frame,
+	// and when it has, it must wait for the card to finish this one. What
+	// it built is that much staler when shown. Better to wait here, before
+	// the mouse is read: until the card is as near done as the game needs to
+	// have its next view ready just as the card comes free. The card's time
+	// is the last it reported, taken a little short: to come back too late
+	// would leave the card idle, too early only costs some of the gain.
+	if (s->view.low_latency && !s->view.restart && s->stages_known && s->trace_ready)
+	{
+		float card = 0.0f;
+		for (int i = 1; i < kNumStages; i++)
+			card += s->stage_ms[i];
+		const double wait = card * 0.001 * 0.9 - s->work_seconds - 0.0005;
+		const auto until = s->trace_sent_at + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+			std::chrono::duration<double>(wait));
+		if (wait > 0.0 && wait < 0.1)
+		{
+			const auto nearly = until - std::chrono::microseconds(1500);
+			if (std::chrono::steady_clock::now() < nearly)
+				std::this_thread::sleep_until(nearly);
+			while (std::chrono::steady_clock::now() < until)
+				std::this_thread::yield();
+		}
+	}
 }
 
 void Present(pt_backend_t *b, const uint32_t *overlay, const pt_rect_t *changed, int num_changed)
@@ -3121,11 +3186,17 @@ void Present(pt_backend_t *b, const uint32_t *overlay, const pt_rect_t *changed,
 	s->trace_pending = false;
 	s->gen_ready = false;
 	s->viewed = false;
+	s->returned_at = std::chrono::steady_clock::now();
+	s->have_returned = true;
+	s->waited_seconds = 0.0;
 }
 
 void Destroy(pt_backend_t *b)
 {
 	RtxBackend *s = Self(b);
+	if (s->lag_ms > 0.0)
+		Logf(s, "RTX path tracer: a frame was drawn %.1f ms after the game went on to it, of late; at worst %.1f\n",
+			s->lag_ms, s->lag_worst_ms);
 	if (s->presenter.joinable())
 	{
 		{
