@@ -31,6 +31,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // blurs the picture as a camera's open shutter does when it is turned or
 // carried. What moves in the picture is where it is as the shutter closes:
 // its own motion is not blurred yet.
+//
+// With pt_render_live none of that is done: each frame is the one the game
+// would have shown, made with the settings it is played with and with what
+// it carries over from the frames before, and only saved. Stepped at the
+// rate a renderer reaches when played, that is a film of how it plays.
 
 #include "rpt_local.h"
 #include "../pt/png/pt_png.h"
@@ -47,6 +52,7 @@ static cvar_t	*pt_render_hud;			// the status bar and messages are in the pictur
 static cvar_t	*pt_render_bounces;
 static cvar_t	*pt_render_light_samples;
 static cvar_t	*pt_render_fog;
+static cvar_t	*pt_render_live;		// save the game's own picture, as it is played
 
 static qboolean	off_active;
 static int		off_frame;				// number of the next picture
@@ -76,6 +82,7 @@ void R_InitOffline (void)
 	pt_render_bounces = ri.Cvar_Get ("pt_render_bounces", "6", CVAR_ARCHIVE);
 	pt_render_light_samples = ri.Cvar_Get ("pt_render_light_samples", "16", CVAR_ARCHIVE);
 	pt_render_fog = ri.Cvar_Get ("pt_render_fog", "1", CVAR_ARCHIVE);
+	pt_render_live = ri.Cvar_Get ("pt_render_live", "0", 0);
 
 	// a renderer that starts while a film is being made (the user changed
 	// it) carries on with the next picture, it does not begin again
@@ -130,6 +137,9 @@ A film gets the best of everything, whatever the game is played with
 */
 void R_OfflineSettings (pt_view_t *view)
 {
+	if (pt_render_live->value)
+		return;		// as it is played
+
 	view->scale = 1;
 	view->samples = PATHS_PER_PASS;
 	view->antialias = 1;
@@ -170,6 +180,12 @@ void R_OfflineRender (refdef_t *fd, pt_view_t *view)
 	off_have_pixels = false;
 	if (!off_pixels)
 		return;
+
+	if (pt_render_live->value)
+	{	// the frame the game would have shown; R_OfflineFinish reads it back
+		rpt.backend->render_view (rpt.backend, view);
+		return;
+	}
 
 	paths = (int)pt_offline->value;
 	passes = (paths + PATHS_PER_PASS - 1) / PATHS_PER_PASS;
@@ -299,7 +315,7 @@ void R_OfflineFinish (void)
 	// the picture is the window as it stands
 	if (pt_render_hud->value || !off_have_pixels)
 	{
-		if (!rpt.backend->read_pixels (rpt.backend, off_pixels, 1))
+		if (!rpt.backend->read_pixels (rpt.backend, off_pixels, pt_render_hud->value || !pt_render_live->value))
 		{
 			ri.Con_Printf (PRINT_ALL, "This renderer cannot save its frames yet.\n");
 			off_failed = true;
