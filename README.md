@@ -57,6 +57,26 @@ motion blur from the eye's movement (`pt_render_blur`, half the frame's time
 unless set otherwise). The sound is mixed in step into a WAV, and a script is
 written that turns both into a video with ffmpeg.
 
+How long a frame takes: `demo1` at 1920x1080, 64 paths per pixel, 6 bounces,
+motion blur at half the frame's time, 150 frames at 30 a second.
+
+```
+CPU   ████████████████████████████████████████  11.56 s a frame   32 cores, 64 threads
+RTX   █████████                                   2.65 s a frame   4.4x faster
+```
+
+| | seconds a frame | one second of film | the 150 frames |
+| --- | --- | --- | --- |
+| CPU path tracer: Threadripper PRO 5975WX, **32 cores, 64 threads** | 11.56 | 5 min 47 s | 29 min |
+| RTX path tracer: RTX 4090 | 2.65 | 1 min 20 s | 6 min 45 s |
+
+Measured on Linux (Ubuntu 24.04), two runs each, which agreed to within 1
+percent. The CPU here is a workstation one: on a processor with fewer cores
+the CPU path tracer falls further behind. The time for the 150 frames
+includes starting the game and loading the map. The quality presets make no
+difference here: offline rendering sets its own bounces and light samples
+(`pt_render_bounces`, `pt_render_light_samples`).
+
 **Benchmark**
 
 `pt_bench [demo] [seconds]` plays a demo as fast as the renderer goes and
@@ -82,9 +102,9 @@ tone mapping, screenshots and offline rendering.
 
 Measured with `pt_bench demo1` on an RTX 4090 beside a 16 core Ryzen 7950X,
 at 800x600 with one path per pixel, three bounces and the filter on: 176
-frames a second, where the CPU renderer manages 10. Offline frames of the
-same demo at 64 paths per pixel with motion blur take a little over half a
-second each, against five seconds on the CPU.
+frames a second, where the CPU renderer manages 10. Offline rendering is
+about four times faster than on a 32 core, 64 thread CPU; the figures are
+under *Offline demo rendering*.
 
 Not yet on the GPU: the separate history the CPU renderer keeps for mirror
 reflections. Its denoiser decides how far to smooth from how long a pixel has
