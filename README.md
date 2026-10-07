@@ -32,7 +32,8 @@ a second.*
   is taken to be deep, and rust and grooves are made rougher than bare metal.
   The maps are twice as fine as the textures. They are kept in
   `baseq2\pt_cache`, about 100 KB a texture, which can be deleted at any time;
-  nothing made from the game's art is part of this repository. Hand-made maps
+  nothing made from the game's art is part of this repository. **F11** switches
+  between these maps and the plain ones made before them. Hand-made maps
   beside a texture are used instead where there are any: `<name>_n.tga`
   (normals), `<name>_r.tga` (roughness) and `<name>_e.tga` (emission).
 * Glass and liquids reflect and refract with a Fresnel term.
@@ -221,7 +222,7 @@ Some console commands and variables:
 | `pt_simd 0`-`1` | CPU renderer: the build for AVX2 where the processor has it, or the one for any processor, to compare the two |
 | `pt_debug 1`-`11` | one part of the picture on its own |
 | `pt_bump`, `pt_roughness`, `pt_metallic` | scale how deep, how rough and how metallic every surface is taken to be; 1 unless set |
-| `pt_material_maps 0`-`1` | normal and roughness maps read from each texture's painted light (`1`, the default), or the plain ones of before, which take brightness for height |
+| `pt_material_maps 0`-`1`, `pt_material_toggle` (**F11**) | normal and roughness maps read from each texture's painted light (`1`, the default), or the plain ones of before, which take brightness for height. The key switches between the two while playing; the level's surfaces are made again, which takes a moment |
 | `pt_material_cache 0`-`1` | keep the maps that were made in `baseq2\pt_cache`, so that a texture is read once only; on by default |
 | `pt_material_show <image>` | write a texture beside the height, normals and roughness read from it, as a PNG in `baseq2\scrnshot`: for example `pt_material_show textures/e1u1/metal1_1` |
 | `screenshot`, `pt_screenshot [paths]` | the frame as shown, or rendered again at high quality |
@@ -280,7 +281,7 @@ were changed in 2026:
 | `client/cl_scrn.c` | 64-bit port |
 | `client/console.c` | the console on a picture more than 2048 pixels wide |
 | `client/cl_main.c`, `client/client.h`, `client/keys.c`, `client/keys.h`, `client/vid.h` | mouse look by default; W, A, S and D do what the arrow keys do; hooks for offline demo rendering; `cl_maxfps` is 200 unless set, and is kept in the config |
-| `client/menu.c` | menu pages for the path tracing options and for rendering a demo; "reset defaults" keeps the WASD keys |
+| `client/menu.c` | menu pages for the path tracing options and for rendering a demo; "reset defaults" keeps the WASD keys; the commands behind **F7**, **F11** and the number pad |
 | `client/snd_dma.c`, `snd_loc.h`, `snd_mem.c`, `snd_mix.c`, `sound.h` | 64-bit port; mixing the sound to a file in step with offline rendering |
 | `game/m_*.c`, `game/g_save.c` | braces round each row of the monster animation tables, the flash offsets and the save tables |
 | `game/g_ai.c`, `g_chase.c`, `g_combat.c`, `g_monster.c`, `g_spawn.c`, `g_target.c`, `p_hud.c`; `qcommon/cmd.c`, `cmodel.c`, `files.c`; `server/sv_ccmds.c`, `sv_ents.c`, `sv_main.c`, `sv_world.c`; `client/cl_cin.c`, `cl_ents.c`, `cl_fx.c`, `cl_parse.c`, `cl_tent.c`, `qmenu.c`; `ref_gl/gl_image.c`, `gl_light.c`, `gl_local.h`, `gl_mesh.c`, `gl_model.h`, `gl_rsurf.c`; `linux/glob.c`, `net_udp.c`, `q_shlinux.c`, `qgl_linux.c` | what gcc's `-Wall -Wextra` points out, so that the Linux build can treat every warning as an error: casts between signednesses, dead variables, missing returns, defaults and braces, checked reads of save and pak files |

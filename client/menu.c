@@ -1509,6 +1509,25 @@ void M_PtFilterCycle_f (void)
 
 /*
 =================
+M_PtMaterialToggle_f
+
+Switches the path tracers between the normal and roughness maps read from
+each texture's painted light and the plain ones of before, to compare them
+while playing. The level's surfaces are made again, which takes a moment.
+=================
+*/
+void M_PtMaterialToggle_f (void)
+{
+	int		next;
+
+	Cvar_Get( "pt_material_maps", "1", CVAR_ARCHIVE );
+	next = !Cvar_VariableValue( "pt_material_maps" );
+	Cvar_SetValue( "pt_material_maps", next );
+	Com_Printf( "Material maps: %s\n", next ? "read from the textures' painted light" : "as before, brightness for height" );
+}
+
+/*
+=================
 M_PtSwitch_f
 
 pt_switch <n>: switches one of the things in the path traced picture that
@@ -4601,6 +4620,9 @@ void M_Init (void)
 	Cmd_AddCommand ("pt_filter_cycle", M_PtFilterCycle_f);
 	if ( !keybindings[K_F7] )
 		Key_SetBinding (K_F7, "pt_filter_cycle");
+	Cmd_AddCommand ("pt_material_toggle", M_PtMaterialToggle_f);
+	if ( !keybindings[K_F11] )
+		Key_SetBinding (K_F11, "pt_material_toggle");
 	Cmd_AddCommand ("pt_switch", M_PtSwitch_f);
 	{
 		// the number pad, as the keys are numbered, where it is not in use
