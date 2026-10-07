@@ -164,7 +164,7 @@ const uint32_t kBitEmissive = 1, kBitSampled = 2;	// GpuMaterial::bits
 const uint32_t kNumInstances = 5;
 const uint32_t kMaskScene = 1, kMaskHeld = 2;
 const int kNumStyles = 256;							// light styles, at the start of the tables
-const uint32_t kNumBindings = 31;
+const uint32_t kNumBindings = 30;
 
 // The pictures kept per pixel between the passes, in the order the shaders'
 // bindings take them; see scene.glsl.
@@ -182,8 +182,7 @@ enum
 	kBloom = 23,	// 2
 	kSteady = 25,	// 2
 	kGraded = 27,
-	kMoments = 28,	// 2
-	kNumTargets = 30
+	kNumTargets = 28
 };
 
 const uint32_t kMaxTextures = 4096;
@@ -1560,7 +1559,7 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 	const struct { uint32_t binding, first, count; } groups[] = {
 		{17, kSurface, 2}, {18, kSeen, 1}, {19, kAlbedo, 2}, {20, kNoisy, 3},
 		{21, kExtra, 1}, {22, kKept, 6}, {23, kFilter, 6}, {24, kPicture, 1},
-		{26, kHdr, 1}, {27, kBloom, 2}, {28, kSteady, 2}, {29, kGraded, 1}, {30, kMoments, 2},
+		{26, kHdr, 1}, {27, kBloom, 2}, {28, kSteady, 2}, {29, kGraded, 1},
 	};
 	VkDescriptorImageInfo info[kNumTargets];
 	for (const auto &g : groups)
@@ -1638,7 +1637,6 @@ void CreateScene(RtxBackend *s)
 	bind[25].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bind[27].descriptorCount = 2;
 	bind[28].descriptorCount = 2;
-	bind[30].descriptorCount = 2;
 
 	VkDescriptorSetLayoutCreateInfo dlci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
 	dlci.bindingCount = kNumBindings;
@@ -2279,8 +2277,10 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 
 	// each frame looks through a slightly different point of every pixel, so
 	// that over time edges are seen from all across it
-	// (which only shows as shaking where frames are not being added up)
-	if (view->antialias && !view->debug && use_history)
+	// Only where the last pass puts the picture back together from those
+	// points, which is the filtered picture: a raw one would show each
+	// frame where it was traced, and shake by a part of a pixel.
+	if (view->antialias && !view->debug && filtering == 2)
 	{
 		const auto halton = [](uint32_t index, uint32_t base)
 		{
@@ -2336,7 +2336,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.counts[1] = (int32_t)num_lights;
 	f.counts[2] = (int32_t)s->frame_index;
 	f.counts[3] = view->anim_frame;
-	f.bases[0] = filtering == 2 ? std::min(std::max(view->adaptive, 1), 16) : 1;	// it goes by the history
+	f.bases[0] = 0;
 	f.bases[2] = filtering;
 	f.bases[1] = (int32_t)s->world.num_solid;
 	f.bases[3] = (int32_t)s->frame.num_solid;

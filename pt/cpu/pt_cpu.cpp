@@ -805,42 +805,6 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 	const float spec_chance = (!has_specular || sc.reflections < 2) ? 0.0f
 		: std::min(1.0f, std::max(0.1f, Luminance(surf.SpecularAlbedo()) * 10.0f) * sc.reflection_rate);
 
-	// Paths are best spent where the picture has little to go on: on what
-	// has just come into view, and on what is still noisy. What last frame
-	// knew of this point says which that is.
-	if (sc.adaptive > 1)
-	{
-		float known = 0.0f, noise = 0.0f;
-		if (s->have_history)
-		{
-			const Camera &pc = s->prev_camera;
-			const Pixels &prev = s->prev;
-			const Vec3 v = px.seen[i] - pc.origin;
-			const float z = Dot(v, pc.forward);
-			if (z > 0.01f)
-			{
-				const int qx = (int)std::floor((Dot(v, pc.right) / (z * pc.tx) * 0.5f + 0.5f) * s->rw);
-				const int qy = (int)std::floor((0.5f - Dot(v, pc.up) / (z * pc.ty) * 0.5f) * s->rh);
-				if (qx >= 0 && qy >= 0 && qx < s->rw && qy < s->rh)
-				{
-					const size_t q = (size_t)qy * s->rw + qx;
-					if (prev.depth[q] > 0.0f && std::fabs(prev.depth[q] - px.depth[i]) < 0.1f * px.depth[i])
-					{
-						known = prev.length[q];
-						const float mean = prev.m1[kDiffuse][q];
-						noise = std::sqrt(std::max(0.0f, prev.m2[kDiffuse][q] - mean * mean)) / (mean + 0.01f);
-					}
-				}
-			}
-		}
-		if (known < 2.0f)
-			samples *= sc.adaptive;
-		else if (known < 8.0f)
-			samples *= std::max(1, sc.adaptive / 2);
-		else if (noise > 2.0f && known < 32.0f)
-			samples *= 2;
-	}
-
 	Vec3 sum[2];
 	float m1[2] = {}, m2[2] = {};
 	float spec_reach = -1.0f;
@@ -1828,8 +1792,6 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	sc.reflections = view->reflections;
 	sc.reflection_bounces = std::max(1, view->reflection_bounces > 0 ? view->reflection_bounces : bounces);
 	sc.reflection_rate = std::max(0.0f, view->reflection_rate);
-	// it goes by the history, which only the filtered picture keeps
-	sc.adaptive = (view->debug || view->filter >= 2) ? std::min(std::max(view->adaptive, 1), 16) : 1;
 	sc.refraction = view->refraction != 0;
 	sc.fog_density = view->fog ? std::min(std::max(view->fog_density, 0.0f), 0.05f) : 0.0f;
 	if (bounces < 1)
@@ -1847,7 +1809,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	{
 		const float settings[] = {(float)samples, (float)sc.light_samples, sc.max_sample, sc.wave_strength,
 			(float)sc.filter_textures, (float)sc.reflections, (float)sc.reflection_bounces, sc.reflection_rate,
-			(float)sc.refraction, view->exposure, sc.fog_density, (float)sc.adaptive};
+			(float)sc.refraction, view->exposure, sc.fog_density};
 		hash = HashBytes(settings, sizeof(settings), hash);
 	}
 	if (s->world->has_waves)
@@ -1864,8 +1826,9 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	const bool had_history = s->have_history;
 	s->have_history = had_history && (filtering == 2 || (filtering == 1 && same_camera));
 	s->filtering = filtering;
-	// (which only shows as shaking where frames are not being added up)
-	const bool antialias = view->antialias != 0 && (filtering == 2 || (filtering == 1 && same_camera));
+	// (only for the filtered picture, whose last pass puts it back together
+	// from those points: a raw one would shake by a part of a pixel)
+	const bool antialias = view->antialias != 0 && filtering == 2;
 	const float jx = antialias ? Halton(s->frame_index % 16 + 1, 2) - 0.5f : 0.0f;
 	const float jy = antialias ? Halton(s->frame_index % 16 + 1, 3) - 0.5f : 0.0f;
 	s->jitter_x = jx;

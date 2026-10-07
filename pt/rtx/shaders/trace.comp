@@ -262,7 +262,7 @@ void main()
 		imageStore(img_albedo[1], pixel, vec4(0.0));
 		imageStore(img_noisy[0], pixel, vec4(0.0));
 		imageStore(img_noisy[1], pixel, vec4(0.0));
-		imageStore(img_noisy[2], pixel, vec4(over, Luminance(over) * Luminance(over)));
+		imageStore(img_noisy[2], pixel, vec4(over, 1.0));
 		imageStore(img_extra, pixel, vec4(beyond, 1.0));
 		return;
 	}
@@ -315,40 +315,8 @@ void main()
 		: min(1.0, max(0.1, Luminance(SpecularAlbedo(surf)) * 10.0) * fr.settings_f.y);
 
 	const int bounces = fr.settings.x;
-	int paths = max(1, fr.settings2.z);
-
-	// Paths are best spent where the picture has little to go on: on what
-	// has just come into view. What last frame knew of this point says so.
-	const int adaptive = fr.bases.x;
-	if (adaptive > 1)
-	{
-		float known = 0.0;
-		if (fr.output_i.w != 0)
-		{
-			const vec3 v = seen - fr.prev_origin.xyz;
-			const float z = dot(v, fr.prev_forward.xyz);
-			if (z > 0.01)
-			{
-				const ivec2 q = ivec2(floor(vec2(
-					(dot(v, fr.prev_right.xyz) / (z * fr.prev_origin.w) * 0.5 + 0.5) * size.x,
-					(0.5 - dot(v, fr.prev_up.xyz) / (z * fr.prev_forward.w) * 0.5) * size.y)));
-				if (q.x >= 0 && q.y >= 0 && q.x < size.x && q.y < size.y)
-				{
-					const float was = imageLoad(img_surface[1 - now], q).a;
-					const float expected = length(v);
-					if (was > 0.0 && abs(was - expected) < 0.1 * expected)
-						known = imageLoad(img_m2[1 - now], q).a;
-				}
-			}
-		}
-		if (known < 2.0)
-			paths *= adaptive;
-		else if (known < 8.0)
-			paths *= max(1, adaptive / 2);
-		paths = min(paths, 64);
-	}
+	const int paths = max(1, fr.settings2.z);
 	vec3 sum_d = vec3(0.0), sum_s = vec3(0.0);
-	float square_d = 0.0, square_s = 0.0;	// of each path's brightness
 	for (int k = 0; k < paths; k++)
 	{
 		const Lit direct = DirectWorld(surf, true);
@@ -369,21 +337,16 @@ void main()
 						/ spec_albedo * (1.0 / spec_chance);
 			}
 		}
-		d = ClampSample(d, max_sample);
-		sp = ClampSample(sp, max_sample);
-		sum_d += d;
-		sum_s += sp;
-		square_d += Luminance(d) * Luminance(d);
-		square_s += Luminance(sp) * Luminance(sp);
+		sum_d += ClampSample(d, max_sample);
+		sum_s += ClampSample(sp, max_sample);
 	}
 
 	imageStore(img_surface[now], pixel, vec4(surf.n, depth));
 	imageStore(img_seen, pixel, vec4(seen, surf.roughness));
-	const vec2 facing = OctEncode(surf.ng);
-	imageStore(img_albedo[0], pixel, vec4(kd, facing.x));
-	imageStore(img_albedo[1], pixel, vec4(ks, facing.y));
-	imageStore(img_noisy[0], pixel, vec4(sum_d / float(paths), square_d / float(paths)));
-	imageStore(img_noisy[1], pixel, vec4(sum_s / float(paths), square_s / float(paths)));
-	imageStore(img_noisy[2], pixel, vec4(over, Luminance(over) * Luminance(over)));
+	imageStore(img_albedo[0], pixel, vec4(kd, 1.0));
+	imageStore(img_albedo[1], pixel, vec4(ks, 1.0));
+	imageStore(img_noisy[0], pixel, vec4(sum_d / float(paths), 1.0));
+	imageStore(img_noisy[1], pixel, vec4(sum_s / float(paths), 1.0));
+	imageStore(img_noisy[2], pixel, vec4(over, 1.0));
 	imageStore(img_extra, pixel, vec4(extra, 1.0));
 }

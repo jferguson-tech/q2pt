@@ -53,7 +53,7 @@ void main()
 		else if (debug == 4) c = layers.rgb;
 		else if (debug == 5) c = extra;
 		else if (debug == 6) c = surface.xyz * 0.25 + 0.25;
-		else if (debug == 7) c = vec3(min(imageLoad(img_m2[now], pixel).a, 32.0) / 64.0);
+		else if (debug == 7) c = vec3(min(diffuse.a, 32.0) / 64.0);
 		else if (debug == 10) c = vec3(surface.a * 0.002);
 	}
 	c *= exposure;
