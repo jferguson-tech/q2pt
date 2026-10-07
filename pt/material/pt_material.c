@@ -57,6 +57,8 @@ units of brightness, so a value means the same on a 16 texel button and a
 #define ROUGH_WARM		0.12f
 #define ROUGH_BRIGHT	0.10f
 #define ROUGH_SOFTEN	0.8f
+#define ROUGH_LESS		0.15f	/* the most a texel is made smoother than the material ... */
+#define ROUGH_MORE		0.3f	/* ... and the most it is made rougher */
 
 #define MARGIN			8		/* texels of the picture's own continuation put round one that is padded */
 #define LARGEST			1024	/* repeating pictures wider or higher than this get a map of their own size */
@@ -621,8 +623,9 @@ uint32_t *pt_material_detail(const uint32_t *pixels, int width, int height, cons
 			sy *= level;
 			len = 1.0f / sqrtf(sx * sx + sy * sy + 1.0f);
 
-			rough = from->roughness + spread * ((r0[xa] * (1.0f - ax) + r0[xb] * ax) * (1.0f - ay)
+			rough = spread * ((r0[xa] * (1.0f - ax) + r0[xb] * ax) * (1.0f - ay)
 				+ (r1[xa] * (1.0f - ax) + r1[xb] * ax) * ay);
+			rough = from->roughness + (rough < -ROUGH_LESS ? -ROUGH_LESS : (rough > ROUGH_MORE ? ROUGH_MORE : rough));
 			if (rough < 0.04f)
 				rough = 0.04f;
 

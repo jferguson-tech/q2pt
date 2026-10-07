@@ -172,6 +172,7 @@ void	R_WorldMaterial (int index, pt_material_t *material, image_t **image);
 extern	cvar_t	*pt_stats;
 extern	cvar_t	*pt_debug;
 extern	cvar_t	*pt_simd;
+extern	cvar_t	*pt_material_cache;
 extern	float	r_skyscale, r_lampglow;
 extern	float	r_surfacelight, r_pointlight, r_liquidglow;
 extern	float	r_detailglow;
@@ -180,7 +181,6 @@ extern	int		r_watermode;		// 0 classic, 1 realistic, 2 simulated
 extern	float	r_watercell, r_waterwaves, r_watercaustics, r_waterdamping;
 extern	float	r_bumpscale, r_roughscale, r_metalscale;
 extern	int		r_materialmaps;		// detail maps are read from the pictures' painted light
-extern	int		r_materialcache;	// and kept in pt_cache from one run to the next
 
 void	R_InitSettings (void);
 qboolean R_UpdateSettings (void);

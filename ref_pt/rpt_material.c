@@ -529,6 +529,10 @@ static uint32_t *Mat_FromPicture (image_t *image, const matinfo_t *info, int *wi
 	pt_material_from_t	from;
 	uint32_t			key, *map;
 	int					scale, start;
+	qboolean			keep;
+
+	// asked now, not once a frame: skins are read before a level's first frame
+	keep = pt_material_cache->value != 0;
 
 	Mat_From (image, info, &from);
 	scale = pt_material_detail_scale (image->width, image->height, from.repeats);
@@ -536,7 +540,7 @@ static uint32_t *Mat_FromPicture (image_t *image, const matinfo_t *info, int *wi
 	*height = image->height * scale;
 
 	key = 0;
-	if (r_materialcache)
+	if (keep)
 	{
 		key = Mat_Key (image, &from);
 		map = Mat_CacheRead (image, key, *width, *height);
@@ -554,7 +558,7 @@ static uint32_t *Mat_FromPicture (image_t *image, const matinfo_t *info, int *wi
 		return NULL;
 	mat_made++;
 
-	if (r_materialcache)
+	if (keep)
 		Mat_CacheWrite (image, key, map, *width, *height);
 	return map;
 }
