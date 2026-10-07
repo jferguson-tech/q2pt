@@ -22,10 +22,19 @@ a second.*
   lights and spotlights from the map's entities, the sky, and dynamic lights.
   Lights are importance sampled; indirect light comes from further bounces.
 * Physically based materials: GGX specular with roughness and metallic, normal
-  maps and smooth shading on models. Surface properties are guessed from the
-  texture names and can be set per texture in `pt_materials.txt`, or given as
-  hand-made maps beside a texture: `<name>_n.tga` (normals), `<name>_r.tga`
-  (roughness) and `<name>_e.tga` (emission).
+  maps and smooth shading on models. What kind of thing a surface is is guessed
+  from its texture's name and can be set per texture in `pt_materials.txt`.
+* Normal and roughness maps made from the game's own textures, on your machine,
+  the first time a level shows them. The artists painted a highlight on the
+  edges that face the top left of a texture and a shadow on the others; that
+  painted light is read back as shape, so panels, seams, rivets and vents
+  catch real light the way they were drawn to. Where nothing was painted, dark
+  is taken to be deep, and rust and grooves are made rougher than bare metal.
+  The maps are twice as fine as the textures. They are kept in
+  `baseq2\pt_cache`, about 100 KB a texture, which can be deleted at any time;
+  nothing made from the game's art is part of this repository. Hand-made maps
+  beside a texture are used instead where there are any: `<name>_n.tga`
+  (normals), `<name>_r.tga` (roughness) and `<name>_e.tga` (emission).
 * Glass and liquids reflect and refract with a Fresnel term.
 * Three ways to draw water: classic (the original swimming texture), realistic
   (rippled, reflecting and refracting) and simulated (a wave simulation per
@@ -211,6 +220,10 @@ Some console commands and variables:
 | `pt_stats 0` | hide the performance info, which is on by default (never shown in offline renders) |
 | `pt_simd 0`-`1` | CPU renderer: the build for AVX2 where the processor has it, or the one for any processor, to compare the two |
 | `pt_debug 1`-`11` | one part of the picture on its own |
+| `pt_bump`, `pt_roughness`, `pt_metallic` | scale how deep, how rough and how metallic every surface is taken to be; 1 unless set |
+| `pt_material_maps 0`-`1` | normal and roughness maps read from each texture's painted light (`1`, the default), or the plain ones of before, which take brightness for height |
+| `pt_material_cache 0`-`1` | keep the maps that were made in `baseq2\pt_cache`, so that a texture is read once only; on by default |
+| `pt_material_show <image>` | write a texture beside the height, normals and roughness read from it, as a PNG in `baseq2\scrnshot`: for example `pt_material_show textures/e1u1/metal1_1` |
 | `screenshot`, `pt_screenshot [paths]` | the frame as shown, or rendered again at high quality |
 | `record <name>`, `stop` | record a demo (the game's own commands) |
 | `pt_render <demo> [fps] [paths] [start] [length]` | render a demo offline into `baseq2\render\<demo>\`; start and length, in seconds, pick a part of it |
@@ -225,6 +238,7 @@ pt/         the path tracing core (MIT): knows nothing about Quake 2
   cpu/            CPU backend: BVH, path tracer, denoiser, output
   rtx/            Vulkan backend: the same tracer as compute shaders
   water/          height field wave simulation
+  material/       normal and roughness maps from a texture's colours
   png/            PNG writer
 ref_pt/     the renderer DLLs (GPL): turns Quake 2's maps, models and
             per-frame scene into what pt.h asks for

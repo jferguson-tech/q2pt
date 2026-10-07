@@ -142,12 +142,15 @@ void	Draw_Blend (int x, int y, int w, int h, float *blend);
 
 int		R_ImageTexture (image_t *image);
 int		R_ImageNormalTexture (image_t *image);
+void	R_MakeSkinMaterials (void);
 void	R_MaterialsChanged (void);
 
 //
 // rpt_material.c
 //
 void	R_InitMaterials (void);
+void	R_ShutdownMaterials (void);
+void	R_MaterialsReport (void);
 void	R_MaterialInfo (const char *name, matinfo_t *info);
 uint32_t *R_ImageNormalMap (image_t *image, const matinfo_t *info, int *width, int *height);
 image_t	*R_ImageGlowMap (image_t *image);
@@ -176,6 +179,8 @@ extern	int		r_normalflip;
 extern	int		r_watermode;		// 0 classic, 1 realistic, 2 simulated
 extern	float	r_watercell, r_waterwaves, r_watercaustics, r_waterdamping;
 extern	float	r_bumpscale, r_roughscale, r_metalscale;
+extern	int		r_materialmaps;		// detail maps are read from the pictures' painted light
+extern	int		r_materialcache;	// and kept in pt_cache from one run to the next
 
 void	R_InitSettings (void);
 qboolean R_UpdateSettings (void);

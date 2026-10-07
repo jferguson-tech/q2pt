@@ -386,6 +386,32 @@ int R_ImageNormalTexture (image_t *image)
 
 /*
 ===============
+R_MakeSkinMaterials
+
+Reads the detail maps of the level's skins now, while it is loading, so
+that the first sight of a monster does not hold up a frame
+===============
+*/
+void R_MakeSkinMaterials (void)
+{
+	matinfo_t	info;
+	image_t		*image;
+	int			i, width, height;
+
+	if (!r_materialmaps)
+		return;		// the plain ones take no time to speak of
+
+	for (i=0, image=r_images ; i<numr_images ; i++, image++)
+	{
+		if (image->registration_sequence != registration_sequence || image->type != it_skin || image->normalmap)
+			continue;
+		R_MaterialInfo (image->name, &info);
+		R_ImageNormalMap (image, &info, &width, &height);
+	}
+}
+
+/*
+===============
 R_MaterialsChanged
 
 Throws away every generated detail map, so that they are made again from
