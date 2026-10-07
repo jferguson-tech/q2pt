@@ -1406,6 +1406,7 @@ static menulist_s		s_pt_quality_list;
 static menuslider_s		s_pt_scale_slider;
 static menulist_s		s_pt_reflections_list;
 static menuslider_s		s_pt_bounces_slider;
+static menuslider_s		s_pt_samples_slider;
 static menulist_s		s_pt_taa_box;
 static menuslider_s		s_pt_exposure_slider;
 static menulist_s		s_pt_tonemap_list;
@@ -1440,6 +1441,11 @@ static void PT_ReflectionsFunc( void *unused )
 static void PT_BouncesFunc( void *unused )
 {
 	Cvar_SetValue( "pt_bounces", s_pt_bounces_slider.curvalue );
+}
+
+static void PT_SamplesFunc( void *unused )
+{
+	Cvar_SetValue( "pt_samples", s_pt_samples_slider.curvalue );
 }
 
 static void PT_TaaFunc( void *unused )
@@ -1608,6 +1614,7 @@ static void PT_SetMenuValues( void )
 	s_pt_scale_slider.curvalue = (int)( ClampCvar( 0.25f, 1, Cvar_VariableValue( "pt_scale" ) ) * 20 + 0.5f );
 	s_pt_reflections_list.curvalue = (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_reflections" ) );
 	s_pt_bounces_slider.curvalue = (int)ClampCvar( 0, 6, Cvar_VariableValue( "pt_bounces" ) );
+	s_pt_samples_slider.curvalue = (int)ClampCvar( 1, 16, Cvar_VariableValue( "pt_samples" ) );
 	s_pt_taa_box.curvalue = Cvar_VariableValue( "pt_taa" ) != 0;
 	s_pt_exposure_slider.curvalue = (int)( ClampCvar( 0.5f, 6, Cvar_VariableValue( "pt_exposure" ) ) * 4 + 0.5f );
 	s_pt_tonemap_list.curvalue = (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_tonemap" ) );
@@ -1670,6 +1677,7 @@ void PathTrace_MenuInit( void )
 	Cvar_Get( "pt_scale", "0.5", CVAR_ARCHIVE );
 	Cvar_Get( "pt_reflections", "2", CVAR_ARCHIVE );
 	Cvar_Get( "pt_bounces", "3", CVAR_ARCHIVE );
+	Cvar_Get( "pt_samples", "1", CVAR_ARCHIVE );
 	Cvar_Get( "pt_taa", "1", CVAR_ARCHIVE );
 	Cvar_Get( "pt_exposure", "2", CVAR_ARCHIVE );
 	Cvar_Get( "pt_tonemap", "0", CVAR_ARCHIVE );
@@ -1680,7 +1688,7 @@ void PathTrace_MenuInit( void )
 	Cvar_Get( "pt_stats", "1", CVAR_ARCHIVE );
 
 	s_pt_menu.x = viddef.width / 2;
-	s_pt_menu.y = viddef.height / 2 - 63;
+	s_pt_menu.y = viddef.height / 2 - 68;
 	s_pt_menu.nitems = 0;
 
 	s_pt_quality_list.generic.type		= MTYPE_SPINCONTROL;
@@ -1713,16 +1721,27 @@ void PathTrace_MenuInit( void )
 	s_pt_bounces_slider.minvalue		= 0;
 	s_pt_bounces_slider.maxvalue		= 6;
 
+	// paths traced through each pixel each frame: the raw picture is as
+	// grainy as this is low, and a frame takes as long as it is high. More
+	// than the slider goes to can be had from the console (pt_samples)
+	s_pt_samples_slider.generic.type	= MTYPE_SLIDER;
+	s_pt_samples_slider.generic.x		= 0;
+	s_pt_samples_slider.generic.y		= 50;
+	s_pt_samples_slider.generic.name	= "samples per pixel";
+	s_pt_samples_slider.generic.callback = PT_SamplesFunc;
+	s_pt_samples_slider.minvalue		= 1;
+	s_pt_samples_slider.maxvalue		= 16;
+
 	s_pt_taa_box.generic.type			= MTYPE_SPINCONTROL;
 	s_pt_taa_box.generic.x				= 0;
-	s_pt_taa_box.generic.y				= 50;
+	s_pt_taa_box.generic.y				= 60;
 	s_pt_taa_box.generic.name			= "anti-aliasing";
 	s_pt_taa_box.generic.callback		= PT_TaaFunc;
 	s_pt_taa_box.itemnames				= yesno_names;
 
 	s_pt_exposure_slider.generic.type	= MTYPE_SLIDER;
 	s_pt_exposure_slider.generic.x		= 0;
-	s_pt_exposure_slider.generic.y		= 60;
+	s_pt_exposure_slider.generic.y		= 70;
 	s_pt_exposure_slider.generic.name	= "exposure";
 	s_pt_exposure_slider.generic.callback = PT_ExposureFunc;
 	s_pt_exposure_slider.minvalue		= 2;
@@ -1730,49 +1749,49 @@ void PathTrace_MenuInit( void )
 
 	s_pt_tonemap_list.generic.type		= MTYPE_SPINCONTROL;
 	s_pt_tonemap_list.generic.x			= 0;
-	s_pt_tonemap_list.generic.y			= 70;
+	s_pt_tonemap_list.generic.y			= 80;
 	s_pt_tonemap_list.generic.name		= "tone mapping";
 	s_pt_tonemap_list.generic.callback	= PT_TonemapFunc;
 	s_pt_tonemap_list.itemnames			= tonemap_names;
 
 	s_pt_bloom_box.generic.type			= MTYPE_SPINCONTROL;
 	s_pt_bloom_box.generic.x			= 0;
-	s_pt_bloom_box.generic.y			= 80;
+	s_pt_bloom_box.generic.y			= 90;
 	s_pt_bloom_box.generic.name			= "bloom";
 	s_pt_bloom_box.generic.callback		= PT_BloomFunc;
 	s_pt_bloom_box.itemnames			= yesno_names;
 
 	s_pt_fog_box.generic.type			= MTYPE_SPINCONTROL;
 	s_pt_fog_box.generic.x				= 0;
-	s_pt_fog_box.generic.y				= 90;
+	s_pt_fog_box.generic.y				= 100;
 	s_pt_fog_box.generic.name			= "fog and light shafts";
 	s_pt_fog_box.generic.callback		= PT_FogFunc;
 	s_pt_fog_box.itemnames				= yesno_names;
 
 	s_pt_water_list.generic.type		= MTYPE_SPINCONTROL;
 	s_pt_water_list.generic.x			= 0;
-	s_pt_water_list.generic.y			= 100;
+	s_pt_water_list.generic.y			= 110;
 	s_pt_water_list.generic.name		= "water";
 	s_pt_water_list.generic.callback	= PT_WaterFunc;
 	s_pt_water_list.itemnames			= water_names;
 
 	s_pt_filter_list.generic.type		= MTYPE_SPINCONTROL;
 	s_pt_filter_list.generic.x			= 0;
-	s_pt_filter_list.generic.y			= 110;
+	s_pt_filter_list.generic.y			= 120;
 	s_pt_filter_list.generic.name		= "picture";
 	s_pt_filter_list.generic.callback	= PT_FilterFunc;
 	s_pt_filter_list.itemnames			= filter_names;
 
 	s_pt_stats_box.generic.type			= MTYPE_SPINCONTROL;
 	s_pt_stats_box.generic.x			= 0;
-	s_pt_stats_box.generic.y			= 120;
+	s_pt_stats_box.generic.y			= 130;
 	s_pt_stats_box.generic.name			= "performance info";
 	s_pt_stats_box.generic.callback		= PT_StatsFunc;
 	s_pt_stats_box.itemnames			= yesno_names;
 
 	s_pt_render_action.generic.type		= MTYPE_ACTION;
 	s_pt_render_action.generic.x		= 0;
-	s_pt_render_action.generic.y		= 140;
+	s_pt_render_action.generic.y		= 150;
 	s_pt_render_action.generic.name		= "render a demo";
 	s_pt_render_action.generic.callback	= PT_RenderFunc;
 
@@ -1782,6 +1801,7 @@ void PathTrace_MenuInit( void )
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_scale_slider );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_reflections_list );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_bounces_slider );
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_samples_slider );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_taa_box );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_exposure_slider );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_tonemap_list );
@@ -1801,7 +1821,7 @@ void PathTrace_MenuDraw (void)
 	PT_SetMenuValues();
 	Menu_AdjustCursor( &s_pt_menu, 1 );
 	Menu_Draw( &s_pt_menu );
-	Menu_DrawStringDark( viddef.width / 2 - (int)strlen( note ) * 4, s_pt_menu.y + 164, note );
+	Menu_DrawStringDark( viddef.width / 2 - (int)strlen( note ) * 4, s_pt_menu.y + 174, note );
 }
 
 const char *PathTrace_MenuKey( int key )
