@@ -160,7 +160,7 @@ def turn(cur, want, most):
     return cur + max(-most, min(most, d))
 
 
-def make_tour(bsp, rng, clips, clip_frames, fps, long_clips=False):
+def make_tour(bsp, rng, clips, clip_frames, fps, long_clips=False, fire_chance=0.5, fire_kinds=(1, 1, 2, 3, 4, 5, 5, 6)):
     """lines for one tour: clips of clip_frames film frames each"""
     pts = places(bsp, rng)
     near = links(bsp, pts)
@@ -183,8 +183,8 @@ def make_tour(bsp, rng, clips, clip_frames, fps, long_clips=False):
         spin = rng.uniform(-90, 90) / hz if speed == 0.0 else 0.0
         # a shot some time from just before the clip to its end, so that some
         # clips open with one in flight or going off
-        fire_at = rng.randrange(-4, per_clip) if rng.random() < 0.5 else -99
-        fire_kind = rng.choice([1, 1, 2, 3, 4, 5, 5, 6])
+        fire_at = rng.randrange(-4, per_clip) if rng.random() < fire_chance else -99
+        fire_kind = rng.choice(list(fire_kinds))
         # a few frames to arrive in, not filmed, then the clip
         steps = [0] * 6 + [clip] * per_clip
         for n, mark in enumerate(steps):

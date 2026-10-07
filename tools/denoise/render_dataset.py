@@ -19,12 +19,15 @@ HELD_OUT = ['ware2', 'jail3', 'mine3', 'power2', 'city2', 'q2dm4']
 
 # tag, blur, fog, clips, frames a clip, frames a second, paths a pixel in the reference
 TRAIN_JOBS = [('a', 0.0, 1, 4, 12, 30, 512), ('b', 0.0, 0, 1, 12, 60, 512), ('c', 0.5, 1, 2, 12, 30, 512)]
+# a second helping, with more shooting and the BFG's flash more often: the first had few of either
+MORE = dict(fire_chance=0.85, fire_kinds=(1, 2, 3, 4, 5, 6, 6, 6))
+TRAIN_JOBS += [('d', 0.0, 1, 4, 12, 30, 512, MORE), ('e', 0.5, 1, 2, 12, 30, 512, MORE)]
 # The test references have to be far cleaner than anything being compared
 # with them: at 2048 paths they were the limit of what could be measured.
 TEST_JOBS = [('s', 0.0, 1, 1, 12, 30, 16384), ('m', 0.5, 1, 1, 12, 30, 4096)]
 
 
-def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed):
+def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed, more):
     name = '%s_%s' % (m, tag)
     out = os.path.join(args.out, args.split, name)
     if os.path.exists(os.path.join(out, 'done')):
@@ -34,7 +37,7 @@ def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed):
     baseq2 = os.path.join(args.game, 'baseq2')
     files = make_tours.read_paks(baseq2)
     bsp = make_tours.Bsp(make_tours.read_file(files, 'maps/%s.bsp' % m))
-    lines = make_tours.make_tour(bsp, random.Random('%s/%s/%d' % (m, tour_tag, seed)), clips, frames, fps)
+    lines = make_tours.make_tour(bsp, random.Random('%s/%s/%d' % (m, tour_tag, seed)), clips, frames, fps, **more)
     if not lines:
         print('%s: nowhere to go' % name, flush=True)
         return False
@@ -102,11 +105,11 @@ def main():
     if os.path.exists(config) and not os.path.exists(backup):
         shutil.copy(config, backup)
     try:
-        for tag, blur, fog, clips, frames, fps, paths in jobs:
+        for tag, blur, fog, clips, frames, fps, paths, *more in jobs:
             for m in maps:
                 # a test tour is the same sharp and blurred, to compare them
                 tour_tag = 'test' if args.split == 'test' else tag
-                run_job(args, m, tag, blur, fog, clips, frames, fps, args.paths or paths, tour_tag, args.seed)
+                run_job(args, m, tag, blur, fog, clips, frames, fps, args.paths or paths, tour_tag, args.seed, more[0] if more else {})
     finally:
         if os.path.exists(backup):
             shutil.move(backup, config)
