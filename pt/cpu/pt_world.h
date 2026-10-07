@@ -238,7 +238,6 @@ struct Scene
 	int			reflections = 2;
 	int			reflection_bounces = 3;
 	float		reflection_rate = 1.0f;
-	int			adaptive = 1;
 	bool		refraction = true;
 	float		fog_density = 0.0f;		// 0 = clear air
 

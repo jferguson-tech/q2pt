@@ -150,7 +150,7 @@ static void Bench_Report (void)
 	// what a run has to have in common with another to be compared with it
 	static char	*settings[] = {
 		"pt_quality", "pt_scale", "pt_samples", "pt_bounces", "pt_light_samples", "pt_reflections",
-		"pt_adaptive", "pt_denoise", "pt_taa", "pt_fog", "pt_water", "pt_bloom", NULL
+		"pt_denoise", "pt_taa", "pt_fog", "pt_water", "pt_bloom", NULL
 	};
 	benchstage_t	*stage;
 	char		path[MAX_OSPATH], when[32];

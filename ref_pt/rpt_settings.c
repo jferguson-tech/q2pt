@@ -65,7 +65,6 @@ static cvar_t	*pt_detail_glow;			// screens, buttons and indicator lights
 // reflections
 static cvar_t	*pt_reflections;		// 0 none, 1 glass and water, 2 everything shiny
 static cvar_t	*pt_reflection_bounces;	// 0 = as many as pt_bounces
-static cvar_t	*pt_adaptive;			// up to this many times the paths where the picture is new or noisy
 static cvar_t	*pt_reflection_rate;	// how often rough surfaces get a reflection path
 static cvar_t	*pt_refraction;			// water bends the view
 static cvar_t	*pt_normal_flip;			// 1 = hand made normal maps have green pointing up
@@ -107,7 +106,6 @@ static struct
 	{ "pt_reflections",			&pt_reflections,		{ 1, 2, 2, 2 } },
 	{ "pt_reflection_bounces",	&pt_reflection_bounces,	{ 1, 0, 0, 0 } },
 	{ "pt_reflection_rate",		&pt_reflection_rate,	{ 0.5f, 1, 1, 1 } },
-	{ "pt_adaptive",			&pt_adaptive,			{ 1, 2, 4, 4 } },
 };
 
 #define	NUM_PRESET_VARS	(sizeof(presets) / sizeof(presets[0]))
@@ -165,7 +163,6 @@ void R_InitSettings (void)
 	pt_reflections = ri.Cvar_Get ("pt_reflections", "2", CVAR_ARCHIVE);
 	pt_reflection_bounces = ri.Cvar_Get ("pt_reflection_bounces", "0", CVAR_ARCHIVE);
 	pt_reflection_rate = ri.Cvar_Get ("pt_reflection_rate", "1", CVAR_ARCHIVE);
-	pt_adaptive = ri.Cvar_Get ("pt_adaptive", "2", CVAR_ARCHIVE);
 	pt_refraction = ri.Cvar_Get ("pt_refraction", "1", CVAR_ARCHIVE);
 	pt_waves = ri.Cvar_Get ("pt_waves", "1", CVAR_ARCHIVE);
 	pt_water = ri.Cvar_Get ("pt_water", "2", CVAR_ARCHIVE);
@@ -310,7 +307,6 @@ void R_ViewSettings (pt_view_t *view)
 	view->reflections = pt_reflections->value;
 	view->reflection_bounces = pt_reflection_bounces->value;
 	view->reflection_rate = pt_reflection_rate->value;
-	view->adaptive = pt_adaptive->value;
 	view->refraction = pt_refraction->value != 0;
 	view->wave_strength = pt_waves->value;
 
@@ -348,7 +344,7 @@ the panel up.
 =============================================================================
 */
 
-#define	NUM_FILTER_ROWS		8
+#define	NUM_FILTER_ROWS		7
 #define	FILTER_ROW_CHARS	64
 #define	FILTER_PANEL_MSEC	6000
 
@@ -386,20 +382,16 @@ static void R_FilterRows (char rows[NUM_FILTER_ROWS][FILTER_ROW_CHARS], float va
 	Com_sprintf (text, sizeof(text), "%d passes", (int)pt_denoise->value);
 	R_FilterRow (rows[3], " 3 noise filter", pt_denoise->value > 0, text, raw);
 
-	values[4] = pt_adaptive->value;
-	Com_sprintf (text, sizeof(text), "up to %dx", (int)pt_adaptive->value);
-	R_FilterRow (rows[4], " 4 adaptive sampling", pt_adaptive->value > 1, text, raw);
+	values[4] = pt_auto_exposure->value != 0;
+	R_FilterRow (rows[4], " 4 auto exposure", values[4] != 0, "", false);
 
-	values[5] = pt_auto_exposure->value != 0;
-	R_FilterRow (rows[5], " 5 auto exposure", values[5] != 0, "", false);
-
-	values[6] = pt_scale->value;
+	values[5] = pt_scale->value;
 	Com_sprintf (text, sizeof(text), "traced at %d%%", (int)(pt_scale->value * 100 + 0.5f));
-	R_FilterRow (rows[6], " 6 upscaling", pt_scale->value < 1, text, false);
+	R_FilterRow (rows[5], " 5 upscaling", pt_scale->value < 1, text, false);
 
-	values[7] = pt_debug->value;
+	values[6] = pt_debug->value;
 	Com_sprintf (text, sizeof(text), "debug view %d", (int)pt_debug->value);
-	R_FilterRow (rows[7], " 7 history view", pt_debug->value != 0, pt_debug->value == 7 ? "" : text, false);
+	R_FilterRow (rows[6], " 6 history view", pt_debug->value != 0, pt_debug->value == 7 ? "" : text, false);
 }
 
 /*

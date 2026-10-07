@@ -80,8 +80,7 @@ where the CPU renderer manages 9. Offline frames at 64 paths per pixel take
 about a quarter of a second each, some twenty times faster than on the CPU.
 
 Not yet on the GPU: the separate history the CPU renderer keeps for mirror
-reflections. Adaptive sampling there goes by how long a point has been in
-view, not also by how noisy it is. Its denoiser decides how far to smooth
+reflections. Its denoiser decides how far to smooth
 from how long a pixel has been in view rather than from measured noise.
 
 Like the CPU renderer it can trace a smaller picture than the window and
@@ -188,7 +187,7 @@ Some console commands and variables:
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
 | `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time |
 | `pt_filter 0`-`2`, `pt_filter_cycle` (**F7**) | the picture as the paths alone make it, noise and all: `0` every frame on its own, `1` the same but frames add up while you stand still, `2` (the default) blended over time and filtered |
-| `pt_switch 1`-`7` (number pad **1**-**7**) | switch off, or back on, one of the things in the picture that depend on earlier frames, to find which one a fault comes from: anti-aliasing and the upscaler, light history, the noise filter, adaptive sampling, auto exposure, upscaling, the history view. A list of them all comes up for a few seconds with what is on and off. Number pad **0** puts them all back; **.** keeps the list up (`pt_show_filter`) |
+| `pt_switch 1`-`6` (number pad **1**-**6**) | switch off, or back on, one of the things in the picture that depend on earlier frames, to find which one a fault comes from: anti-aliasing and the upscaler, light history, the noise filter, auto exposure, upscaling, the history view. A list of them all comes up for a few seconds with what is on and off. Number pad **0** puts them all back; **.** keeps the list up (`pt_show_filter`) |
 | `pt_stats 0` | hide the performance info, which is on by default (never shown in offline renders) |
 | `pt_simd 0`-`1` | CPU renderer: the build for AVX2 where the processor has it, or the one for any processor, to compare the two |
 | `pt_debug 1`-`11` | one part of the picture on its own |
