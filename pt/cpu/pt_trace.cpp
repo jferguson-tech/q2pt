@@ -210,10 +210,13 @@ bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &
 			r.tmax = hit.t;
 		Hit h;
 		bool found_frame;
-		if (held == kHeldOnly)
+		if (held != kHeldToo)
 		{
-			// the tree with eight children is not asked about plain
-			// triangles, which here are the ones to pass by
+			// The tree with eight children is not asked about plain
+			// triangles, and what the eye carries is not marked out to it
+			// (that would cost every ray while playing, when it is not
+			// kept apart): the frame's tree is small, so ask it about all
+			// of them.
 			found_frame = sc.frame->bvh.IntersectIf(r, h, in_frame);
 		}
 		else
