@@ -181,7 +181,7 @@ Some console commands and variables:
 | --- | --- |
 | `pt_quality 0`-`3` | preset: low, medium, high, ultra |
 | `pt_scale` | internal resolution as a fraction of the window |
-| `pt_bounces`, `pt_samples`, `pt_light_samples` | path length, paths per pixel per frame, lights weighed per point |
+| `pt_bounces`, `pt_samples`, `pt_light_samples` | path length, paths per pixel per frame (also a slider in the menu, 1 to 16), lights weighed per point |
 | `pt_reflections 0`-`2` | none, glass and water, every shiny surface |
 | `pt_water 0`-`2` | classic, realistic, simulated |
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
