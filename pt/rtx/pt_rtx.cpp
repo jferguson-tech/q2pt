@@ -258,7 +258,9 @@ struct RtxBackend
 	VkCommandPool		cmdpool = VK_NULL_HANDLE;
 	VkCommandBuffer		cmd = VK_NULL_HANDLE;
 	VkCommandBuffer		cmd_once = VK_NULL_HANDLE;	// for work done at once, outside a frame
+	VkCommandBuffer		cmd_trace = VK_NULL_HANDLE;	// the tracing of a view, sent off before the frame that shows it
 	VkFence				fence = VK_NULL_HANDLE;
+	VkFence				fence_trace = VK_NULL_HANDLE;	// the card has finished cmd_trace
 	VkSemaphore			sem_acquire = VK_NULL_HANDLE;
 
 	VkSwapchainKHR		swapchain = VK_NULL_HANDLE;
@@ -573,6 +575,7 @@ void CreateDevice(RtxBackend *s)
 	cai.commandBufferCount = 1;
 	Check(vkAllocateCommandBuffers(s->device, &cai, &s->cmd), "vkAllocateCommandBuffers");
 	Check(vkAllocateCommandBuffers(s->device, &cai, &s->cmd_once), "vkAllocateCommandBuffers");
+	Check(vkAllocateCommandBuffers(s->device, &cai, &s->cmd_trace), "vkAllocateCommandBuffers");
 
 #define LOAD(name) \
 	s->name = (PFN_vk##name##KHR)vkGetDeviceProcAddr(s->device, "vk" #name "KHR"); \
@@ -593,6 +596,7 @@ void CreateDevice(RtxBackend *s)
 	VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
 	fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 	Check(vkCreateFence(s->device, &fci, nullptr, &s->fence), "vkCreateFence");
+	Check(vkCreateFence(s->device, &fci, nullptr, &s->fence_trace), "vkCreateFence");
 
 	VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 	Check(vkCreateSemaphore(s->device, &sci, nullptr, &s->sem_acquire), "vkCreateSemaphore");
@@ -2031,6 +2035,36 @@ void TraceNow(RtxBackend *s)
 	s->trace_pending = false;
 }
 
+// Sends the tracing of the view just described to the card at once, without
+// waiting for the frame that will show it. The card can then be tracing
+// while the game draws its status bar and menus and the frame's own commands
+// are put together; left until then, it sat idle for as long as that took,
+// every frame. The frame's commands follow on the same queue, so they find
+// the picture finished.
+void SubmitTrace(RtxBackend *s)
+{
+	if (!s->trace_pending)
+		return;
+	vkWaitForFences(s->device, 1, &s->fence_trace, VK_TRUE, UINT64_MAX);
+	vkResetCommandBuffer(s->cmd_trace, 0);
+	VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	Check(vkBeginCommandBuffer(s->cmd_trace, &bi), "vkBeginCommandBuffer");
+	if (!s->pending.empty())
+		RecordUpdates(s, s->cmd_trace);
+	RecordTrace(s, s->cmd_trace);
+	Check(vkEndCommandBuffer(s->cmd_trace), "vkEndCommandBuffer");
+
+	VkCommandBufferSubmitInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+	cbi.commandBuffer = s->cmd_trace;
+	VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+	si.commandBufferInfoCount = 1;
+	si.pCommandBufferInfos = &cbi;
+	vkResetFences(s->device, 1, &s->fence_trace);
+	s->trace_pending = false;
+	Check(vkQueueSubmit2(s->queue, 1, &si, s->fence_trace), "vkQueueSubmit2");
+}
+
 // the card's own times for the view it traced last, once it has finished it
 void ReadStamps(RtxBackend *s)
 {
@@ -2064,8 +2098,8 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	if (!s->world_loaded || view->width <= 0 || view->height <= 0)
 		return;
 
-	// the card may still be reading last frame's buffers
-	vkWaitForFences(s->device, 1, &s->fence, VK_TRUE, UINT64_MAX);
+	// the card may still be tracing the last view from these buffers
+	vkWaitForFences(s->device, 1, &s->fence_trace, VK_TRUE, UINT64_MAX);
 	ReadStamps(s);		// and once it is done, how long that frame took it is known
 	const auto began = std::chrono::steady_clock::now();
 
@@ -2504,11 +2538,13 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	try
 	{
 		RenderViewNow(s, view);
+		SubmitTrace(s);
 	}
 	catch (const Fail &f)
 	{
 		Logf(s, "RTX path tracer: %s\n", f.msg.c_str());
 		s->trace_ready = false;
+		s->trace_pending = false;
 	}
 }
 
@@ -2579,7 +2615,10 @@ void TextureUpdate(pt_backend_t *b, int handle, const uint32_t *pixels)
 		const VkDeviceSize bytes = (VkDeviceSize)t.width * t.height * 4;
 		// the card may still be copying from here for the last frame
 		if (s->pending.empty())
-			vkWaitForFences(s->device, 1, &s->fence, VK_TRUE, UINT64_MAX);
+		{
+			const VkFence both[2] = {s->fence, s->fence_trace};
+			vkWaitForFences(s->device, 2, both, VK_TRUE, UINT64_MAX);
+		}
 		if (!s->updates.buffer || s->updates_used + bytes > s->updates.size)
 		{
 			if (!s->pending.empty())
@@ -2894,6 +2933,7 @@ void Destroy(pt_backend_t *b)
 		DestroySwapchain(s);
 		if (s->sem_acquire) vkDestroySemaphore(s->device, s->sem_acquire, nullptr);
 		if (s->fence) vkDestroyFence(s->device, s->fence, nullptr);
+		if (s->fence_trace) vkDestroyFence(s->device, s->fence_trace, nullptr);
 		if (s->cmdpool) vkDestroyCommandPool(s->device, s->cmdpool, nullptr);
 		vkDestroyDevice(s->device, nullptr);
 	}
