@@ -1776,8 +1776,9 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	const bool had_history = s->have_history;
 	s->have_history = had_history && (filtering == 2 || (filtering == 1 && same_camera));
 	s->filtering = filtering;
-	// (which only shows as shaking where frames are not being added up)
-	const bool antialias = view->antialias != 0 && (filtering == 2 || (filtering == 1 && same_camera));
+	// (only for the filtered picture, whose last pass puts it back together
+	// from those points: a raw one would shake by a part of a pixel)
+	const bool antialias = view->antialias != 0 && filtering == 2;
 	const float jx = antialias ? Halton(s->frame_index % 16 + 1, 2) - 0.5f : 0.0f;
 	const float jy = antialias ? Halton(s->frame_index % 16 + 1, 3) - 0.5f : 0.0f;
 	s->jitter_x = jx;
