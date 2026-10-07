@@ -104,7 +104,7 @@ def main():
     device = torch.device('cuda')
     model = load_model(args.weights, device)
     os.makedirs(args.out, exist_ok=True)
-    names = ['noisy 4', 'noisy 16', 'ours 4', 'ours 8', 'ours 16'] + (['OIDN 4', 'OIDN 16'] if args.oidn else [])
+    names = ['noisy 4', 'noisy 16', 'ours 4', 'ours 8', 'ours 16', 'ours 16, past only', 'ours 16, alone'] + (['OIDN 4', 'OIDN 16'] if args.oidn else [])
     total = {kind: {n: Score() for n in names} for kind in ('sharp', 'blurred')}
     blur_ways = {n: Score() for n in ('blurred frames denoised', 'sharp frames denoised, then blurred', 'sharp reference, then blurred')}
     lines = []
@@ -123,16 +123,18 @@ def main():
                     continue
                 frames = [ptx.Frame(p) for p in paths]
                 expo = exposure_for(ptx.typical(ptx.reference(frames[0])[1][:, ::8, ::8]))
-                films = {4: Film(model, device, 4), 8: Film(model, device, 8), 16: Film(model, device, 16)}
+                # every frame's answer first: the denoiser goes over the clip both ways
+                ours = {'ours %d' % n: list(Film(model, device, n).run(frames)) for n in (4, 8, 16)}
+                ours['ours 16, past only'] = list(Film(model, device, 16, False).run(frames))
+                # each frame as if it were the only one
+                ours['ours 16, alone'] = [next(Film(model, device, 16, False).run([f])) for f in frames]
                 scores = {n: Score() for n in names}
                 post = Score(), Score()
                 for i, f in enumerate(frames):
                     ref = torch.from_numpy(ptx.reference(f)[1]).to(device)
                     want = display(ref, expo)
-                    out = {}
-                    for n, film in films.items():
-                        light, motion, known = film.step(f)
-                        out['ours %d' % n] = light
+                    out = {k: v[i][0] for k, v in ours.items()}
+                    motion, known = ours['ours 16'][i][1:]
                     for n in (4, 16):
                         a = ptx.inputs(f, list(range(n // 4)))
                         noisy = ptx.picture(a['light'], a['albedo'], a['specular'], a['exact'])

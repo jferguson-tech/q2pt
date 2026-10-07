@@ -11,15 +11,22 @@ picture is
 The network denoises the three noisy parts at once, each with the surface's
 colour already divided out, so textures never pass through it; the exact
 part does not pass through it either. It is told how noisy each part is at
-each pixel. What it returns for each part is a blend of a fresh estimate and
-the last frame's answer, which is what keeps a film steady.
+each pixel.
+
+A film is gone over twice. First from its end to its start, each frame given
+the answer for the frame after it; then from the start, each frame given the
+answer for the frame before it and the first pass's answer for the frame
+after. What is returned for each part is a blend of a fresh estimate and
+those neighbours' answers, so every frame draws on the paths of the frames
+on both sides of it, which is also what keeps a film steady.
 """
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 PARTS = 3                # diffuse, mirrored, layers
-IN_CHANNELS = 9 + 3 + 3 + 3 + 3 + 3 + 1 + 1 + 9 + 1 + 1
+IN_CHANNELS = 9 + 3 + 3 + 3 + 3 + 3 + 1 + 1 + (9 + 1 + 1) * 2
+OUT_CHANNELS = 9 + PARTS * 2
 
 
 def squash(x):
@@ -68,7 +75,7 @@ class Block(nn.Module):
 
 
 class UNet(nn.Module):
-    def __init__(self, cin=IN_CHANNELS, cout=PARTS * 4, widths=(48, 96, 128, 192, 256)):
+    def __init__(self, cin=IN_CHANNELS, cout=OUT_CHANNELS, widths=(48, 96, 128, 192, 256)):
         super().__init__()
         self.down = nn.ModuleList()
         c = cin
@@ -102,45 +109,68 @@ class Denoiser(nn.Module):
         super().__init__()
         self.net = UNet()
 
-    def forward(self, f, paths, scales, state=None):
-        """f: the frame, a dict of [B,C,H,W] as ptx.inputs gives it. paths [B]:
-        paths a pixel in its light. scales [B,3]: what brings each of the
-        three lights to a usual brightness. state: what the last call
-        returned, or None at the start of a film or after a cut.
+    def forward(self, f, paths, scale, state=None, ahead=None, backwards=False):
+        """f: the frame, a dict of [B,C,H,W] as ptx.inputs gives it, with the
+        motion to the frame after ('onward', 'onward_known') beside the motion
+        to the frame before. paths [B]: paths a pixel in its light. scale [B]:
+        what brings the light to a usual brightness (network_scale).
+        state: what the last call returned, or None at the start of a film or
+        after a cut. Going backwards the last call was for the frame after.
+        ahead: going forwards, what the backward pass returned for the frame
+        after, or None.
         Returns the denoised lights [B,9,H,W] and the new state."""
         light, depth, normal = f['light'], f['depth'], f['normal']
-        # one scale for each colour plane of each part
-        s9 = scales.repeat_interleave(3, dim=1).view(-1, 9, 1, 1)
-        lit = light * s9
+        s = scale.view(-1, 1, 1, 1)
+        lit = light * s
         depth_f = depth_feature(depth)
 
-        if state is None:
-            last = torch.zeros_like(lit)
-            have = torch.zeros_like(depth)
-            depth_gap = torch.zeros_like(depth)
+        def bring(other, motion, known):
+            """another frame's answer, moved to this frame: the light, where there is any, and how far its depth is off"""
+            if other is None:
+                return torch.zeros_like(lit), torch.zeros_like(depth), torch.zeros_like(depth)
+            both, inside = warp(torch.cat([other[0], other[1]], dim=1), motion)
+            have = inside * known
+            return both[:, 0:9] * s * have, have, torch.clamp((both[:, 9:10] - depth_f).abs() * 20.0, max=1.0) * have
+
+        if backwards:
+            last, have, depth_gap = bring(state, f['onward'], f['onward_known'])
         else:
-            last_light, last_depth = state
-            both, inside = warp(torch.cat([last_light, last_depth], dim=1), f['motion'])
-            have = inside * f['known']
-            last = both[:, 0:9] * s9 * have
-            depth_gap = torch.clamp((both[:, 9:10] - depth_f).abs() * 20.0, max=1.0) * have
+            last, have, depth_gap = bring(state, f['motion'], f['known'])
+        next_, have_next, next_gap = bring(ahead, f['onward'], f['onward_known'])
 
         # how unsure each part is at each pixel, against how bright it is
         lum = torch.cat([luminance(lit[:, c * 3:c * 3 + 3]) for c in range(PARTS)], dim=1)
-        noise = torch.sqrt(torch.clamp(f['variance'], min=0.0)) * scales.view(-1, 3, 1, 1) / (lum + 0.01)
+        noise = torch.sqrt(torch.clamp(f['variance'], min=0.0)) * s / (lum + 0.01)
         noise = torch.clamp(noise, max=8.0) * 0.25
 
         base = squash(lit)
         paths_f = (torch.log2(paths.float()) / 4.0).view(-1, 1, 1, 1).expand_as(depth)
         # the exact light is not touched, but says where lamps and the sky are
-        x = torch.cat([base, noise, f['albedo'], f['specular'], squash(f['exact'] * scales[:, 0].view(-1, 1, 1, 1)),
-                       normal, depth_f, paths_f, squash(last), have, depth_gap], dim=1)
+        x = torch.cat([base, noise, f['albedo'], f['specular'], squash(f['exact'] * s),
+                       normal, depth_f, paths_f, squash(last), have, depth_gap,
+                       squash(next_), have_next, next_gap], dim=1)
         y = self.net(x.to(memory_format=torch.channels_last)).float()
 
         fresh = unsquash(y[:, 0:9] + base.float())
-        keep = torch.sigmoid(y[:, 9:12]).repeat_interleave(3, dim=1) * have
-        out = (fresh * (1.0 - keep) + last.float() * keep) / s9
+        # shares of the neighbours' answers, against one of the fresh estimate
+        a = (torch.exp(torch.clamp(y[:, 9:12], -15.0, 15.0)) * have).repeat_interleave(3, dim=1)
+        b = (torch.exp(torch.clamp(y[:, 12:15], -15.0, 15.0)) * have_next).repeat_interleave(3, dim=1)
+        out = (fresh + last.float() * a + next_.float() * b) / (1.0 + a + b) / s
         return out, (out, depth_f)
+
+
+def widen(weights):
+    """weights of the network that only looked back, made to fit this one:
+    it starts by ignoring the frame after"""
+    w = dict(weights)
+    first, last, bias = 'net.down.0.a.weight', 'net.out.weight', 'net.out.bias'
+    if w[first].shape[1] < IN_CHANNELS:
+        w[first] = torch.cat([w[first], w[first].new_zeros(w[first].shape[0], IN_CHANNELS - w[first].shape[1], 3, 3)], dim=1)
+    if w[last].shape[0] < OUT_CHANNELS:
+        more = OUT_CHANNELS - w[last].shape[0]
+        w[last] = torch.cat([w[last], w[last].new_zeros(more, *w[last].shape[1:])])
+        w[bias] = torch.cat([w[bias], w[bias].new_full((more,), -4.0)])
+    return w
 
 
 def pad_to(x, multiple=16):
@@ -156,6 +186,14 @@ TYPICAL_TARGET = 0.0054      # pt/cpu/pt_cpu.cpp
 
 def exposure_for(typical, setting=2.0):
     return setting * min(16.0, max(0.125, TYPICAL_TARGET / max(typical, 1e-6)))
+
+
+def network_scale(typical):
+    """What the network's light is multiplied by, from the picture's typical
+    brightness. It goes by the game's exposure and has the same limits, so
+    the network sees light much as it will be shown; the 3 is for the
+    surface colour, which the picture has in it and the light has not."""
+    return 3.0 * exposure_for(typical, 1.0)
 
 
 def display(c, exposure, training=False):

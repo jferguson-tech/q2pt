@@ -11,9 +11,9 @@ import torch
 import torch.nn.functional as F
 
 import ptx
-from model import Denoiser, display, exposure_for, picture, warp
+from model import Denoiser, display, exposure_for, luminance, network_scale, picture, warp, widen
 
-KEYS = ('light', 'variance', 'exact', 'albedo', 'specular', 'normal', 'depth', 'motion', 'known')
+KEYS = ('light', 'variance', 'exact', 'albedo', 'specular', 'normal', 'depth', 'motion', 'known', 'onward', 'onward_known')
 
 
 class Clips(torch.utils.data.Dataset):
@@ -46,23 +46,26 @@ class Clips(torch.utils.data.Dataset):
         flip = rng.random() < 0.5
 
         out = {k: [] for k in KEYS + ('ref_light', 'ref_picture')}
-        scales = typical = None
-        for f in opened:
+        for i, f in enumerate(opened):
             sets = rng.sample(range(f.sets), paths // f.set_paths)
             a = ptx.inputs(f, sets, box)
             a['ref_light'], a['ref_picture'] = ptx.reference(f, box)
-            if scales is None:
-                # brightness is judged on the whole first frame, as it is when a film is denoised
-                step = 8
-                acc = sum(ptx.clean(f.data[t * ptx.SET:t * ptx.SET + 9, ::step, ::step]) for t in sets) / len(sets)
-                scales = ptx.scales(acc, 1)
-                typical = ptx.typical(ptx.clean(f.data[ptx.ALL_PICTURE:ptx.ALL_PICTURE + 3, ::step, ::step]))
+            if i + 1 < n:
+                a['onward'], a['onward_known'] = ptx.onward(opened[i + 1], box)
+            else:
+                a['onward'], a['onward_known'] = np.zeros_like(a['motion']), np.zeros_like(a['known'])
             if flip:
                 a = {k: np.ascontiguousarray(v[:, :, ::-1]) for k, v in a.items()}
                 a['normal'][0] *= -1
                 a['motion'][0] *= -1
+                a['onward'][0] *= -1
             for k in out:
                 out[k].append(a[k])
+        # brightness is judged on whole frames, as it is when a film is denoised, and for the clip as one
+        step = 8
+        logs = [np.log(ptx.typical(ptx.clean(f.data[ptx.ALL_PICTURE:ptx.ALL_PICTURE + 3, ::step, ::step])))
+                for f in (opened[0], opened[n // 2], opened[-1])]
+        typical = float(np.exp(np.mean(logs)))
         item = {k: torch.from_numpy(np.stack(v)) for k, v in out.items()}
         # a short clip is filled out by standing on its last frame
         if n < self.length:
@@ -71,8 +74,9 @@ class Clips(torch.utils.data.Dataset):
                 item[k] = torch.cat([item[k], item[k][-1:].expand(pad, -1, -1, -1)])
             item['motion'][n:] = 0
             item['known'][n:] = 1
+            item['onward'][n - 1:] = 0
+            item['onward_known'][n - 1:-1] = 1
         item['paths'] = torch.tensor(paths)
-        item['scales'] = torch.from_numpy(scales)
         item['typical'] = torch.tensor(typical)
         return item
 
@@ -90,6 +94,45 @@ def relative(x, y):
     return torch.clamp((x - y) ** 2 / (x.detach() + 0.02) ** 2, max=25.0).mean()
 
 
+def haze(item, scale, paths, length):
+    """Now and then, a coloured haze over a clip that comes and goes, thicker
+    with distance and noisy as the tracer's own would be. Flashes that fill
+    the screen are rare in the game but must not throw the denoiser."""
+    b = item['light'].shape[0]
+    device = item['light'].device
+    for i in range(b):
+        if random.random() > 0.15:
+            continue
+        first = random.randrange(length) if random.random() < 0.5 else 0
+        last = random.randrange(first, length) if random.random() < 0.5 else length - 1
+        colour = torch.rand(3, device=device) ** 2 + 0.02
+        colour = colour / luminance(colour.view(1, 3, 1, 1)).view(()) * 0.05 * 2.0 ** random.uniform(-2.0, 5.0) / scale[i]
+        depth = item['depth'][i, first:last + 1]
+        through = torch.where(depth > 0, 1.0 - torch.exp(-depth * 2.0 ** random.uniform(-10.0, -5.0)), torch.ones_like(depth))
+        clean = through * colour.view(1, 3, 1, 1)
+        spread = 2.0 ** random.uniform(-3.0, 1.0) / float(paths[i])        # variance of the noisy haze against its strength
+        grain = torch._standard_gamma(torch.full_like(through, 1.0 / spread)) * spread
+        item['light'][i, first:last + 1, 6:9] += clean * grain
+        item['variance'][i, first:last + 1, 2:3] += luminance(clean) ** 2 * spread
+        item['ref_light'][i, first:last + 1, 6:9] += clean
+        item['ref_picture'][i, first:last + 1] += clean
+
+
+def measure(light, f, ref, ref_light, expo):
+    """the losses that need one frame only: the picture, its parts, and how it is shown"""
+    out = picture(light, f['albedo'], f['specular'], f['exact'])
+    whole = relative(out * expo, ref * expo)
+    # each part against its own reference, as it enters the picture
+    apart = (relative(f['albedo'] * light[:, 0:3] * expo, f['albedo'] * ref_light[:, 0:3] * expo)
+             + relative(f['specular'] * light[:, 3:6] * expo, f['specular'] * ref_light[:, 3:6] * expo)
+             + relative(light[:, 6:9] * expo, ref_light[:, 6:9] * expo)) / 3
+    shown, want = display(out, expo, True), display(ref, expo, True)
+    gx, gy = gradients(shown)
+    rx, ry = gradients(want)
+    seen = F.l1_loss(shown, want) + 0.5 * (F.l1_loss(gx, rx) + F.l1_loss(gy, ry))
+    return whole, apart, seen, shown, want
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--data', required=True)
@@ -101,6 +144,7 @@ def main():
     ap.add_argument('--lr', type=float, default=3e-4)
     ap.add_argument('--workers', type=int, default=12)
     ap.add_argument('--resume', default='')
+    ap.add_argument('--start', default='', help='weights to begin from, of this network or of the one that only looked back')
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -110,6 +154,9 @@ def main():
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=args.lr, total_steps=args.steps, pct_start=0.03)
     step = 0
+    if args.start:
+        ck = torch.load(args.start, map_location=device)
+        model.load_state_dict(widen(ck['model'] if 'model' in ck else ck))
     if args.resume:
         ck = torch.load(args.resume, map_location=device)
         model.load_state_dict(ck['model'])
@@ -122,8 +169,8 @@ def main():
     loader = torch.utils.data.DataLoader(data, batch_size=args.batch, num_workers=args.workers, drop_last=True,
                                          persistent_workers=True, prefetch_factor=4)
     log = open(os.path.join(args.out, 'log.txt'), 'a')
-    names = ('picture', 'parts', 'shown', 'change')
-    start, sums, count = time.time(), np.zeros(4), 0
+    names = ('picture', 'parts', 'shown', 'change', 'backwards')
+    start, sums, count = time.time(), np.zeros(5), 0
     while step < args.steps:
         for item in loader:
             item = {k: v.to(device, non_blocking=True) for k, v in item.items()}
@@ -134,29 +181,46 @@ def main():
             for k in ('light', 'exact', 'ref_light', 'ref_picture'):
                 item[k] = item[k] * j
             item['variance'] = item['variance'] * j * j
-            scales = item['scales'] / jitter[:, None]
             typical = item['typical'] * jitter
             expo = torch.tensor([exposure_for(t) for t in typical.tolist()], device=device).view(-1, 1, 1, 1)
+            # the network's own scale is judged from the noisy frames in use, so not exactly
+            scale = torch.tensor([network_scale(t) for t in typical.tolist()], device=device) \
+                * torch.exp2(torch.empty(b, device=device).uniform_(-1.0, 1.0))
+            haze(item, scale, item['paths'], args.length)
+            frames = [{k: item[k][:, t] for k in KEYS} for t in range(args.length)]
+            opt.zero_grad(set_to_none=True)
 
+            # from the end to the start, each frame given the one after it
+            state, back = None, torch.zeros((), device=device)
+            ahead = [None] * args.length
+            for t in reversed(range(args.length)):
+                f = frames[t]
+                with torch.autocast('cuda', dtype=torch.bfloat16):
+                    light, state = model(f, item['paths'], scale, state, None, backwards=True)
+                whole, apart, seen, _, _ = measure(light, f, item['ref_picture'][:, t], item['ref_light'][:, t], expo)
+                back = back + whole + 0.5 * apart + 0.2 * seen
+                # what the second pass is given is a fact to it, not something to change
+                state = (state[0].detach(), state[1])
+                if t:
+                    ahead[t - 1] = state
+            back = back / args.length
+            (0.5 * back).backward()
+
+            # from the start, each frame given the one before it and the first pass's answer for the one after
+            if random.random() < 0.1:
+                ahead = [None] * args.length         # it must still work alone
             state, last_out, last_ref = None, None, None
-            parts = torch.zeros(4, device=device)
+            parts = torch.zeros(5, device=device)
             for t in range(args.length):
                 if t and random.random() < 0.05:
                     state = None                             # a cut: learn to start again
-                f = {k: item[k][:, t] for k in KEYS}
+                f = frames[t]
                 with torch.autocast('cuda', dtype=torch.bfloat16):
-                    light, state = model(f, item['paths'], scales, state)
-                out = picture(light, f['albedo'], f['specular'], f['exact'])
-                ref, ref_light = item['ref_picture'][:, t], item['ref_light'][:, t]
-                parts[0] += relative(out * expo, ref * expo)
-                # each part against its own reference, as it enters the picture
-                parts[1] += (relative(f['albedo'] * light[:, 0:3] * expo, f['albedo'] * ref_light[:, 0:3] * expo)
-                             + relative(f['specular'] * light[:, 3:6] * expo, f['specular'] * ref_light[:, 3:6] * expo)
-                             + relative(light[:, 6:9] * expo, ref_light[:, 6:9] * expo)) / 3
-                shown, want = display(out, expo, True), display(ref, expo, True)
-                gx, gy = gradients(shown)
-                rx, ry = gradients(want)
-                parts[2] += F.l1_loss(shown, want) + 0.5 * (F.l1_loss(gx, rx) + F.l1_loss(gy, ry))
+                    light, state = model(f, item['paths'], scale, state, ahead[t])
+                whole, apart, seen, shown, want = measure(light, f, item['ref_picture'][:, t], item['ref_light'][:, t], expo)
+                parts[0] += whole
+                parts[1] += apart
+                parts[2] += seen
                 if last_out is not None:
                     # how the picture changes from frame to frame should be how the reference changes
                     moved, inside = warp(torch.cat([last_out, last_ref], dim=1), f['motion'])
@@ -165,8 +229,8 @@ def main():
                 last_out, last_ref = shown, want
             parts = parts / args.length
             loss = parts[0] + 0.5 * parts[1] + 0.2 * parts[2] + 0.5 * parts[3]
+            parts[4] = back.detach()
 
-            opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
@@ -180,7 +244,7 @@ def main():
                 print(line, flush=True)
                 log.write(line + '\n')
                 log.flush()
-                start, sums, count = time.time(), np.zeros(4), 0
+                start, sums, count = time.time(), np.zeros(5), 0
             if step % 2000 == 0 or step == args.steps:
                 torch.save({'model': model.state_dict(), 'opt': opt.state_dict(), 'sched': sched.state_dict(), 'step': step},
                            os.path.join(args.out, 'last.pt'))

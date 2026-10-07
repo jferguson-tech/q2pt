@@ -20,13 +20,13 @@ import torch.nn.functional as F
 from PIL import Image
 
 import ptx
-from model import Denoiser, TYPICAL_TARGET, display, pad_to, picture
+from model import Denoiser, TYPICAL_TARGET, display, network_scale, pad_to, picture, widen
 
 
 def load_model(weights, device):
     model = Denoiser().to(device).to(memory_format=torch.channels_last)
     ck = torch.load(weights, map_location=device)
-    model.load_state_dict(ck['model'] if 'model' in ck else ck)
+    model.load_state_dict(widen(ck['model'] if 'model' in ck else ck))
     return model.eval()
 
 
@@ -43,35 +43,77 @@ def choose_sets(frame, paths):
 
 
 class Film:
-    """Runs the denoiser over frames in order, remembering what it needs from one to the next."""
+    """Runs the denoiser over the frames of a film: a stretch at a time from
+    its end to its start, then from its start to its end with what the first
+    pass found for the frame after each."""
 
-    def __init__(self, model, device, paths='all'):
-        self.model, self.device, self.paths = model, device, paths
-        self.state = None
-        self.last_number = None
-        self.scales = None
+    STRETCH = 48         # frames gone over backwards at a time
+    LEAD = 12            # frames past a stretch that the backward pass starts from
+    STEADY = 8           # frames on each side that brightness is averaged over
 
-    @torch.no_grad()
-    def step(self, frame):
-        """returns the denoised picture [3,H,W] as linear light, and the motion [2,H,W] and known [1,H,W], on the device"""
+    def __init__(self, model, device, paths='all', both_ways=True):
+        self.model, self.device, self.paths, self.both_ways = model, device, paths, both_ways
+
+    def load(self, frame, after):
         sets, from_all = choose_sets(frame, self.paths)
         a = ptx.inputs(frame, sets, light_from_all=from_all)
+        if after is not None:
+            a['onward'], a['onward_known'] = ptx.onward(after)
+        else:
+            a['onward'], a['onward_known'] = np.zeros_like(a['motion']), np.zeros_like(a['known'])
         count = frame.paths if from_all else len(sets) * frame.set_paths
-        h, w = a['depth'].shape[1:]
         f = {k: pad_to(torch.from_numpy(np.ascontiguousarray(v)).to(self.device)[None]) for k, v in a.items()}
-        # a cut, or a frame missing: nothing to carry over
-        if not frame.follows or self.last_number is None or frame.frame != self.last_number + 1:
-            self.state = None
-            self.scales = None
-        self.last_number = frame.frame
-        # brightness for the network: followed slowly, so that it does not jump
-        now = ptx.scales(a['light'])
-        self.scales = now if self.scales is None else self.scales * 0.8 + now * 0.2
-        scales = torch.from_numpy(self.scales).to(self.device)[None]
+        return f, torch.tensor([min(count, 16)], device=self.device)
+
+    def step(self, f, count, scale, state, ahead=None, backwards=False):
         with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=self.device.type == 'cuda'):
-            light, self.state = self.model(f, torch.tensor([min(count, 16)], device=self.device), scales, self.state)
-        out = picture(light, f['albedo'], f['specular'], f['exact'])
-        return out[0, :, :h, :w].float(), f['motion'][0, :, :h, :w], f['known'][0, :, :h, :w]
+            return self.model(f, count, scale, state, ahead, backwards)
+
+    @torch.no_grad()
+    def run(self, frames):
+        """frames: ptx.Frame, in order. Yields for each the denoised picture
+        [3,H,W] as linear light, and the motion [2,H,W] and known [1,H,W], on
+        the device."""
+        n = len(frames)
+        # a cut, or a frame missing: nothing is carried across
+        joined = [i > 0 and frames[i].follows and frames[i].frame == frames[i - 1].frame + 1 for i in range(n)]
+        shot, shots = 0, []
+        for i in range(n):
+            shot += not joined[i]
+            shots.append(shot)
+        # brightness for the network: steady over a shot's neighbouring frames, so that it does not jump
+        logs = [math.log(ptx.brightness(f, *choose_sets(f, self.paths))) for f in frames]
+        scales = []
+        for i in range(n):
+            near = [logs[j] for j in range(max(0, i - self.STEADY), min(n, i + self.STEADY + 1)) if shots[j] == shots[i]]
+            scales.append(torch.tensor([network_scale(math.exp(sum(near) / len(near)))], device=self.device))
+
+        state = None
+        for first in range(0, n, self.STRETCH):
+            end = min(first + self.STRETCH, n)
+            ahead = {}
+            if self.both_ways:
+                back = None
+                for t in range(min(end + self.LEAD, n) - 1, first - 1, -1):
+                    after = frames[t + 1] if t + 1 < n and joined[t + 1] else None
+                    if after is None:
+                        back = None
+                    f, count = self.load(frames[t], after)
+                    _, back = self.step(f, count, scales[t], back, backwards=True)
+                    if first < t <= end and joined[t]:
+                        ahead[t - 1] = (back[0].half(), back[1].half())
+            for t in range(first, end):
+                after = frames[t + 1] if t + 1 < n and joined[t + 1] else None
+                if not joined[t]:
+                    state = None
+                f, count = self.load(frames[t], after)
+                given = ahead.pop(t, None)
+                if given is not None:
+                    given = (given[0].float(), given[1].float())
+                light, state = self.step(f, count, scales[t], state, given)
+                h, w = frames[t].height, frames[t].width
+                out = picture(light, f['albedo'], f['specular'], f['exact'])
+                yield out[0, :, :h, :w].float(), f['motion'][0, :, :h, :w], f['known'][0, :, :h, :w]
 
 
 def motion_blur(image, motion, share, taps=16):
@@ -125,25 +167,26 @@ def main():
     ap.add_argument('--exposure', type=float, default=2.0, help='the game\'s pt_exposure')
     ap.add_argument('--no-auto-exposure', action='store_true')
     ap.add_argument('--blur', type=float, default=0.0, help='add motion blur to sharp frames: share of the frame time the shutter is open')
+    ap.add_argument('--past-only', action='store_true', help='one pass: each frame draws on those before it only; faster')
     ap.add_argument('--cpu', action='store_true')
     args = ap.parse_args()
 
     device = torch.device('cpu' if args.cpu or not torch.cuda.is_available() else 'cuda')
     model = load_model(args.weights, device)
-    film = Film(model, device, args.paths)
+    film = Film(model, device, args.paths, not args.past_only)
     exposure = Exposure(args.exposure, not args.no_auto_exposure)
     out = args.out or args.folder
     os.makedirs(out, exist_ok=True)
     paths = frame_paths(args.folder)
     if not paths:
         sys.exit('no frame*.ptx in %s' % args.folder)
-    for i, p in enumerate(paths):
-        frame = ptx.Frame(p)
-        light, motion, known = film.step(frame)
+    frames = [ptx.Frame(p) for p in paths]
+    for i, (light, motion, known) in enumerate(film.run(frames)):
+        frame = frames[i]
         if args.blur > 0 and not frame.blurred:
             light = motion_blur(light, motion * known, args.blur)
         shown = display(light, exposure(light, frame.time))
-        to_png(shown, os.path.join(out, os.path.splitext(os.path.basename(p))[0] + '.png'))
+        to_png(shown, os.path.join(out, os.path.splitext(os.path.basename(frame.path))[0] + '.png'))
         print('\r%d / %d' % (i + 1, len(paths)), end='', flush=True)
     print()
 

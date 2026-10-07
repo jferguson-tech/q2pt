@@ -79,18 +79,78 @@ def inputs(frame, sets, box=None, light_from_all=False):
         # more paths than the sets hold were asked of the game: use them all
         light = frame.crop(ALL_LIGHT, 9, box)
         variance = variance * (len(sets) * frame.set_paths / max(frame.paths, 1))
-    once = frame.crop(EXACT, 15, box)
+    once = frame.crop(EXACT, 13, box)
     exact, albedo, specular, n = once[0:3], once[3:6], once[6:9], once[9:12]
     normal = np.stack([np.tensordot(frame.right, n, 1), np.tensordot(frame.up, n, 1), -np.tensordot(frame.forward, n, 1)])
     depth = once[12:13]
-    motion = once[13:15].copy()
+    motion, known = motion_of(frame, box)
+    return dict(light=light, variance=variance, exact=exact, albedo=albedo, specular=specular, normal=normal,
+                depth=depth, motion=motion, known=known)
+
+
+def motion_of(frame, box=None):
+    """motion [2, H, W]: in pixels, where each pixel was in the frame before
+    less where it is; known [1, H, W]: whether that is known"""
+    motion = frame.crop(MOTION, 2, frame.box(box))
     known = (np.abs(motion[0:1]) < NO_MOTION) & frame.follows
     motion[:, ~known[0]] = 0
     if frame.blurred:
         # from the middle of one open shutter to the middle of the last
         motion /= max(1.0 - frame.blur * 0.5, 0.25)
-    return dict(light=light, variance=variance, exact=exact, albedo=albedo, specular=specular, normal=normal,
-                depth=depth, motion=motion, known=known.astype(np.float32))
+    return motion, known.astype(np.float32)
+
+
+def onward(after, box=None):
+    """The motion the other way, for the frame before `after`: where each of
+    its pixels will be in `after`, less where it is, and whether that is
+    known. The game only says where things were, so this turns the motion of
+    the frame after around: each of its pixels says where it came from, and
+    where two came from the same place the nearer is believed. Pixels nothing
+    came from are about to be hidden, or leave the box."""
+    box = after.box(box)
+    motion, known = motion_of(after, box)
+    depth = after.crop(DEPTH, 1, box)[0]
+    h, w = depth.shape
+    ys, xs = np.mgrid[0:h, 0:w]
+    ix = np.rint(xs + motion[0]).astype(np.int64)
+    iy = np.rint(ys + motion[1]).astype(np.int64)
+    ok = (known[0] > 0) & (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
+    far = np.where(depth > 0, depth, np.float32(1e9))[ok]
+    order = np.argsort(-far, kind='stable')          # the nearest are written last, and stay
+    at = (iy[ok] * w + ix[ok])[order]
+    out = np.zeros((2, h * w), np.float32)
+    have = np.zeros(h * w, bool)
+    out[0, at] = -motion[0][ok][order]
+    out[1, at] = -motion[1][ok][order]
+    have[at] = True
+    out, have = out.reshape(2, h, w), have.reshape(h, w)
+    # turning a field around leaves pinholes where the picture stretches
+    filled, got = out.copy(), have.copy()
+    for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+        src = np.zeros_like(have)
+        vec = np.zeros_like(out)
+        ty, sy = (slice(dy, None), slice(None, h - dy)) if dy >= 0 else (slice(None, dy), slice(-dy, None))
+        tx, sx = (slice(dx, None), slice(None, w - dx)) if dx >= 0 else (slice(None, dx), slice(-dx, None))
+        src[ty, tx] = have[sy, sx]
+        vec[:, ty, tx] = out[:, sy, sx]
+        take = src & ~got
+        filled[:, take] = vec[:, take]
+        got |= take
+    return filled, got[None].astype(np.float32)
+
+
+def brightness(frame, sets, light_from_all=False, step=4):
+    """The typical brightness of the noisy picture, as the game's exposure
+    would judge it. Few paths leave many pixels black, which would drag a
+    geometric mean down, so pixels are averaged in blocks first."""
+    if light_from_all:
+        light = clean(frame.data[ALL_LIGHT:ALL_LIGHT + 9, ::step, ::step])
+    else:
+        light = sum(clean(frame.data[s * SET:s * SET + 9, ::step, ::step]) for s in sets) / len(sets)
+    once = clean(frame.data[EXACT:EXACT + 9, ::step, ::step])
+    pic = picture(light, once[3:6], once[6:9], once[0:3])
+    h, w = pic.shape[1] // 4 * 4, pic.shape[2] // 4 * 4
+    return typical(pic[:, :h, :w].reshape(3, h // 4, 4, w // 4, 4).mean(axis=(2, 4)))
 
 
 def picture(light, albedo, specular, exact):
@@ -102,8 +162,3 @@ def reference(frame, box=None):
     """from all the paths asked of the game: the three lights [9, H, W] and the picture [3, H, W]"""
     a = frame.crop(ALL_LIGHT, 12, frame.box(box))
     return a[0:9], a[9:12]
-
-
-def scales(light, step=8):
-    """what brings each of the three lights to a usual brightness, for the network"""
-    return np.array([0.05 / typical(light[c * 3:c * 3 + 3, ::step, ::step]) for c in range(3)], np.float32)
