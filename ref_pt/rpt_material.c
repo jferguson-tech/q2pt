@@ -46,15 +46,15 @@ static const struct
 	matinfo_t	info;		// roughness, metallic, bump
 } mat_walls[] =
 {
-	{ "wndow window wndw brwind glass", { 0.08f, 0.0f, 0.2f } },
-	{ "rock mine cindr cinder cindb geowal sand mud grass brick marble flesh blood dirt stone drag crys pyramid mont rrock", { 0.90f, 0.0f, 1.0f } },
-	{ "lava", { 0.70f, 0.0f, 1.2f } },
+	{ "wndow window wndw brwind glass", { 0.08f, 0.0f, 0.2f, 0.0f } },
+	{ "rock mine cindr cinder cindb geowal sand mud grass brick marble flesh blood dirt stone drag crys pyramid mont rrock", { 0.90f, 0.0f, 1.0f, 0.0f } },
+	{ "lava", { 0.70f, 0.0f, 1.2f, 0.0f } },
 	{ "comp mon sign num arrow keypad but btn swt exit location caution banner lever", { 0.30f, 0.0f, 0.6f, 1.0f } },
 	{ "light lite baselt wslt wstlt redlt ctylt pallt minlt grlt rlight tlight citlit geolit prwlt lsrlt lzr glo", { 0.35f, 0.1f, 0.5f, 1.5f } },
-	{ "grate grat wire cable pip duc", { 0.40f, 0.7f, 0.9f } },
-	{ "floor flr flor stairs plat", { 0.45f, 0.4f, 0.7f } },
+	{ "grate grat wire cable pip duc", { 0.40f, 0.7f, 0.9f, 0.0f } },
+	{ "floor flr flor stairs plat", { 0.45f, 0.4f, 0.7f, 0.0f } },
 	{ "metal met mtl metl mach support supprt door dr belt tram train turret lead thinm troof slot notch pilr pillar "
-	  "core pow pwr fuse shutl timpod tcm box crate ceil tunl hall elev refl", { 0.45f, 0.5f, 0.7f } },
+	  "core pow pwr fuse shutl timpod tcm box crate ceil tunl hall elev refl", { 0.45f, 0.5f, 0.7f, 0.0f } },
 };
 
 // matched against the whole path
@@ -64,15 +64,15 @@ static const struct
 	matinfo_t	info;
 } mat_models[] =
 {
-	{ "models/weapons/", { 0.40f, 0.6f, 0.25f } },
-	{ "models/monsters/", { 0.60f, 0.1f, 0.3f } },
-	{ "players/", { 0.55f, 0.2f, 0.3f } },
-	{ "models/items/", { 0.40f, 0.5f, 0.25f } },
-	{ "models/objects/", { 0.50f, 0.4f, 0.3f } },
+	{ "models/weapons/", { 0.40f, 0.6f, 0.25f, 0.0f } },
+	{ "models/monsters/", { 0.60f, 0.1f, 0.3f, 0.0f } },
+	{ "players/", { 0.55f, 0.2f, 0.3f, 0.0f } },
+	{ "models/items/", { 0.40f, 0.5f, 0.25f, 0.0f } },
+	{ "models/objects/", { 0.50f, 0.4f, 0.3f, 0.0f } },
 };
 
-static const matinfo_t	mat_defaultwall = { 0.55f, 0.3f, 0.7f };
-static const matinfo_t	mat_defaultmodel = { 0.55f, 0.2f, 0.3f };
+static const matinfo_t	mat_defaultwall = { 0.55f, 0.3f, 0.7f, 0.0f };
+static const matinfo_t	mat_defaultmodel = { 0.55f, 0.2f, 0.3f, 0.0f };
 
 //=============================================================================
 

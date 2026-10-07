@@ -9,10 +9,10 @@ through the map: no lightmaps and no rasterized geometry. The path tracer
 runs on the CPU, or on the GPU with an Nvidia RTX card. The path tracing core is
 a separate, engine-independent library under the MIT license.
 
-![Seven seconds of play on the first map, path traced: across the yard under a red sky, up a flight of stairs towards a guard, then round into a store room with the sky showing through two windows](docs/images/gameplay.webp)
+![Forty-three seconds of play in the jail, path traced: into a hall lit by red wall panels where guards wait, through hazy rooms with light coming down in shafts, past barred windows throwing their pattern on the floor, and out into a red-lit pit with sparks falling](docs/images/gameplay.webp)
 
-*Rendered offline with the RTX renderer from a recorded demo: 64 paths per
-pixel, motion blur, 60 frames a second.*
+*Rendered offline from a recorded demo, with fog and motion blur, at 30 frames
+a second.*
 
 ## Features
 
@@ -38,6 +38,10 @@ pixel, motion blur, 60 frames a second.*
   console variable (`pt_*`).
 * On-screen performance info: frame rate, frame times and where the time
   goes, on either path tracer.
+* The 64-bit renderer holds two builds of the tracer and picks one when it
+  starts: one for processors with AVX2 and FMA, which puts rays to a tree
+  with eight children to a node and filters eight pixels at a time, and one
+  for any processor. `pt_bench` says which one ran.
 
 **Offline demo rendering**
 
@@ -46,6 +50,16 @@ settings far too slow to play with: `pt_render <demo> [fps] [paths per pixel]`.
 Each frame is built from nothing at full resolution and saved as a PNG, with
 optional motion blur. The sound is mixed in step into a WAV, and a script is
 written that turns both into a video with ffmpeg.
+
+For a denoiser that works outside the game, `pt_render_export 1` makes
+`pt_render` save each frame's buffers instead of a picture: the noisy light
+at 4, 8 and 16 paths a pixel in the parts the tracer makes it in (diffuse,
+specular, see-through layers and air, and what has no noise), how much it
+varied, what the surfaces reflect, their normals, distance and motion, and
+the light from all the paths asked for. Both
+renderers write the same file. To make such frames without anyone playing,
+the game can take the player round a map along a path from a file
+(`tour_file`, see `game/g_tour.c`).
 
 **Benchmark**
 
@@ -76,8 +90,7 @@ where the CPU renderer manages 9. Offline frames at 64 paths per pixel take
 about a quarter of a second each, some twenty times faster than on the CPU.
 
 Not yet on the GPU: the separate history the CPU renderer keeps for mirror
-reflections. Adaptive sampling there goes by how long a point has been in
-view, not also by how noisy it is. Its denoiser decides how far to smooth
+reflections. Its denoiser decides how far to smooth
 from how long a pixel has been in view rather than from measured noise.
 
 Like the CPU renderer it can trace a smaller picture than the window and
@@ -133,6 +146,10 @@ cmake --build build/linux -j
 `quake2`, `ref_ptcpu.so` and `ref_ptrtx.so` go to `run/`, and `gamex64.so` to
 `run/baseq2/`.
 
+The Linux build is compiled with `-Wall -Wextra` and every warning is an
+error. Should a newer compiler find something new to say, `-DQ2_WERROR=OFF`
+on the first `cmake` line lets it build while that is dealt with.
+
 ## Game data
 
 Copy the contents of the `baseq2` folder of your Quake 2 installation
@@ -148,6 +165,11 @@ quake2.exe          Windows
 ```
 
 The 32-bit build is started from `run\x86` with `quake2.exe +set basedir ..`.
+
+W and S walk forward and back and A and D turn left and right, as the arrow
+keys do; the mouse looks around. The keys are put on once, where nothing of
+the player's own is on them, and can be changed in the options menu like any
+other. The game's own setup had looking up on A and the silencer on S.
 
 The video menu lists the original 4:3 modes and wide ones from 1280x720 up
 to 3840x2160, with 21:9 and 32:9 modes up to 5120x1440. On a wide picture the
@@ -169,17 +191,21 @@ Some console commands and variables:
 | --- | --- |
 | `pt_quality 0`-`3` | preset: low, medium, high, ultra |
 | `pt_scale` | internal resolution as a fraction of the window |
-| `pt_bounces`, `pt_samples`, `pt_light_samples` | path length, paths per pixel per frame, lights weighed per point |
+| `pt_bounces`, `pt_samples`, `pt_light_samples` | path length, paths per pixel per frame (also a slider in the menu, 1 to 16), lights weighed per point |
 | `pt_reflections 0`-`2` | none, glass and water, every shiny surface |
 | `pt_water 0`-`2` | classic, realistic, simulated |
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
 | `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time |
+| `pt_filter 0`-`2`, `pt_filter_cycle` (**F7**) | the picture as the paths alone make it, noise and all: `0` every frame on its own, `1` the same but frames add up while you stand still, `2` (the default) blended over time and filtered |
+| `pt_switch 1`-`6` (number pad **1**-**6**) | switch off, or back on, one of the things in the picture that depend on earlier frames, to find which one a fault comes from: anti-aliasing and the upscaler, light history, the noise filter, auto exposure, upscaling, the history view. A list of them all comes up for a few seconds with what is on and off. Number pad **0** puts them all back; **.** keeps the list up (`pt_show_filter`) |
 | `pt_stats 0` | hide the performance info, which is on by default (never shown in offline renders) |
+| `pt_simd 0`-`1` | CPU renderer: the build for AVX2 where the processor has it, or the one for any processor, to compare the two |
 | `pt_debug 1`-`11` | one part of the picture on its own |
 | `screenshot`, `pt_screenshot [paths]` | the frame as shown, or rendered again at high quality |
 | `record <name>`, `stop` | record a demo (the game's own commands) |
 | `pt_render <demo> [fps] [paths] [start] [length]` | render a demo offline into `baseq2\render\<demo>\`; start and length, in seconds, pick a part of it |
 | `pt_render_blur 0`-`1` | motion blur for offline rendering |
+| `pt_render_export 1` | `pt_render` saves each frame's buffers (`frameNNNNN.ptx`) in place of a picture, for a denoiser outside the game: see `ref_pt/rpt_export.c` for what is in the file |
 | `pt_bench [demo] [seconds] [quit]` | time a demo: `demo1` and 20 seconds unless given, 0 for all of it; `quit` leaves the game afterwards, for scripts (`quake2 +pt_bench demo1 20 quit`) |
 
 ## How it is put together
@@ -221,6 +247,7 @@ were changed in 2026:
 | Files | What changed |
 | --- | --- |
 | `game/g_local.h`, `game/g_main.c`, `game/q_shared.c`, `game/q_shared.h` | 64-bit port: structure offsets, formatted printing into fixed buffers |
+| `game/g_spawn.c`, `game/p_client.c`, `game/p_view.c` | where a tour (`game/g_tour.c`, new) takes hold of the player |
 | `game/g_items.c` | three variables declared one way in the header and another here, which gcc refuses |
 | `qcommon/common.c`, `qcommon/net_chan.c`, `qcommon/qcommon.h` | 64-bit port; leaving the game safely after an error |
 | `server/sv_game.c`, `server/sv_send.c`, `server/sv_world.c` | 64-bit port |
@@ -230,9 +257,11 @@ were changed in 2026:
 | `win32/vid_dll.c`, `win32/vid_menu.c` | loading the path traced renderers, switching between them, more video modes, closing the window |
 | `client/cl_scrn.c` | 64-bit port |
 | `client/console.c` | the console on a picture more than 2048 pixels wide |
-| `client/cl_main.c`, `client/client.h`, `client/keys.c`, `client/vid.h` | mouse look by default; hooks for offline demo rendering |
-| `client/menu.c` | menu pages for the path tracing options and for rendering a demo |
+| `client/cl_main.c`, `client/client.h`, `client/keys.c`, `client/keys.h`, `client/vid.h` | mouse look by default; W, A, S and D do what the arrow keys do; hooks for offline demo rendering |
+| `client/menu.c` | menu pages for the path tracing options and for rendering a demo; "reset defaults" keeps the WASD keys |
 | `client/snd_dma.c`, `snd_loc.h`, `snd_mem.c`, `snd_mix.c`, `sound.h` | 64-bit port; mixing the sound to a file in step with offline rendering |
+| `game/m_*.c`, `game/g_save.c` | braces round each row of the monster animation tables, the flash offsets and the save tables |
+| `game/g_ai.c`, `g_chase.c`, `g_combat.c`, `g_monster.c`, `g_spawn.c`, `g_target.c`, `p_hud.c`; `qcommon/cmd.c`, `cmodel.c`, `files.c`; `server/sv_ccmds.c`, `sv_ents.c`, `sv_main.c`, `sv_world.c`; `client/cl_cin.c`, `cl_ents.c`, `cl_fx.c`, `cl_parse.c`, `cl_tent.c`, `qmenu.c`; `ref_gl/gl_image.c`, `gl_light.c`, `gl_local.h`, `gl_mesh.c`, `gl_model.h`, `gl_rsurf.c`; `linux/glob.c`, `net_udp.c`, `q_shlinux.c`, `qgl_linux.c` | what gcc's `-Wall -Wextra` points out, so that the Linux build can treat every warning as an error: casts between signednesses, dead variables, missing returns, defaults and braces, checked reads of save and pak files |
 
 New beside them: `CMakeLists.txt` and `build.bat` (the build), `win32/quake2.manifest`
 (what the program tells Windows about itself), `client/cl_render.c`,

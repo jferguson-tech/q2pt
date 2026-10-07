@@ -47,6 +47,7 @@ static SDL_Window	*vid_window;	// set by the renderer through R_Init
 extern	unsigned	sys_frame_time;
 
 static cvar_t	*in_mouse;
+static cvar_t	*in_ignore;			// keys and the mouse do nothing: for runs nobody is meant to touch
 cvar_t		*in_joystick;		// the menu has a setting for it; there is no joystick code here
 static cvar_t	*m_filter;
 static qboolean	mouse_active;
@@ -182,7 +183,7 @@ qboolean VID_GetModeInfo( int *width, int *height, int mode )
 {
 	SDL_DisplayMode	desktop;
 
-	if ( mode < 0 || mode >= VID_NUM_MODES )
+	if ( mode < 0 || mode >= (int)VID_NUM_MODES )
 		return false;
 
 	*width  = vid_modes[mode].width;
@@ -280,7 +281,7 @@ qboolean VID_LoadRefresh( char *name )
 	}
 
 	// the renderer notes its window in vid_window
-	if ( re.Init( &vid_window, NULL ) == -1 )
+	if ( (int)re.Init( &vid_window, NULL ) == -1 )
 	{
 		re.Shutdown();
 		VID_FreeReflib ();
@@ -518,6 +519,8 @@ void Sys_SendKeyEvents (void)
 
 		case SDL_KEYDOWN:
 		case SDL_KEYUP:
+			if (in_ignore && in_ignore->value)
+				break;
 			// Alt+Enter: in and out of full screen
 			if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_RETURN && (ev.key.keysym.mod & KMOD_ALT))
 			{
@@ -538,12 +541,16 @@ void Sys_SendKeyEvents (void)
 
 		case SDL_MOUSEBUTTONDOWN:
 		case SDL_MOUSEBUTTONUP:
+			if (in_ignore && in_ignore->value)
+				break;
 			key = MapButton (ev.button.button);
 			if (key)
 				Key_Event (key, ev.type == SDL_MOUSEBUTTONDOWN, time);
 			break;
 
 		case SDL_MOUSEWHEEL:
+			if (in_ignore && in_ignore->value)
+				break;
 			key = ev.wheel.y > 0 ? K_MWHEELUP : (ev.wheel.y < 0 ? K_MWHEELDOWN : 0);
 			if (key)
 			{
@@ -603,6 +610,7 @@ void IN_Init (void)
 {
 	in_mouse = Cvar_Get ("in_mouse", "1", CVAR_ARCHIVE);
 	m_filter = Cvar_Get ("m_filter", "0", 0);
+	in_ignore = Cvar_Get ("in_ignore", "0", 0);
 	in_joystick = Cvar_Get ("in_joystick", "0", CVAR_ARCHIVE);
 
 	Cmd_AddCommand ("+mlook", IN_MLookDown);
@@ -634,7 +642,7 @@ void IN_Frame (void)
 	if (!SDL_WasInit (SDL_INIT_VIDEO) || !reflib_active)
 		return;
 
-	if (!in_mouse->value || !app_active)
+	if (!in_mouse->value || !app_active || in_ignore->value)
 	{
 		IN_ActivateMouse (false);
 		return;

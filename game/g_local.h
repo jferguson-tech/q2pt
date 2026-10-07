@@ -735,6 +735,15 @@ void fire_rail (edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick
 void fire_bfg (edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, float damage_radius);
 
 //
+// g_tour.c
+//
+qboolean Tour_Active (edict_t *ent);
+void Tour_Begin (edict_t *ent);
+void Tour_End (void);
+void Tour_Move (edict_t *ent);
+void Tour_View (edict_t *ent);
+
+//
 // g_ptrail.c
 //
 void PlayerTrail_Init (void);

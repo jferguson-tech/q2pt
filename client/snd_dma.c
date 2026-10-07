@@ -1011,7 +1011,6 @@ void S_Update(vec3_t origin, vec3_t forward, vec3_t right, vec3_t up)
 	int			i;
 	int			total;
 	channel_t	*ch;
-	channel_t	*combine;
 
 	if (!sound_started)
 		return;
@@ -1034,7 +1033,6 @@ void S_Update(vec3_t origin, vec3_t forward, vec3_t right, vec3_t up)
 	VectorCopy(right, listener_right);
 	VectorCopy(up, listener_up);
 
-	combine = NULL;
 
 	// update spatialization for dynamic sounds	
 	ch = channels;
@@ -1251,7 +1249,7 @@ void S_Update_(void)
 	endtime = (endtime + dma.submission_chunk-1)
 		& ~(dma.submission_chunk-1);
 	samps = dma.samples >> (dma.channels-1);
-	if (endtime - soundtime > samps)
+	if (endtime - soundtime > (unsigned)samps)
 		endtime = soundtime + samps;
 
 	S_PaintChannels (endtime);

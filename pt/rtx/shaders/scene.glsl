@@ -86,7 +86,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	vec4	sky_turn;		// xyz: the axis the sky turns about; w: sine of the angle
 	vec4	sky_misc;		// cosine, brightness of a white texel, integral of its luminance, time
 	ivec4	counts;			// lights of the map, lights of the frame, frame number, animation step
-	ivec4	bases;			// y, w: first triangle of the map's glass and of the frame's; x: adaptive sampling; z unused
+	ivec4	bases;			// y, w: first triangle of the map's glass and of the frame's; x: unused; z: what is done about noise, see pt_view_t
 	ivec4	grid_dims;		// xyz; w: there is a grid
 	vec4	grid_origin;	// xyz; w: one over the cell size
 	ivec4	table_at;		// in tables: map wide light cdf, grid pdf, grid cdf, sky chance

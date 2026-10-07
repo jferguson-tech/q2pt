@@ -1394,7 +1394,7 @@ void Info_SetValueForKey (char *s, char *key, char *value)
 
 	Com_sprintf (newi, sizeof(newi), "\\%s\\%s", key, value);
 
-	if (strlen(newi) + strlen(s) > maxsize)
+	if (strlen(newi) + strlen(s) > (size_t)maxsize)
 	{
 		Com_Printf ("Info string length exceeded\n");
 		return;

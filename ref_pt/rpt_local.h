@@ -133,6 +133,9 @@ void	Draw_TileClear (int x, int y, int w, int h, char *pic);
 void	Draw_Fill (int x, int y, int w, int h, int c);
 void	Draw_FadeBox (int x, int y, int w, int h);
 void	Draw_FadeScreen (void);
+void	Draw_Touch (int x0, int y0, int x1, int y1);
+void	Draw_ClearOverlay (void);
+int		Draw_Changed (pt_rect_t **rects);
 void	Draw_StretchRaw (int x, int y, int w, int h, int cols, int rows, byte *data);
 void	R_SetPalette (const unsigned char *palette);
 void	Draw_Blend (int x, int y, int w, int h, float *blend);
@@ -165,6 +168,7 @@ void	R_WorldMaterial (int index, pt_material_t *material, image_t **image);
 //
 extern	cvar_t	*pt_stats;
 extern	cvar_t	*pt_debug;
+extern	cvar_t	*pt_simd;
 extern	float	r_skyscale, r_lampglow;
 extern	float	r_surfacelight, r_pointlight, r_liquidglow;
 extern	float	r_detailglow;
@@ -176,6 +180,7 @@ extern	float	r_bumpscale, r_roughscale, r_metalscale;
 void	R_InitSettings (void);
 qboolean R_UpdateSettings (void);
 void	R_ViewSettings (pt_view_t *view);
+void	R_DrawFilterPanel (refdef_t *fd);
 
 //
 // rpt_shot.c
@@ -194,6 +199,23 @@ qboolean R_Offline (void);
 void	R_OfflineSettings (pt_view_t *view);
 void	R_OfflineRender (refdef_t *fd, pt_view_t *view);
 void	R_OfflineFinish (void);
+void	R_OfflineMomentsBegin (const pt_view_t *view);
+void	R_OfflineMoment (const pt_view_t *view, float t, pt_view_t *moment, pt_scene_t *moment_scene);
+
+//
+// rpt_export.c
+//
+typedef struct
+{
+	vec3_t	origin, forward, right, up;
+	float	fov_x, fov_y;
+} pt_camera_t;
+
+void	R_InitExport (void);
+void	R_ShutdownExport (void);
+qboolean R_Exporting (void);
+qboolean R_ExportRender (const pt_view_t *view, int paths, float blur, const pt_camera_t *last);
+qboolean R_ExportWrite (const char *path, int frame);
 
 //
 // rpt_bench.c
@@ -220,6 +242,7 @@ float	R_EntityMoved (int index, entity_t *e);
 // rpt_model.c
 //
 struct model_s *R_RegisterModel (char *name);
+qboolean R_IsModel (struct model_s *mod);
 void	R_BeginModelRegistration (void);
 void	R_FreeUnusedModels (void);
 void	R_ShutdownModels (void);

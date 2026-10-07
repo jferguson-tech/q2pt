@@ -206,7 +206,7 @@ void CL_Record_f (void)
 	//
 	// write out messages to hold the startup information
 	//
-	SZ_Init (&buf, buf_data, sizeof(buf_data));
+	SZ_Init (&buf, (byte *)buf_data, sizeof(buf_data));
 
 	// send the serverdata
 	MSG_WriteByte (&buf, svc_serverdata);
@@ -223,7 +223,7 @@ void CL_Record_f (void)
 	{
 		if (cl.configstrings[i][0])
 		{
-			if (buf.cursize + strlen (cl.configstrings[i]) + 32 > buf.maxsize)
+			if (buf.cursize + (int)strlen (cl.configstrings[i]) + 32 > buf.maxsize)
 			{	// write it out
 				len = LittleLong (buf.cursize);
 				fwrite (&len, 4, 1, cls.demofile);
@@ -644,9 +644,9 @@ void CL_Disconnect (void)
 	// send a disconnect message to the server
 	final[0] = clc_stringcmd;
 	strcpy ((char *)final+1, "disconnect");
-	Netchan_Transmit (&cls.netchan, strlen(final), final);
-	Netchan_Transmit (&cls.netchan, strlen(final), final);
-	Netchan_Transmit (&cls.netchan, strlen(final), final);
+	Netchan_Transmit (&cls.netchan, strlen((char *)final), final);
+	Netchan_Transmit (&cls.netchan, strlen((char *)final), final);
+	Netchan_Transmit (&cls.netchan, strlen((char *)final), final);
 
 	CL_ClearState ();
 
@@ -1312,7 +1312,7 @@ void CL_RequestNextDownload (void)
 
 		CM_LoadMap (cl.configstrings[CS_MODELS+1], true, &map_checksum);
 
-		if (map_checksum != atoi(cl.configstrings[CS_MAPCHECKSUM])) {
+		if (map_checksum != (unsigned)atoi(cl.configstrings[CS_MAPCHECKSUM])) {
 			Com_Error (ERR_DROP, "Local map version differs from server: %i != '%s'\n",
 				map_checksum, cl.configstrings[CS_MAPCHECKSUM]);
 			return;
@@ -1485,6 +1485,16 @@ void CL_InitLocal (void)
 
 	cl_vwep = Cvar_Get ("cl_vwep", "1", CVAR_ARCHIVE);
 
+	// W, A, S and D take what the arrow keys do. Once: config.cfg has been
+	// read by now and keeps every key, so a player who has been here before
+	// would otherwise never get them, and after this the keys are theirs to
+	// bind as they like. cl_wasd 0 does it again at the next start.
+	if (!Cvar_Get ("cl_wasd", "0", CVAR_ARCHIVE)->value)
+	{
+		Key_ArrowsOnWASD (false);
+		Cvar_Set ("cl_wasd", "1");
+	}
+
 
 	//
 	// register our commands
@@ -1594,18 +1604,18 @@ typedef struct
 } cheatvar_t;
 
 cheatvar_t	cheatvars[] = {
-	{"timescale", "1"},
-	{"timedemo", "0"},
-	{"r_drawworld", "1"},
-	{"cl_testlights", "0"},
-	{"r_fullbright", "0"},
-	{"r_drawflat", "0"},
-	{"paused", "0"},
-	{"fixedtime", "0"},
-	{"sw_draworder", "0"},
-	{"gl_lightmap", "0"},
-	{"gl_saturatelighting", "0"},
-	{NULL, NULL}
+	{"timescale", "1", NULL},
+	{"timedemo", "0", NULL},
+	{"r_drawworld", "1", NULL},
+	{"cl_testlights", "0", NULL},
+	{"r_fullbright", "0", NULL},
+	{"r_drawflat", "0", NULL},
+	{"paused", "0", NULL},
+	{"fixedtime", "0", NULL},
+	{"sw_draworder", "0", NULL},
+	{"gl_lightmap", "0", NULL},
+	{"gl_saturatelighting", "0", NULL},
+	{NULL, NULL, NULL}
 };
 
 int		numcheatvars;

@@ -60,6 +60,7 @@ static qboolean	off_have_last;
 static int		off_last_frame;
 static vec3_t	off_last_origin, off_last_axis[3];
 static float	off_last_time;
+static float	off_last_fov[2];
 
 static float	off_to_linear[256];
 static byte		off_to_display[4097];
@@ -135,8 +136,8 @@ void R_OfflineSettings (pt_view_t *view)
 	view->scale = 1;
 	view->samples = PATHS_PER_PASS;
 	view->antialias = 1;
+	view->filter = 2;		// as before: offline frames are made of many passes added up
 	view->debug = 0;
-	view->adaptive = 1;		// every frame is new all over: there is nowhere to favour
 	view->bounces = pt_render_bounces->value;
 	view->light_samples = pt_render_light_samples->value;
 	view->reflections = 2;
@@ -154,6 +155,71 @@ static void Off_Normalize (vec3_t v)
 
 /*
 ===============
+R_OfflineMomentsBegin
+
+Room for the scene as it was at a moment between the last frame and this
+===============
+*/
+void R_OfflineMomentsBegin (const pt_view_t *view)
+{
+	const pt_scene_t	*scene = view->scene;
+
+	if (scene && scene->prev_positions && scene->num_triangles > off_num_positions)
+	{
+		free (off_positions);
+		off_num_positions = scene->num_triangles + 1024;
+		off_positions = malloc (off_num_positions * 9 * sizeof(float));
+		if (!off_positions)
+			off_num_positions = 0;
+	}
+}
+
+/*
+===============
+R_OfflineMoment
+
+The view at a moment between the last frame (t = 0) and this one (t = 1):
+the eye and everything that moves are put where they were then. Each moment
+is a picture of its own, made from nothing.
+===============
+*/
+void R_OfflineMoment (const pt_view_t *view, float t, pt_view_t *moment, pt_scene_t *moment_scene)
+{
+	const pt_scene_t	*scene = view->scene;
+	float		w;
+	int			i;
+
+	*moment = *view;
+	moment->restart = 1;
+	moment->time = off_last_time + (view->time - off_last_time) * t;
+	for (i=0 ; i<3 ; i++)
+	{
+		moment->origin[i] = off_last_origin[i] + (view->origin[i] - off_last_origin[i]) * t;
+		moment->forward[i] = off_last_axis[0][i] + (view->forward[i] - off_last_axis[0][i]) * t;
+		moment->right[i] = off_last_axis[1][i] + (view->right[i] - off_last_axis[1][i]) * t;
+	}
+	// square it up again
+	Off_Normalize (moment->forward);
+	w = DotProduct (moment->right, moment->forward);
+	VectorMA (moment->right, -w, moment->forward, moment->right);
+	Off_Normalize (moment->right);
+	CrossProduct (moment->right, moment->forward, moment->up);
+
+	if (scene && scene->prev_positions && off_positions)
+	{
+		const float	*now = scene->positions, *was = scene->prev_positions;
+
+		for (i=0 ; i<scene->num_triangles*9 ; i++)
+			off_positions[i] = was[i] + (now[i] - was[i]) * t;
+		*moment_scene = *scene;
+		moment_scene->positions = off_positions;
+		moment_scene->prev_positions = NULL;
+		moment->scene = moment_scene;
+	}
+}
+
+/*
+===============
 R_OfflineRender
 
 Makes the frame, in as many passes as its paths take
@@ -161,12 +227,12 @@ Makes the frame, in as many passes as its paths take
 */
 void R_OfflineRender (refdef_t *fd, pt_view_t *view)
 {
-	const pt_scene_t	*scene = view->scene;
 	pt_scene_t	moment_scene;
 	pt_view_t	moment;
+	pt_camera_t	last;
 	float		blur, t, w, *sum;
 	int			paths, passes, moments, size, i, k, x, y;
-	qboolean	blurred;
+	qboolean	blurred, follows;
 
 	size = rpt.width * rpt.height;
 	if (!off_pixels)
@@ -186,11 +252,24 @@ void R_OfflineRender (refdef_t *fd, pt_view_t *view)
 	// nothing to blur between if the frame before was not the one before
 	// this in time, or the eye was somewhere else altogether (a new map, a
 	// teleporter)
-	blurred = blur > 0 && off_have_last && off_last_frame == off_frame - 1
+	follows = off_have_last && off_last_frame == off_frame - 1
 		&& fabs (fd->vieworg[0] - off_last_origin[0]) + fabs (fd->vieworg[1] - off_last_origin[1])
 			+ fabs (fd->vieworg[2] - off_last_origin[2]) < 256;
+	blurred = blur > 0 && follows;
 
-	if (!blurred)
+	if (R_Exporting ())
+	{
+		// the buffers a denoiser outside the game works from, in place of a picture
+		VectorCopy (off_last_origin, last.origin);
+		VectorCopy (off_last_axis[0], last.forward);
+		VectorCopy (off_last_axis[1], last.right);
+		VectorCopy (off_last_axis[2], last.up);
+		last.fov_x = off_last_fov[0];
+		last.fov_y = off_last_fov[1];
+		if (!R_ExportRender (view, paths, blurred ? blur : 0, follows ? &last : NULL))
+			off_failed = true;
+	}
+	else if (!blurred)
 	{
 		// from one moment: every pass adds to the last, and the backend
 		// keeps what it has gathered as it does for a view at rest
@@ -212,48 +291,15 @@ void R_OfflineRender (refdef_t *fd, pt_view_t *view)
 			return;
 		memset (off_sum, 0, size * 3 * sizeof(float));
 
-		if (scene && scene->prev_positions && scene->num_triangles > off_num_positions)
-		{
-			free (off_positions);
-			off_num_positions = scene->num_triangles + 1024;
-			off_positions = malloc (off_num_positions * 9 * sizeof(float));
-			if (!off_positions)
-				off_num_positions = 0;
-		}
+		R_OfflineMomentsBegin (view);
 
 		for (k=0 ; k<moments ; k++)
 		{
 			// 1 is now, 0 the frame before; the shutter closes now
 			t = 1 - blur * (1 - (k + 0.5f) / moments);
 
-			moment = *view;
-			moment.restart = 1;
+			R_OfflineMoment (view, t, &moment, &moment_scene);
 			moment.samples = paths / moments < 1 ? 1 : paths / moments;
-			moment.time = off_last_time + (view->time - off_last_time) * t;
-			for (i=0 ; i<3 ; i++)
-			{
-				moment.origin[i] = off_last_origin[i] + (view->origin[i] - off_last_origin[i]) * t;
-				moment.forward[i] = off_last_axis[0][i] + (view->forward[i] - off_last_axis[0][i]) * t;
-				moment.right[i] = off_last_axis[1][i] + (view->right[i] - off_last_axis[1][i]) * t;
-			}
-			// square it up again
-			Off_Normalize (moment.forward);
-			w = DotProduct (moment.right, moment.forward);
-			VectorMA (moment.right, -w, moment.forward, moment.right);
-			Off_Normalize (moment.right);
-			CrossProduct (moment.right, moment.forward, moment.up);
-
-			if (scene && scene->prev_positions && off_positions)
-			{
-				const float	*now = scene->positions, *was = scene->prev_positions;
-
-				for (i=0 ; i<scene->num_triangles*9 ; i++)
-					off_positions[i] = was[i] + (now[i] - was[i]) * t;
-				moment_scene = *scene;
-				moment_scene.positions = off_positions;
-				moment_scene.prev_positions = NULL;
-				moment.scene = &moment_scene;
-			}
 
 			rpt.backend->render_view (rpt.backend, &moment);
 			if (!rpt.backend->read_pixels (rpt.backend, off_pixels, 0))
@@ -275,6 +321,7 @@ void R_OfflineRender (refdef_t *fd, pt_view_t *view)
 
 		// the backend only has the last moment to show: put the whole
 		// picture over it, under whatever the game draws next
+		Draw_Touch (fd->x, fd->y, fd->x + fd->width, fd->y + fd->height);
 		for (y=fd->y ; y<fd->y+fd->height && y<rpt.height ; y++)
 		{
 			if (y < 0)
@@ -291,6 +338,8 @@ void R_OfflineRender (refdef_t *fd, pt_view_t *view)
 	VectorCopy (view->forward, off_last_axis[0]);
 	VectorCopy (view->right, off_last_axis[1]);
 	VectorCopy (view->up, off_last_axis[2]);
+	off_last_fov[0] = view->fov_x;
+	off_last_fov[1] = view->fov_y;
 	off_last_time = view->time;
 }
 
@@ -308,6 +357,20 @@ void R_OfflineFinish (void)
 
 	if (!R_Offline ())
 		return;
+
+	if (R_Exporting ())
+	{
+		Com_sprintf (path, sizeof(path), "%s/frame%05d.ptx", off_dir, off_frame);
+		if (!R_ExportWrite (path, off_frame))
+		{
+			ri.Con_Printf (PRINT_ALL, "Couldn't write %s\n", path);
+			off_failed = true;
+			return;
+		}
+		off_have_pixels = false;
+		off_frame++;
+		return;
+	}
 
 	size = rpt.width * rpt.height;
 	if (!off_pixels)

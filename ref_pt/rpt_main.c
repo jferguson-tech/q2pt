@@ -273,6 +273,11 @@ qboolean R_Init (void *hInstance, void *wndProc)
 	ci.width = rpt.width;
 	ci.height = rpt.height;
 	ci.log = R_BackendLog;
+	// A setting the backend is made with is marked as taken where it is read,
+	// here, and not in R_SetMode, of which each system has its own: a mark left
+	// standing has R_BeginFrame ask for a new renderer every frame.
+	ci.simd = (int)pt_simd->value;
+	pt_simd->modified = false;
 
 	err[0] = 0;
 	rpt.backend = RPT_CREATE (&ci, err, sizeof(err));
@@ -290,6 +295,7 @@ qboolean R_Init (void *hInstance, void *wndProc)
 	Draw_InitLocal ();
 	R_InitShots ();
 	R_InitOffline ();
+	R_InitExport ();
 	R_InitBench ();
 
 	ri.Vid_MenuInit ();
@@ -309,6 +315,7 @@ void R_Shutdown (void)
 	R_ShutdownBench ();		// while there is still a backend to speak of
 	R_ShutdownShots ();
 	R_ShutdownOffline ();
+	R_ShutdownExport ();
 	R_WaterReset ();		// while the backend that holds its pictures is still there
 	R_ShutdownImages ();
 	R_ShutdownModels ();
@@ -376,9 +383,10 @@ R_BeginFrame
 void R_BeginFrame (float camera_separation)
 {
 	/*
-	** change modes if necessary
+	** change modes if necessary, or make the backend again with a setting
+	** it is made with (R_Init takes the mark off those)
 	*/
-	if (gl_mode->modified || vid_fullscreen->modified)
+	if (gl_mode->modified || vid_fullscreen->modified || pt_simd->modified)
 	{	// FIXME: only restart if CDS is required
 		cvar_t	*ref;
 
@@ -386,7 +394,7 @@ void R_BeginFrame (float camera_separation)
 		ref->modified = true;
 	}
 
-	memset (rpt.overlay, 0, rpt.width * rpt.height * sizeof(uint32_t));
+	Draw_ClearOverlay ();
 }
 
 static void R_DrawStats (refdef_t *fd);
@@ -469,6 +477,8 @@ void R_RenderFrame (refdef_t *fd)
 
 	if (pt_stats->value && !R_Offline ())
 		R_DrawStats (fd);
+	if (!R_Offline ())
+		R_DrawFilterPanel (fd);
 }
 
 /*
@@ -567,7 +577,11 @@ R_EndFrame
 */
 void R_EndFrame (void)
 {
-	rpt.backend->present (rpt.backend, rpt.overlay);
+	pt_rect_t	*changed;
+	int			num;
+
+	num = Draw_Changed (&changed);
+	rpt.backend->present (rpt.backend, rpt.overlay, changed, num);
 	R_CountFrame ();
 	R_BenchFrame ();
 	R_ShotFinish ();

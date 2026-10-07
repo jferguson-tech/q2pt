@@ -100,23 +100,45 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(REF_PT_SRC
 	ref_pt/rpt_main.c ref_pt/rpt_image.c ref_pt/rpt_draw.c ref_pt/rpt_world.c
 	ref_pt/rpt_model.c ref_pt/rpt_scene.c ref_pt/rpt_material.c ref_pt/rpt_settings.c
-	ref_pt/rpt_water.c ref_pt/rpt_shot.c ref_pt/rpt_offline.c ref_pt/rpt_bench.c
+	ref_pt/rpt_water.c ref_pt/rpt_shot.c ref_pt/rpt_offline.c ref_pt/rpt_export.c ref_pt/rpt_bench.c
 	pt/water/pt_water.c pt/png/pt_png.c
 	win32/q_shwin.c ${SHARED_SRC} ref_pt/ref_pt.def)
 
-add_library(pt_cpu STATIC pt/cpu/pt_cpu.cpp pt/cpu/pt_bvh.cpp pt/cpu/pt_world.cpp pt/cpu/pt_trace.cpp)
-# The tracer is all small inlined functions; RelWithDebInfo would otherwise
-# hold inlining back. AVX2 is on by default: every x64 CPU since 2013-2015
-# has it. Configure with -DPT_AVX2=OFF for something older.
-option(PT_AVX2 "Build the CPU path tracer for AVX2" ON)
-if(MSVC)
-	target_compile_options(pt_cpu PRIVATE /Ob2 /Oi /Ot)
-	if(PT_AVX2 AND Q2_ARCH STREQUAL x64)
-		target_compile_options(pt_cpu PRIVATE /arch:AVX2)
+set(PT_CPU_SRC pt/cpu/pt_cpu.cpp pt/cpu/pt_bvh.cpp pt/cpu/pt_world.cpp pt/cpu/pt_trace.cpp)
+# On x64 the CPU path tracer is built twice into ref_ptcpu: for processors
+# with AVX2, which every x64 CPU since 2013-2015 has, and for any other.
+# pt/cpu/pt_cpu_pick.cpp picks one when the renderer starts. Each build has a
+# namespace of its own (PT_NS). What the two still share, the standard
+# library's templates, is taken by the linker from whichever objects it meets
+# first: those built for any processor are listed first, so that none of the
+# code the older processors run is built for AVX2. Configure with
+# -DPT_AVX2=OFF to leave the AVX2 build out.
+option(PT_AVX2 "Build the CPU path tracer for AVX2 as well as for any processor" ON)
+if(PT_AVX2 AND Q2_ARCH STREQUAL x64)
+	add_library(pt_cpu_sse OBJECT ${PT_CPU_SRC})
+	target_compile_definitions(pt_cpu_sse PRIVATE PT_NS=pt_sse PT_CPU_CREATE=pt_cpu_create_sse)
+	add_library(pt_cpu_avx2 OBJECT ${PT_CPU_SRC})
+	target_compile_definitions(pt_cpu_avx2 PRIVATE PT_NS=pt_avx2 PT_CPU_CREATE=pt_cpu_create_avx2 PT_AVX2_KERNELS)
+	if(MSVC)
+		target_compile_options(pt_cpu_avx2 PRIVATE /arch:AVX2)
 	endif()
+	add_library(pt_cpu_pick OBJECT pt/cpu/pt_cpu_pick.cpp)
+	set(PT_CPU_PARTS pt_cpu_sse pt_cpu_avx2)
+	set(PT_CPU_OBJECTS $<TARGET_OBJECTS:pt_cpu_pick> $<TARGET_OBJECTS:pt_cpu_sse> $<TARGET_OBJECTS:pt_cpu_avx2>)
+else()
+	add_library(pt_cpu_one OBJECT ${PT_CPU_SRC})
+	set(PT_CPU_PARTS pt_cpu_one)
+	set(PT_CPU_OBJECTS $<TARGET_OBJECTS:pt_cpu_one>)
 endif()
-add_library(ref_ptcpu SHARED ${REF_PT_SRC})
-target_link_libraries(ref_ptcpu PRIVATE pt_cpu winmm gdi32 user32)
+# The tracer is all small inlined functions; RelWithDebInfo would otherwise
+# hold inlining back.
+if(MSVC)
+	foreach(part ${PT_CPU_PARTS})
+		target_compile_options(${part} PRIVATE /Ob2 /Oi /Ot)
+	endforeach()
+endif()
+add_library(ref_ptcpu SHARED ${REF_PT_SRC} ${PT_CPU_OBJECTS})
+target_link_libraries(ref_ptcpu PRIVATE winmm gdi32 user32)
 set_target_properties(ref_ptcpu PROPERTIES PREFIX "")
 
 # the Vulkan backend needs the SDK to build (headers, loader lib, glslc);

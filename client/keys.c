@@ -318,7 +318,7 @@ void Key_Console (int key)
 				&& !key_lines[history_line][1]);
 		if (history_line == edit_line)
 			history_line = (edit_line+1)&31;
-		strcpy(key_lines[edit_line], key_lines[history_line]);
+		memmove(key_lines[edit_line], key_lines[history_line], MAXCMDLINE);
 		key_linepos = strlen(key_lines[edit_line]);
 		return;
 	}
@@ -340,7 +340,7 @@ void Key_Console (int key)
 		}
 		else
 		{
-			strcpy(key_lines[edit_line], key_lines[history_line]);
+			memmove(key_lines[edit_line], key_lines[history_line], MAXCMDLINE);
 			key_linepos = strlen(key_lines[edit_line]);
 		}
 		return;
@@ -636,6 +636,45 @@ void Key_Bindlist_f (void)
 			Com_Printf ("%s \"%s\"\n", Key_KeynumToString(i), keybindings[i]);
 }
 
+
+/*
+===================
+Key_ArrowsOnWASD
+
+W, A, S and D are given what the arrow keys do: walking forward and back
+and turning left and right. The default.cfg that comes with the game's
+data, which is not ours to change, has nothing on W and D, looking up on A
+and the silencer on S.
+
+Unless always is set a key is left alone when the player has put something
+of their own on it: it is taken only if it has nothing on it or what
+default.cfg put there.
+===================
+*/
+void Key_ArrowsOnWASD (qboolean always)
+{
+	static struct
+	{
+		int		key;
+		char	*command;
+		char	*stock;		// what default.cfg has on the key
+	} keys[] =
+	{
+		{'w', "+forward", ""},
+		{'s', "+back", "use silencer"},
+		{'a', "+left", "+lookup"},
+		{'d', "+right", ""}
+	};
+	int		i;
+	char	*now;
+
+	for (i=0 ; i<(int)(sizeof(keys)/sizeof(keys[0])) ; i++)
+	{
+		now = keybindings[keys[i].key];
+		if (always || !now || !now[0] || !Q_stricmp (now, keys[i].stock))
+			Key_SetBinding (keys[i].key, keys[i].command);
+	}
+}
 
 /*
 ===================
