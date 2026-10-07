@@ -34,8 +34,13 @@ a second.*
 * A denoiser (reprojected history and an edge-stopping spatial filter),
   temporal anti-aliasing that also upscales from a lower internal resolution,
   auto exposure, bloom and a choice of tone mapping.
-* Quality presets and a menu page for the main settings; everything else is a
-  console variable (`pt_*`).
+* The picture as the paths alone make it, noise and all, at a key press
+  (**F7**): every frame on its own, or frames added up while the view is at
+  rest. Each thing in the filtered picture that depends on earlier frames can
+  be switched off by itself from the number pad, with a panel that lists
+  what is on, to find which of them a fault comes from.
+* Quality presets and a menu page for the main settings, the number of paths
+  per pixel among them; everything else is a console variable (`pt_*`).
 * On-screen performance info: frame rate, frame times and where the time
   goes, on either path tracer.
 * The 64-bit renderer holds two builds of the tracer and picks one when it
@@ -74,19 +79,32 @@ light a map the same way. It has the lighting, materials, glass and liquids,
 fog, the three water modes, the denoiser, anti-aliasing, auto exposure, bloom,
 tone mapping, screenshots and offline rendering.
 
-Measured on an RTX 4090 beside a 16 core Ryzen 7950X, on the first map at
-800x600 with one path per pixel and three bounces: about 190 frames a second,
-where the CPU renderer manages 9. Offline frames at 64 paths per pixel take
-about a quarter of a second each, some twenty times faster than on the CPU.
+Measured with `pt_bench demo1` on an RTX 4090 beside a 16 core Ryzen 7950X,
+at 800x600 with one path per pixel, three bounces and the filter on: 176
+frames a second, where the CPU renderer manages 10. Offline frames of the
+same demo at 64 paths per pixel with motion blur take a little over half a
+second each, against five seconds on the CPU.
 
 Not yet on the GPU: the separate history the CPU renderer keeps for mirror
-reflections. Its denoiser decides how far to smooth
-from how long a pixel has been in view rather than from measured noise.
+reflections. Its denoiser decides how far to smooth from how long a pixel has
+been in view rather than from measured noise.
 
 Like the CPU renderer it can trace a smaller picture than the window and
-build the full size one from it over a few frames (`pt_scale`). At 5120x1440
-on the RTX 4090, medium preset: 20 frames a second traced at full size, 49 at
-half the width and height, 100 at a quarter.
+build the full size one from it over a few frames (`pt_scale`). The same
+measurement on the RTX 4090 at other sizes, in frames a second:
+
+| | traced at full size | half the width and height | a quarter |
+| --- | --- | --- | --- |
+| 1920x1080 | 58 | 155 | 362 |
+| 5120x1440 | 23 | 63 | |
+
+**Known faults**
+
+* With the filter on, the fog can look as if it were painted on the walls
+  behind it while the view moves, and light that changes quickly trails a
+  little. The raw picture (**F7**) has neither, and has the noise instead.
+* Linux is built and checked by CI on every change but played far less than
+  Windows.
 
 ## Requirements
 
