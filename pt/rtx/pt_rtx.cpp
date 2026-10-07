@@ -2295,7 +2295,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.counts[1] = (int32_t)num_lights;
 	f.counts[2] = (int32_t)s->frame_index;
 	f.counts[3] = view->anim_frame;
-	f.bases[0] = filtering == 2 ? std::min(std::max(view->adaptive, 1), 16) : 1;	// it goes by the history
+	f.bases[0] = 0;
 	f.bases[2] = filtering;
 	f.bases[1] = (int32_t)s->world.num_solid;
 	f.bases[3] = (int32_t)s->frame.num_solid;

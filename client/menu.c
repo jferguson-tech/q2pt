@@ -1525,7 +1525,6 @@ void M_PtSwitch_f (void)
 		{ "pt_taa",				"1",	CVAR_ARCHIVE,	0, 1 },
 		{ "pt_history",			"32",	CVAR_ARCHIVE,	1, 32 },
 		{ "pt_denoise",			"4",	CVAR_ARCHIVE,	0, 4 },
-		{ "pt_adaptive",		"2",	CVAR_ARCHIVE,	1, 4 },
 		{ "pt_auto_exposure",	"1",	CVAR_ARCHIVE,	0, 1 },
 		{ "pt_scale",			"0.5",	CVAR_ARCHIVE,	1, 0.5f },
 		{ "pt_debug",			"0",	0,				0, 7 },
@@ -1539,8 +1538,8 @@ void M_PtSwitch_f (void)
 
 	if ( Cmd_Argc() != 2 )
 	{
-		Com_Printf( "pt_switch <1-7>: anti-aliasing, light history, noise filter, adaptive sampling,\n"
-			"auto exposure, upscaling, history view. 0: all back on. 9: keep the list on screen\n" );
+		Com_Printf( "pt_switch <1-6>: anti-aliasing, light history, noise filter, auto exposure,\n"
+			"upscaling, history view. 0: all back on. 9: keep the list on screen\n" );
 		return;
 	}
 	n = atoi( Cmd_Argv( 1 ) );
@@ -1560,7 +1559,7 @@ void M_PtSwitch_f (void)
 		for ( i = 1; i < num; i++ )
 		{
 			// the history view is the one that is on when it is not showing
-			if ( i == 7 )
+			if ( i == num - 1 )
 				Cvar_SetValue( switches[i].name, 0 );
 			else if ( Cvar_VariableValue( switches[i].name ) == switches[i].off )
 				Cvar_SetValue( switches[i].name, have_kept[i] ? kept[i] : switches[i].on );
@@ -1571,7 +1570,7 @@ void M_PtSwitch_f (void)
 		return;
 
 	value = Cvar_VariableValue( switches[n].name );
-	if ( n == 7 )
+	if ( n == num - 1 )
 		Cvar_SetValue( switches[n].name, value == 7 ? 0 : 7 );
 	else if ( value == switches[n].off )
 		Cvar_SetValue( switches[n].name, have_kept[n] ? kept[n] : switches[n].on );
@@ -4588,7 +4587,7 @@ void M_Init (void)
 		static const struct { int key; char *bind; } pad[] = {
 			{ K_KP_END, "pt_switch 1" }, { K_KP_DOWNARROW, "pt_switch 2" }, { K_KP_PGDN, "pt_switch 3" },
 			{ K_KP_LEFTARROW, "pt_switch 4" }, { K_KP_5, "pt_switch 5" }, { K_KP_RIGHTARROW, "pt_switch 6" },
-			{ K_KP_HOME, "pt_switch 7" }, { K_KP_INS, "pt_switch 0" }, { K_KP_DEL, "pt_switch 9" },
+			{ K_KP_INS, "pt_switch 0" }, { K_KP_DEL, "pt_switch 9" },
 		};
 		int		i;
 
