@@ -265,6 +265,7 @@ flowchart TD
         cpu["pt/cpu<br/>BVH, path tracer, denoiser<br/>SSE and AVX2"]
         rtx["pt/rtx<br/>Vulkan compute shaders,<br/>ray queries"]
         water["pt/water<br/>wave simulation"]
+        material["pt/material<br/>normal and roughness maps<br/>from a texture's colours"]
         png["pt/png<br/>PNG writer"]
     end
     engine -- "renderer interface" --> old
@@ -273,6 +274,7 @@ flowchart TD
     api -- "ref_ptcpu" --> cpu
     api -- "ref_ptrtx" --> rtx
     refpt --> water
+    refpt --> material
     refpt --> png
 ```
 
