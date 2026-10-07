@@ -101,7 +101,7 @@ set(REF_PT_SRC
 	ref_pt/rpt_main.c ref_pt/rpt_image.c ref_pt/rpt_draw.c ref_pt/rpt_world.c
 	ref_pt/rpt_model.c ref_pt/rpt_scene.c ref_pt/rpt_material.c ref_pt/rpt_settings.c
 	ref_pt/rpt_water.c ref_pt/rpt_shot.c ref_pt/rpt_offline.c ref_pt/rpt_bench.c
-	pt/water/pt_water.c pt/png/pt_png.c
+	pt/water/pt_water.c pt/png/pt_png.c pt/material/pt_material.c
 	win32/q_shwin.c ${SHARED_SRC} ref_pt/ref_pt.def)
 
 set(PT_CPU_SRC pt/cpu/pt_cpu.cpp pt/cpu/pt_bvh.cpp pt/cpu/pt_world.cpp pt/cpu/pt_trace.cpp)
