@@ -1412,6 +1412,7 @@ static menulist_s		s_pt_tonemap_list;
 static menulist_s		s_pt_bloom_box;
 static menulist_s		s_pt_fog_box;
 static menulist_s		s_pt_water_list;
+static menulist_s		s_pt_filter_list;
 static menulist_s		s_pt_stats_box;
 static menuaction_s		s_pt_render_action;
 
@@ -1475,6 +1476,113 @@ static void PT_WaterFunc( void *unused )
 	Cvar_SetValue( "pt_water", s_pt_water_list.curvalue );
 }
 
+static void PT_FilterFunc( void *unused )
+{
+	Cvar_SetValue( "pt_filter", s_pt_filter_list.curvalue );
+}
+
+/*
+=================
+M_PtFilterCycle_f
+
+Steps the path tracers between the filtered picture and the two raw ones,
+to compare them while playing
+=================
+*/
+void M_PtFilterCycle_f (void)
+{
+	static const char	*names[] = { "raw", "raw, adding up at rest", "filtered" };
+	int					next;
+
+	Cvar_Get( "pt_filter", "2", CVAR_ARCHIVE );
+	// filtered -> raw, adding up at rest -> raw -> filtered
+	next = ( (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_filter" ) ) + 2 ) % 3;
+	Cvar_SetValue( "pt_filter", next );
+	Com_Printf( "Path traced picture: %s\n", names[next] );
+}
+
+/*
+=================
+M_PtSwitch_f
+
+pt_switch <n>: switches one of the things in the path traced picture that
+depend on earlier frames off, or back to what it was, to find which of them
+a fault in the picture comes from. The renderer shows what they all are when
+one changes. 0 puts them all back on; 9 keeps the list on screen.
+=================
+*/
+void M_PtSwitch_f (void)
+{
+	// the variable, what "off" is, what "on" is until it has been seen set to something else
+	static struct
+	{
+		char	*name;
+		char	*create;	// its default, as the renderer makes it
+		int		flags;
+		float	off, on;
+	} switches[] = {
+		{ NULL, NULL, 0, 0, 0 },
+		{ "pt_taa",				"1",	CVAR_ARCHIVE,	0, 1 },
+		{ "pt_history",			"32",	CVAR_ARCHIVE,	1, 32 },
+		{ "pt_denoise",			"4",	CVAR_ARCHIVE,	0, 4 },
+		{ "pt_adaptive",		"2",	CVAR_ARCHIVE,	1, 4 },
+		{ "pt_auto_exposure",	"1",	CVAR_ARCHIVE,	0, 1 },
+		{ "pt_scale",			"0.5",	CVAR_ARCHIVE,	1, 0.5f },
+		{ "pt_debug",			"0",	0,				0, 7 },
+	};
+	// what each was before it was switched off
+	static float	kept[sizeof(switches) / sizeof(switches[0])];
+	static qboolean	have_kept[sizeof(switches) / sizeof(switches[0])];
+	const int	num = sizeof(switches) / sizeof(switches[0]);
+	float		value;
+	int			n, i;
+
+	if ( Cmd_Argc() != 2 )
+	{
+		Com_Printf( "pt_switch <1-7>: anti-aliasing, light history, noise filter, adaptive sampling,\n"
+			"auto exposure, upscaling, history view. 0: all back on. 9: keep the list on screen\n" );
+		return;
+	}
+	n = atoi( Cmd_Argv( 1 ) );
+	for ( i = 1; i < num; i++ )
+		Cvar_Get( switches[i].name, switches[i].create, switches[i].flags );
+
+	if ( n == 9 )
+	{
+		Cvar_Get( "pt_show_filter", "0", 0 );
+		Cvar_SetValue( "pt_show_filter", !Cvar_VariableValue( "pt_show_filter" ) );
+		return;
+	}
+	if ( n == 0 )
+	{
+		Cvar_Get( "pt_filter", "2", CVAR_ARCHIVE );
+		Cvar_SetValue( "pt_filter", 2 );
+		for ( i = 1; i < num; i++ )
+		{
+			// the history view is the one that is on when it is not showing
+			if ( i == 7 )
+				Cvar_SetValue( switches[i].name, 0 );
+			else if ( Cvar_VariableValue( switches[i].name ) == switches[i].off )
+				Cvar_SetValue( switches[i].name, have_kept[i] ? kept[i] : switches[i].on );
+		}
+		return;
+	}
+	if ( n < 1 || n >= num )
+		return;
+
+	value = Cvar_VariableValue( switches[n].name );
+	if ( n == 7 )
+		Cvar_SetValue( switches[n].name, value == 7 ? 0 : 7 );
+	else if ( value == switches[n].off )
+		Cvar_SetValue( switches[n].name, have_kept[n] ? kept[n] : switches[n].on );
+	else
+	{
+		kept[n] = value;
+		have_kept[n] = true;
+		Cvar_SetValue( switches[n].name, switches[n].off );
+	}
+}
+
 static void PT_StatsFunc( void *unused )
 {
 	Cvar_SetValue( "pt_stats", s_pt_stats_box.curvalue );
@@ -1507,6 +1615,7 @@ static void PT_SetMenuValues( void )
 	s_pt_bloom_box.curvalue = Cvar_VariableValue( "pt_bloom" ) > 0;
 	s_pt_fog_box.curvalue = Cvar_VariableValue( "pt_fog" ) != 0;
 	s_pt_water_list.curvalue = (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_water" ) );
+	s_pt_filter_list.curvalue = (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_filter" ) );
 	s_pt_stats_box.curvalue = Cvar_VariableValue( "pt_stats" ) != 0;
 }
 
@@ -1542,6 +1651,13 @@ void PathTrace_MenuInit( void )
 		"simulated",
 		0
 	};
+	static const char *filter_names[] =
+	{
+		"raw",
+		"raw, adds up at rest",
+		"filtered",
+		0
+	};
 	static const char *yesno_names[] =
 	{
 		"no",
@@ -1561,10 +1677,11 @@ void PathTrace_MenuInit( void )
 	Cvar_Get( "pt_bloom", "0.3", CVAR_ARCHIVE );
 	Cvar_Get( "pt_fog", "1", CVAR_ARCHIVE );
 	Cvar_Get( "pt_water", "2", CVAR_ARCHIVE );
+	Cvar_Get( "pt_filter", "2", CVAR_ARCHIVE );
 	Cvar_Get( "pt_stats", "1", CVAR_ARCHIVE );
 
 	s_pt_menu.x = viddef.width / 2;
-	s_pt_menu.y = viddef.height / 2 - 58;
+	s_pt_menu.y = viddef.height / 2 - 63;
 	s_pt_menu.nitems = 0;
 
 	s_pt_quality_list.generic.type		= MTYPE_SPINCONTROL;
@@ -1640,16 +1757,23 @@ void PathTrace_MenuInit( void )
 	s_pt_water_list.generic.callback	= PT_WaterFunc;
 	s_pt_water_list.itemnames			= water_names;
 
+	s_pt_filter_list.generic.type		= MTYPE_SPINCONTROL;
+	s_pt_filter_list.generic.x			= 0;
+	s_pt_filter_list.generic.y			= 110;
+	s_pt_filter_list.generic.name		= "picture";
+	s_pt_filter_list.generic.callback	= PT_FilterFunc;
+	s_pt_filter_list.itemnames			= filter_names;
+
 	s_pt_stats_box.generic.type			= MTYPE_SPINCONTROL;
 	s_pt_stats_box.generic.x			= 0;
-	s_pt_stats_box.generic.y			= 110;
+	s_pt_stats_box.generic.y			= 120;
 	s_pt_stats_box.generic.name			= "performance info";
 	s_pt_stats_box.generic.callback		= PT_StatsFunc;
 	s_pt_stats_box.itemnames			= yesno_names;
 
 	s_pt_render_action.generic.type		= MTYPE_ACTION;
 	s_pt_render_action.generic.x		= 0;
-	s_pt_render_action.generic.y		= 130;
+	s_pt_render_action.generic.y		= 140;
 	s_pt_render_action.generic.name		= "render a demo";
 	s_pt_render_action.generic.callback	= PT_RenderFunc;
 
@@ -1665,6 +1789,7 @@ void PathTrace_MenuInit( void )
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_bloom_box );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_fog_box );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_water_list );
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_filter_list );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_stats_box );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_render_action );
 }
@@ -1677,7 +1802,7 @@ void PathTrace_MenuDraw (void)
 	PT_SetMenuValues();
 	Menu_AdjustCursor( &s_pt_menu, 1 );
 	Menu_Draw( &s_pt_menu );
-	Menu_DrawStringDark( viddef.width / 2 - (int)strlen( note ) * 4, s_pt_menu.y + 154, note );
+	Menu_DrawStringDark( viddef.width / 2 - (int)strlen( note ) * 4, s_pt_menu.y + 164, note );
 }
 
 const char *PathTrace_MenuKey( int key )
@@ -4454,6 +4579,23 @@ M_Init
 void M_Init (void)
 {
 	Cmd_AddCommand ("menu_main", M_Menu_Main_f);
+	Cmd_AddCommand ("pt_filter_cycle", M_PtFilterCycle_f);
+	if ( !keybindings[K_F7] )
+		Key_SetBinding (K_F7, "pt_filter_cycle");
+	Cmd_AddCommand ("pt_switch", M_PtSwitch_f);
+	{
+		// the number pad, as the keys are numbered, where it is not in use
+		static const struct { int key; char *bind; } pad[] = {
+			{ K_KP_END, "pt_switch 1" }, { K_KP_DOWNARROW, "pt_switch 2" }, { K_KP_PGDN, "pt_switch 3" },
+			{ K_KP_LEFTARROW, "pt_switch 4" }, { K_KP_5, "pt_switch 5" }, { K_KP_RIGHTARROW, "pt_switch 6" },
+			{ K_KP_HOME, "pt_switch 7" }, { K_KP_INS, "pt_switch 0" }, { K_KP_DEL, "pt_switch 9" },
+		};
+		int		i;
+
+		for ( i = 0; i < (int)( sizeof(pad) / sizeof(pad[0]) ); i++ )
+			if ( !keybindings[pad[i].key] )
+				Key_SetBinding (pad[i].key, pad[i].bind);
+	}
 	Cmd_AddCommand ("menu_game", M_Menu_Game_f);
 		Cmd_AddCommand ("menu_loadgame", M_Menu_LoadGame_f);
 		Cmd_AddCommand ("menu_savegame", M_Menu_SaveGame_f);

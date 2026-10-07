@@ -475,6 +475,8 @@ void R_RenderFrame (refdef_t *fd)
 
 	if (pt_stats->value && !R_Offline ())
 		R_DrawStats (fd);
+	if (!R_Offline ())
+		R_DrawFilterPanel (fd);
 }
 
 /*

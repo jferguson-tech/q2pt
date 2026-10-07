@@ -80,8 +80,12 @@ void main()
 			const ivec2 corner = ivec2(floor(vec2(fx, fy) + 0.001));
 			const vec2 a = vec2(fx, fy) - vec2(corner);
 			const float expected = length(v);
+			// Where frames are only added up with the eye at rest, a point
+			// that was somewhere else on screen is something that moves: it
+			// starts afresh, so that nothing of where it was shows.
+			const bool elsewhere = fr.bases.z == 1 && (abs(fx - float(pixel.x)) > 0.01 || abs(fy - float(pixel.y)) > 0.01);
 
-			for (int t = 0; t < 4; t++)
+			for (int t = 0; t < 4 && !elsewhere; t++)
 			{
 				const ivec2 q = corner + ivec2(t & 1, t >> 1);
 				float f;
@@ -97,7 +101,7 @@ void main()
 				wsum += w;
 			}
 
-			if (wsum <= 0.01)
+			if (wsum <= 0.01 && !elsewhere)
 			{
 				// Nothing usable right where this point was. Along an edge a
 				// pixel shows one surface on some frames and its neighbour

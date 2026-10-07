@@ -135,6 +135,7 @@ void R_OfflineSettings (pt_view_t *view)
 	view->scale = 1;
 	view->samples = PATHS_PER_PASS;
 	view->antialias = 1;
+	view->filter = 2;		// as before: offline frames are made of many passes added up
 	view->debug = 0;
 	view->adaptive = 1;		// every frame is new all over: there is nowhere to favour
 	view->bounces = pt_render_bounces->value;

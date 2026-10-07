@@ -173,6 +173,9 @@ typedef struct pt_view_s
 	int		bounces;		/* maximum path length after the first hit */
 	float	exposure;
 	int		antialias;	/* blend frames over time to smooth edges */
+	int		filter;		/* what is done about noise. 2: frames are blended over time and the
+						   picture filtered. 1: neither; a frame stands alone, except
+						   that while the eye is at rest frames add up. 0: neither, ever */
 	int		debug;			/* 0 = the picture; otherwise one part of it, see pt_debug */
 
 	/* reflections */

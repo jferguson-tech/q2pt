@@ -180,6 +180,7 @@ extern	float	r_bumpscale, r_roughscale, r_metalscale;
 void	R_InitSettings (void);
 qboolean R_UpdateSettings (void);
 void	R_ViewSettings (pt_view_t *view);
+void	R_DrawFilterPanel (refdef_t *fd);
 
 //
 // rpt_shot.c
