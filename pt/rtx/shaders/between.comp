@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Jonathan Ferguson
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_GOOGLE_include_directive : require
+
+// A picture for the moment halfway between the last frame and this one, to
+// be shown between the two: twice the pictures a second for the tracing of
+// one.
+//
+// Nothing is guessed from the pictures themselves. The tracer knows where
+// every point it sees was on screen a frame ago, so each pixel of the
+// picture between is found by asking which point passes through it halfway
+// along, and that point is fetched from both frames, from where it is now
+// and from where it was, and the two averaged. Where the frame before did
+// not show that point (it was behind something, or off screen), this frame
+// alone is used.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "scene.glsl"
+
+// the finished picture of this frame or the last, between its pixels
+vec3 Finished(int which, vec2 at)
+{
+	const ivec2 last = fr.out_size.xy - 1;
+	at = clamp(at, vec2(0.0), vec2(last));
+	const ivec2 p0 = ivec2(floor(at));
+	const ivec2 p1 = min(p0 + 1, last);
+	const vec2 a = at - vec2(p0);
+	return mix(mix(imageLoad(img_steady[which], p0).rgb, imageLoad(img_steady[which], ivec2(p1.x, p0.y)).rgb, a.x),
+		mix(imageLoad(img_steady[which], ivec2(p0.x, p1.y)).rgb, imageLoad(img_steady[which], p1).rgb, a.x), a.y);
+}
+
+// How far, in pixels of the view, the point seen at x in this frame has come
+// since the last one: it was at x + moved. Says whether the last frame showed
+// that point there.
+vec2 Moved(vec2 x, out bool was_seen)
+{
+	const ivec2 size = fr.size.xy, out_size = fr.out_size.xy;
+	const int now = fr.frame_has.z, prev = 1 - now;
+	const vec2 grow = vec2(out_size) / vec2(size);
+	const vec2 jitter = vec2(fr.right.w, fr.up.w);
+
+	// the traced sample nearest x, and where in the view it was taken
+	const vec2 uv = (x + 0.5) / vec2(out_size);
+	const ivec2 nearest = clamp(ivec2(floor(uv * vec2(size) - 0.5 - jitter + 0.5)), ivec2(0), size - 1);
+	const vec2 taken = (vec2(nearest) + 0.5 + jitter) * grow - 0.5;
+
+	was_seen = false;
+	const vec3 v = imageLoad(img_seen, nearest).xyz - fr.prev_origin.xyz;
+	const float z = dot(v, fr.prev_forward.xyz);
+	if (z <= 0.01)
+		return vec2(0.0);
+	const vec2 was = vec2((dot(v, fr.prev_right.xyz) / (z * fr.prev_origin.w) * 0.5 + 0.5) * out_size.x,
+		(0.5 - dot(v, fr.prev_up.xyz) / (z * fr.prev_forward.w) * 0.5) * out_size.y) - 0.5;
+
+	// was it this point that the last frame showed there, or something in
+	// front of it? The sky, which is at no distance, is always itself.
+	if (imageLoad(img_surface[now], nearest).a < 0.0)
+		was_seen = true;
+	else
+	{
+		const float expected = length(v);
+		const ivec2 spot = ivec2(floor((was + 0.5) / grow));
+		for (int dy = -1; dy <= 1 && !was_seen; dy++)
+		{
+			for (int dx = -1; dx <= 1; dx++)
+			{
+				const ivec2 q = spot + ivec2(dx, dy);
+				if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y)
+					continue;
+				const float held = imageLoad(img_surface[prev], q).a;
+				if (held >= 0.0 && abs(held - expected) <= 0.1 * expected)
+				{
+					was_seen = true;
+					break;
+				}
+			}
+		}
+	}
+	return was - taken;
+}
+
+void main()
+{
+	const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+	const ivec2 out_size = fr.out_size.xy;
+	if (pixel.x >= out_size.x || pixel.y >= out_size.y)
+		return;
+	const int now = fr.frame_has.z, prev = 1 - now;
+
+	// Which point of this frame is at this pixel halfway back to where it
+	// was? It is the one half its own motion away, and its motion is only
+	// known once it is found: a few rounds of looking settle it.
+	const vec2 here = vec2(pixel);
+	vec2 at = here;
+	bool was_seen;
+	vec2 moved = Moved(at, was_seen);
+	for (int i = 0; i < 3; i++)
+	{
+		at = here - moved * 0.5;
+		moved = Moved(at, was_seen);
+	}
+
+	vec3 c = Finished(now, at);
+	const vec2 before = at + moved;
+	if (was_seen && before.x > -0.5 && before.y > -0.5
+		&& before.x < float(out_size.x) - 0.5 && before.y < float(out_size.y) - 0.5)
+		c = 0.5 * (c + Finished(prev, before));
+
+	imageStore(img_between, pixel, vec4(pow(c, vec3(1.0 / 2.2)), 1.0));
+}

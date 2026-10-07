@@ -188,7 +188,8 @@ Some console commands and variables:
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
 | `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time |
 | `pt_filter 0`-`2`, `pt_filter_cycle` (**F7**) | the picture as the paths alone make it, noise and all: `0` every frame on its own, `1` the same but frames add up while you stand still, `2` (the default) blended over time and filtered |
-| `pt_switch 1`-`7` (number pad **1**-**7**) | switch off, or back on, one of the things in the picture that depend on earlier frames, to find which one a fault comes from: anti-aliasing and the upscaler, light history, the noise filter, adaptive sampling, auto exposure, upscaling, the history view. A list of them all comes up for a few seconds with what is on and off. Number pad **0** puts them all back; **.** keeps the list up (`pt_show_filter`) |
+| `pt_framegen 0`-`2` | RTX renderer: `1` shows a picture made up between each two frames, for twice the pictures a second; what is seen is half a frame later for it. `2` shows the made up pictures alone, to judge them. Off by default; number pad **8** |
+| `pt_switch 1`-`8` (number pad **1**-**8**) | switch off, or back on, one of the things in the picture that depend on earlier frames, to find which one a fault comes from: anti-aliasing and the upscaler, light history, the noise filter, adaptive sampling, auto exposure, upscaling, the history view. A list of them all comes up for a few seconds with what is on and off. Number pad **0** puts them all back; **.** keeps the list up (`pt_show_filter`) |
 | `pt_stats 0` | hide the performance info, which is on by default (never shown in offline renders) |
 | `pt_simd 0`-`1` | CPU renderer: the build for AVX2 where the processor has it, or the one for any processor, to compare the two |
 | `pt_debug 1`-`11` | one part of the picture on its own |

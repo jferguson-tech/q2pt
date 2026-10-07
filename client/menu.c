@@ -1413,6 +1413,7 @@ static menulist_s		s_pt_bloom_box;
 static menulist_s		s_pt_fog_box;
 static menulist_s		s_pt_water_list;
 static menulist_s		s_pt_filter_list;
+static menulist_s		s_pt_framegen_box;
 static menulist_s		s_pt_stats_box;
 static menuaction_s		s_pt_render_action;
 
@@ -1481,6 +1482,11 @@ static void PT_FilterFunc( void *unused )
 	Cvar_SetValue( "pt_filter", s_pt_filter_list.curvalue );
 }
 
+static void PT_FramegenFunc( void *unused )
+{
+	Cvar_SetValue( "pt_framegen", s_pt_framegen_box.curvalue );
+}
+
 /*
 =================
 M_PtFilterCycle_f
@@ -1529,6 +1535,7 @@ void M_PtSwitch_f (void)
 		{ "pt_auto_exposure",	"1",	CVAR_ARCHIVE,	0, 1 },
 		{ "pt_scale",			"0.5",	CVAR_ARCHIVE,	1, 0.5f },
 		{ "pt_debug",			"0",	0,				0, 7 },
+		{ "pt_framegen",		"0",	CVAR_ARCHIVE,	0, 1 },
 	};
 	// what each was before it was switched off
 	static float	kept[sizeof(switches) / sizeof(switches[0])];
@@ -1539,8 +1546,9 @@ void M_PtSwitch_f (void)
 
 	if ( Cmd_Argc() != 2 )
 	{
-		Com_Printf( "pt_switch <1-7>: anti-aliasing, light history, noise filter, adaptive sampling,\n"
-			"auto exposure, upscaling, history view. 0: all back on. 9: keep the list on screen\n" );
+		Com_Printf( "pt_switch <1-8>: anti-aliasing, light history, noise filter, adaptive sampling,\n"
+			"auto exposure, upscaling, history view, frame generation. 0: all back as they were.\n"
+			"9: keep the list on screen\n" );
 		return;
 	}
 	n = atoi( Cmd_Argv( 1 ) );
@@ -1559,6 +1567,9 @@ void M_PtSwitch_f (void)
 		Cvar_SetValue( "pt_filter", 2 );
 		for ( i = 1; i < num; i++ )
 		{
+			// frame generation is no part of what is being put back
+			if ( i == 8 )
+				continue;
 			// the history view is the one that is on when it is not showing
 			if ( i == 7 )
 				Cvar_SetValue( switches[i].name, 0 );
@@ -1616,6 +1627,7 @@ static void PT_SetMenuValues( void )
 	s_pt_fog_box.curvalue = Cvar_VariableValue( "pt_fog" ) != 0;
 	s_pt_water_list.curvalue = (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_water" ) );
 	s_pt_filter_list.curvalue = (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_filter" ) );
+	s_pt_framegen_box.curvalue = Cvar_VariableValue( "pt_framegen" ) != 0;
 	s_pt_stats_box.curvalue = Cvar_VariableValue( "pt_stats" ) != 0;
 }
 
@@ -1678,10 +1690,11 @@ void PathTrace_MenuInit( void )
 	Cvar_Get( "pt_fog", "1", CVAR_ARCHIVE );
 	Cvar_Get( "pt_water", "2", CVAR_ARCHIVE );
 	Cvar_Get( "pt_filter", "2", CVAR_ARCHIVE );
+	Cvar_Get( "pt_framegen", "0", CVAR_ARCHIVE );
 	Cvar_Get( "pt_stats", "1", CVAR_ARCHIVE );
 
 	s_pt_menu.x = viddef.width / 2;
-	s_pt_menu.y = viddef.height / 2 - 63;
+	s_pt_menu.y = viddef.height / 2 - 68;
 	s_pt_menu.nitems = 0;
 
 	s_pt_quality_list.generic.type		= MTYPE_SPINCONTROL;
@@ -1764,16 +1777,23 @@ void PathTrace_MenuInit( void )
 	s_pt_filter_list.generic.callback	= PT_FilterFunc;
 	s_pt_filter_list.itemnames			= filter_names;
 
+	s_pt_framegen_box.generic.type		= MTYPE_SPINCONTROL;
+	s_pt_framegen_box.generic.x			= 0;
+	s_pt_framegen_box.generic.y			= 120;
+	s_pt_framegen_box.generic.name		= "frame generation (rtx)";
+	s_pt_framegen_box.generic.callback	= PT_FramegenFunc;
+	s_pt_framegen_box.itemnames			= yesno_names;
+
 	s_pt_stats_box.generic.type			= MTYPE_SPINCONTROL;
 	s_pt_stats_box.generic.x			= 0;
-	s_pt_stats_box.generic.y			= 120;
+	s_pt_stats_box.generic.y			= 130;
 	s_pt_stats_box.generic.name			= "performance info";
 	s_pt_stats_box.generic.callback		= PT_StatsFunc;
 	s_pt_stats_box.itemnames			= yesno_names;
 
 	s_pt_render_action.generic.type		= MTYPE_ACTION;
 	s_pt_render_action.generic.x		= 0;
-	s_pt_render_action.generic.y		= 140;
+	s_pt_render_action.generic.y		= 150;
 	s_pt_render_action.generic.name		= "render a demo";
 	s_pt_render_action.generic.callback	= PT_RenderFunc;
 
@@ -1790,6 +1810,7 @@ void PathTrace_MenuInit( void )
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_fog_box );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_water_list );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_filter_list );
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_framegen_box );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_stats_box );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_render_action );
 }
@@ -1802,7 +1823,7 @@ void PathTrace_MenuDraw (void)
 	PT_SetMenuValues();
 	Menu_AdjustCursor( &s_pt_menu, 1 );
 	Menu_Draw( &s_pt_menu );
-	Menu_DrawStringDark( viddef.width / 2 - (int)strlen( note ) * 4, s_pt_menu.y + 164, note );
+	Menu_DrawStringDark( viddef.width / 2 - (int)strlen( note ) * 4, s_pt_menu.y + 174, note );
 }
 
 const char *PathTrace_MenuKey( int key )
@@ -4588,7 +4609,8 @@ void M_Init (void)
 		static const struct { int key; char *bind; } pad[] = {
 			{ K_KP_END, "pt_switch 1" }, { K_KP_DOWNARROW, "pt_switch 2" }, { K_KP_PGDN, "pt_switch 3" },
 			{ K_KP_LEFTARROW, "pt_switch 4" }, { K_KP_5, "pt_switch 5" }, { K_KP_RIGHTARROW, "pt_switch 6" },
-			{ K_KP_HOME, "pt_switch 7" }, { K_KP_INS, "pt_switch 0" }, { K_KP_DEL, "pt_switch 9" },
+			{ K_KP_HOME, "pt_switch 7" }, { K_KP_UPARROW, "pt_switch 8" }, { K_KP_INS, "pt_switch 0" },
+			{ K_KP_DEL, "pt_switch 9" },
 		};
 		int		i;
 

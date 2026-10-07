@@ -37,6 +37,7 @@ static cvar_t	*pt_scale;				// internal resolution as a fraction of the window
 static cvar_t	*pt_taa;				// temporal anti-aliasing
 static cvar_t	*pt_filter;				// 2 filtered, 1 raw but adding up at rest, 0 raw
 static cvar_t	*pt_show_filter;		// keep the panel of what depends on earlier frames on screen
+static cvar_t	*pt_framegen;			// a picture made up between each two frames
 static cvar_t	*pt_denoise;			// passes of the spatial filter, 0-4
 static cvar_t	*pt_history;			// frames of lighting kept while things change
 static cvar_t	*pt_exposure;
@@ -138,6 +139,10 @@ void R_InitSettings (void)
 	// 1 lets frames add up while the eye is at rest; 0 never does.
 	pt_filter = ri.Cvar_Get ("pt_filter", "2", CVAR_ARCHIVE);
 	pt_show_filter = ri.Cvar_Get ("pt_show_filter", "0", 0);
+	// Twice the pictures a second for the tracing of one: between each two
+	// frames a picture is shown that is made up from them. What is seen is
+	// half a frame later for it. The RTX renderer only.
+	pt_framegen = ri.Cvar_Get ("pt_framegen", "0", CVAR_ARCHIVE);
 	pt_denoise = ri.Cvar_Get ("pt_denoise", "4", CVAR_ARCHIVE);
 	pt_history = ri.Cvar_Get ("pt_history", "32", CVAR_ARCHIVE);
 	pt_exposure = ri.Cvar_Get ("pt_exposure", "2", CVAR_ARCHIVE);
@@ -305,6 +310,7 @@ void R_ViewSettings (pt_view_t *view)
 	view->exposure = pt_exposure->value;
 	view->antialias = pt_taa->value != 0;
 	view->filter = pt_filter->value;
+	view->frame_generation = pt_framegen->value;
 	view->debug = pt_debug->value;
 
 	view->reflections = pt_reflections->value;
@@ -348,7 +354,7 @@ the panel up.
 =============================================================================
 */
 
-#define	NUM_FILTER_ROWS		8
+#define	NUM_FILTER_ROWS		9
 #define	FILTER_ROW_CHARS	64
 #define	FILTER_PANEL_MSEC	6000
 
@@ -400,6 +406,9 @@ static void R_FilterRows (char rows[NUM_FILTER_ROWS][FILTER_ROW_CHARS], float va
 	values[7] = pt_debug->value;
 	Com_sprintf (text, sizeof(text), "debug view %d", (int)pt_debug->value);
 	R_FilterRow (rows[7], " 7 history view", pt_debug->value != 0, pt_debug->value == 7 ? "" : text, false);
+
+	values[8] = pt_framegen->value;
+	R_FilterRow (rows[8], " 8 frame generation", values[8] != 0, pt_framegen->value == 2 ? "made up alone" : "", false);
 }
 
 /*

@@ -40,8 +40,12 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -69,6 +73,9 @@ const uint32_t bloom_comp_spv[] =
 ;
 const uint32_t resolve_comp_spv[] =
 #include "resolve.comp.inc"
+;
+const uint32_t between_comp_spv[] =
+#include "between.comp.inc"
 ;
 const uint32_t grade_comp_spv[] =
 #include "grade.comp.inc"
@@ -157,7 +164,7 @@ struct GpuLight
 
 const uint32_t kBitEmissive = 1, kBitSampled = 2;	// GpuMaterial::bits
 const int kNumStyles = 256;							// light styles, at the start of the tables
-const uint32_t kNumBindings = 31;
+const uint32_t kNumBindings = 32;
 
 // The pictures kept per pixel between the passes, in the order the shaders'
 // bindings take them; see scene.glsl.
@@ -176,7 +183,8 @@ enum
 	kSteady = 25,	// 2
 	kGraded = 27,
 	kMoments = 28,	// 2
-	kNumTargets = 30
+	kBetween = 30,
+	kNumTargets = 31
 };
 
 const uint32_t kMaxTextures = 4096;
@@ -262,6 +270,33 @@ struct RtxBackend
 	VkFence				fence = VK_NULL_HANDLE;
 	VkFence				fence_trace = VK_NULL_HANDLE;	// the card has finished cmd_trace
 	VkSemaphore			sem_acquire = VK_NULL_HANDLE;
+	VkSemaphore			sem_acquire2 = VK_NULL_HANDLE;	// for the second picture of a frame, see PresentFrame
+
+	// Frame generation shows two pictures for each frame traced: one made up
+	// between the last frame and this one, at once, and this frame itself half
+	// a frame's time later. The second is drawn with the first and only handed
+	// to the screen later, by a thread that does nothing else, so that the
+	// game need not wait for the moment. The queue and the swapchain may be
+	// used by one thread at a time: hence the lock.
+	std::mutex				queue_lock;
+	std::thread				presenter;
+	std::mutex				held_lock;
+	std::condition_variable	held_cv;
+	bool					held_pending = false;	// a picture is waiting for its moment
+	bool					held_quit = false;
+	uint32_t				held_index = 0;
+	std::chrono::steady_clock::time_point	held_at;
+	std::atomic<bool>		swap_stale{false};		// the screen said the swapchain no longer fits
+	uint64_t				held_shown = 0;			// how many have had their turn,
+	double					held_late = 0.0;		// and by how much in all they missed their moment, in seconds
+	bool					gen_wanted = false;		// this view is to have a picture made up before it
+	bool					gen_ready = false;		// and has one
+	bool					shown_made_up = false;	// the last frame shown was the made up picture alone
+	bool					viewed = false;			// a view has been described since the last frame shown
+	bool					have_shown = false;
+	std::chrono::steady_clock::time_point	shown_at;	// when the last frame was shown
+	double					frame_seconds = 1.0 / 60.0;	// between frames shown, smoothed
+	VkDescriptorSet			dset_between = VK_NULL_HANDLE;	// as dset, with the picture made up in place of the frame
 
 	VkSwapchainKHR		swapchain = VK_NULL_HANDLE;
 	VkSurfaceFormatKHR	surface_format{};
@@ -343,6 +378,7 @@ struct RtxBackend
 	VkPipeline				trace_pipeline = VK_NULL_HANDLE, temporal_pipeline = VK_NULL_HANDLE;
 	VkPipeline				atrous_pipeline = VK_NULL_HANDLE, compose_pipeline = VK_NULL_HANDLE;
 	VkPipeline				bloom_pipeline = VK_NULL_HANDLE, resolve_pipeline = VK_NULL_HANDLE;
+	VkPipeline				between_pipeline = VK_NULL_HANDLE;
 	VkPipeline				grade_pipeline = VK_NULL_HANDLE;
 	bool					bloom_on = false;
 	float					camera[16] = {};		// the last view, to tell whether it has moved
@@ -600,12 +636,92 @@ void CreateDevice(RtxBackend *s)
 
 	VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 	Check(vkCreateSemaphore(s->device, &sci, nullptr, &s->sem_acquire), "vkCreateSemaphore");
+	Check(vkCreateSemaphore(s->device, &sci, nullptr, &s->sem_acquire2), "vkCreateSemaphore");
 }
 
 // ------------------------------------------------------------- swapchain
 
+VkResult QueueIdle(RtxBackend *s)
+{
+	std::lock_guard<std::mutex> guard(s->queue_lock);
+	return vkQueueWaitIdle(s->queue);
+}
+
+VkResult QueueSubmit(RtxBackend *s, uint32_t count, const VkSubmitInfo2 *info, VkFence fence)
+{
+	std::lock_guard<std::mutex> guard(s->queue_lock);
+	return vkQueueSubmit2(s->queue, count, info, fence);
+}
+
+VkResult QueuePresent(RtxBackend *s, const VkPresentInfoKHR *info)
+{
+	std::lock_guard<std::mutex> guard(s->queue_lock);
+	return vkQueuePresentKHR(s->queue, info);
+}
+
+// waits until the picture held back for its moment, if there is one, has been shown
+void FinishHeld(RtxBackend *s)
+{
+	std::unique_lock<std::mutex> lock(s->held_lock);
+	s->held_cv.wait(lock, [s] { return !s->held_pending; });
+}
+
+// the thread that shows a held picture when its moment has come
+void PresenterLoop(RtxBackend *s)
+{
+	std::unique_lock<std::mutex> lock(s->held_lock);
+	for (;;)
+	{
+		s->held_cv.wait(lock, [s] { return s->held_pending || s->held_quit; });
+		if (!s->held_pending)
+			return;
+		const auto at = s->held_at;
+		uint32_t index = s->held_index;
+		lock.unlock();
+
+		// sleep most of the way, then watch the clock: a sleep may run a
+		// millisecond or two over, which at these rates would show
+		const auto nearly = at - std::chrono::microseconds(1500);
+		if (std::chrono::steady_clock::now() < nearly)
+			std::this_thread::sleep_until(nearly);
+		while (std::chrono::steady_clock::now() < at)
+			std::this_thread::yield();
+
+		VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+		pi.waitSemaphoreCount = 1;
+		pi.pWaitSemaphores = &s->swap_drawn[index];
+		pi.swapchainCount = 1;
+		pi.pSwapchains = &s->swapchain;
+		pi.pImageIndices = &index;
+		const VkResult r = QueuePresent(s, &pi);
+		if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR)
+			s->swap_stale = true;
+
+		const double late = std::chrono::duration<double>(std::chrono::steady_clock::now() - at).count();
+
+		lock.lock();
+		s->held_shown++;
+		s->held_late += late;
+		s->held_pending = false;
+		s->held_cv.notify_all();
+	}
+}
+
+// hands a picture already drawn to the thread, to be shown at that moment
+void HoldPresent(RtxBackend *s, uint32_t index, std::chrono::steady_clock::time_point at)
+{
+	if (!s->presenter.joinable())
+		s->presenter = std::thread(PresenterLoop, s);
+	std::lock_guard<std::mutex> lock(s->held_lock);
+	s->held_index = index;
+	s->held_at = at;
+	s->held_pending = true;
+	s->held_cv.notify_all();
+}
+
 void DestroySwapchain(RtxBackend *s)
 {
+	FinishHeld(s);
 	for (VkImageView v : s->swap_views)
 		vkDestroyImageView(s->device, v, nullptr);
 	s->swap_views.clear();
@@ -661,7 +777,9 @@ void CreateSwapchain(RtxBackend *s)
 		if (m == VK_PRESENT_MODE_MAILBOX_KHR)
 			mode = m;
 
-	uint32_t count = caps.minImageCount + 1;
+	// one more than is asked for at the least, and another for the second
+	// picture a frame has when pictures are made up between frames
+	uint32_t count = caps.minImageCount + 2;
 	if (caps.maxImageCount && count > caps.maxImageCount)
 		count = caps.maxImageCount;
 
@@ -705,6 +823,7 @@ void CreateSwapchain(RtxBackend *s)
 
 void RecreateSwapchain(RtxBackend *s)
 {
+	FinishHeld(s);
 	vkDeviceWaitIdle(s->device);
 	DestroySwapchain(s);
 	CreateSwapchain(s);
@@ -806,9 +925,9 @@ void CreatePipeline(RtxBackend *s, VkFormat color_format)
 	dlci.pBindings = binding;
 	Check(vkCreateDescriptorSetLayout(s->device, &dlci, nullptr, &s->dsl), "vkCreateDescriptorSetLayout");
 
-	VkDescriptorPoolSize psize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2};
+	VkDescriptorPoolSize psize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4};
 	VkDescriptorPoolCreateInfo dpci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-	dpci.maxSets = 1;
+	dpci.maxSets = 2;
 	dpci.poolSizeCount = 1;
 	dpci.pPoolSizes = &psize;
 	Check(vkCreateDescriptorPool(s->device, &dpci, nullptr, &s->dpool), "vkCreateDescriptorPool");
@@ -818,15 +937,19 @@ void CreatePipeline(RtxBackend *s, VkFormat color_format)
 	dsai.descriptorSetCount = 1;
 	dsai.pSetLayouts = &s->dsl;
 	Check(vkAllocateDescriptorSets(s->device, &dsai, &s->dset), "vkAllocateDescriptorSets");
+	Check(vkAllocateDescriptorSets(s->device, &dsai, &s->dset_between), "vkAllocateDescriptorSets");
 
 	VkDescriptorImageInfo dii{s->ov_sampler, s->ov_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-	VkWriteDescriptorSet wds{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-	wds.dstSet = s->dset;
-	wds.dstBinding = 0;
-	wds.descriptorCount = 1;
-	wds.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	wds.pImageInfo = &dii;
-	vkUpdateDescriptorSets(s->device, 1, &wds, 0, nullptr);
+	for (VkDescriptorSet set : {s->dset, s->dset_between})
+	{
+		VkWriteDescriptorSet wds{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+		wds.dstSet = set;
+		wds.dstBinding = 0;
+		wds.descriptorCount = 1;
+		wds.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		wds.pImageInfo = &dii;
+		vkUpdateDescriptorSets(s->device, 1, &wds, 0, nullptr);
+	}
 	ShowTracePicture(s);
 
 	VkPushConstantRange pcr{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Push)};
@@ -970,7 +1093,7 @@ void CreateMessenger(RtxBackend *s)
 // commands run at once, outside a frame; nothing is left pending afterwards
 VkCommandBuffer BeginOnce(RtxBackend *s)
 {
-	vkQueueWaitIdle(s->queue);
+	QueueIdle(s);
 	vkResetCommandBuffer(s->cmd_once, 0);
 	VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
 	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -986,8 +1109,8 @@ void EndOnce(RtxBackend *s)
 	VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
 	si.commandBufferInfoCount = 1;
 	si.pCommandBufferInfos = &cbi;
-	Check(vkQueueSubmit2(s->queue, 1, &si, VK_NULL_HANDLE), "vkQueueSubmit2");
-	Check(vkQueueWaitIdle(s->queue), "vkQueueWaitIdle");
+	Check(QueueSubmit(s, 1, &si, VK_NULL_HANDLE), "vkQueueSubmit2");
+	Check(QueueIdle(s), "vkQueueWaitIdle");
 }
 
 bool TryMemoryType(const RtxBackend *s, uint32_t bits, VkMemoryPropertyFlags want, uint32_t &type)
@@ -1193,7 +1316,7 @@ void RemoveTexture(RtxBackend *s, int slot)
 {
 	if (slot < 0 || slot >= (int)kMaxTextures || !s->textures[slot].view)
 		return;
-	vkQueueWaitIdle(s->queue);
+	QueueIdle(s);
 	FreeTexture(s, s->textures[slot]);
 	ShowTexture(s, slot);
 }
@@ -1323,7 +1446,7 @@ bool Reserve(RtxBackend *s, Geometry &g, uint32_t tris, uint32_t materials, VkBu
 
 	if (!g.corners.buffer || tris > g.room_tris)
 	{
-		vkQueueWaitIdle(s->queue);
+		QueueIdle(s);
 		FreeBuffer(s, g.corners);
 		FreeBuffer(s, g.tris);
 		FreeBuffer(s, g.normals);
@@ -1347,7 +1470,7 @@ bool Reserve(RtxBackend *s, Geometry &g, uint32_t tris, uint32_t materials, VkBu
 	}
 	if (!g.materials.buffer || materials > g.room_materials)
 	{
-		vkQueueWaitIdle(s->queue);
+		QueueIdle(s);
 		FreeBuffer(s, g.materials);
 		g.room_materials = grows ? std::max(materials * 2, 256u) : std::max(materials, 1u);
 		g.materials = MakeBuffer(s, (VkDeviceSize)g.room_materials * sizeof(GpuMaterial), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
@@ -1361,7 +1484,7 @@ bool Room(RtxBackend *s, Buffer &b, VkDeviceSize bytes, VkBufferUsageFlags usage
 {
 	if (b.buffer && b.size >= bytes)
 		return false;
-	vkQueueWaitIdle(s->queue);
+	QueueIdle(s);
 	FreeBuffer(s, b);
 	b = MakeBuffer(s, bytes + bytes / 2, usage, true);
 	return true;
@@ -1468,14 +1591,21 @@ void ShowTracePicture(RtxBackend *s)
 	const Target &picture = s->targets[kPicture];
 	if (!s->dset || !picture.view)
 		return;
-	VkDescriptorImageInfo dii{s->trace_sampler, picture.view, VK_IMAGE_LAYOUT_GENERAL};
-	VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-	w.dstSet = s->dset;
-	w.dstBinding = 1;
-	w.descriptorCount = 1;
-	w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	w.pImageInfo = &dii;
-	vkUpdateDescriptorSets(s->device, 1, &w, 0, nullptr);
+	const VkImageView views[2] = {picture.view, s->targets[kBetween].view};
+	const VkDescriptorSet sets[2] = {s->dset, s->dset_between};
+	for (int i = 0; i < 2; i++)
+	{
+		if (!sets[i] || !views[i])
+			continue;
+		VkDescriptorImageInfo dii{s->trace_sampler, views[i], VK_IMAGE_LAYOUT_GENERAL};
+		VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+		w.dstSet = sets[i];
+		w.dstBinding = 1;
+		w.descriptorCount = 1;
+		w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		w.pImageInfo = &dii;
+		vkUpdateDescriptorSets(s->device, 1, &w, 0, nullptr);
+	}
 }
 
 void FreeTargets(RtxBackend *s)
@@ -1494,7 +1624,7 @@ void FreeTargets(RtxBackend *s)
 // stay in the one layout all passes can use.
 void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_height)
 {
-	vkQueueWaitIdle(s->queue);
+	QueueIdle(s);
 	FreeTargets(s);
 	s->trace_width = width;
 	s->trace_height = height;
@@ -1506,12 +1636,12 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 	{
 		Target &t = s->targets[i];
 		const VkFormat format = i == kSeen ? VK_FORMAT_R32G32B32A32_SFLOAT
-			: (i == kPicture ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R16G16B16A16_SFLOAT);
+			: ((i == kPicture || i == kBetween) ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R16G16B16A16_SFLOAT);
 
 		VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
 		ici.imageType = VK_IMAGE_TYPE_2D;
 		ici.format = format;
-		const bool full = i == kPicture || i == kSteady || i == kSteady + 1;
+		const bool full = i == kPicture || i == kBetween || i == kSteady || i == kSteady + 1;
 		ici.extent = {(uint32_t)(full ? out_width : width), (uint32_t)(full ? out_height : height), 1};
 		ici.mipLevels = 1;
 		ici.arrayLayers = 1;
@@ -1548,7 +1678,7 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 	const struct { uint32_t binding, first, count; } groups[] = {
 		{17, kSurface, 2}, {18, kSeen, 1}, {19, kAlbedo, 2}, {20, kNoisy, 3},
 		{21, kExtra, 1}, {22, kKept, 6}, {23, kFilter, 6}, {24, kPicture, 1},
-		{26, kHdr, 1}, {27, kBloom, 2}, {28, kSteady, 2}, {29, kGraded, 1}, {30, kMoments, 2},
+		{26, kHdr, 1}, {27, kBloom, 2}, {28, kSteady, 2}, {29, kGraded, 1}, {30, kMoments, 2}, {31, kBetween, 1},
 	};
 	VkDescriptorImageInfo info[kNumTargets];
 	for (const auto &g : groups)
@@ -1668,6 +1798,7 @@ void CreateScene(RtxBackend *s)
 	s->compose_pipeline = MakeComputePipeline(s, compose_comp_spv, sizeof(compose_comp_spv));
 	s->bloom_pipeline = MakeComputePipeline(s, bloom_comp_spv, sizeof(bloom_comp_spv));
 	s->resolve_pipeline = MakeComputePipeline(s, resolve_comp_spv, sizeof(resolve_comp_spv));
+	s->between_pipeline = MakeComputePipeline(s, between_comp_spv, sizeof(between_comp_spv));
 	s->grade_pipeline = MakeComputePipeline(s, grade_comp_spv, sizeof(grade_comp_spv));
 
 	// every texture slot shows something from the start
@@ -1780,7 +1911,7 @@ void DestroyScene(RtxBackend *s)
 	FreeTexture(s, s->blank);
 	FreeTargets(s);
 	for (VkPipeline p : {s->trace_pipeline, s->temporal_pipeline, s->atrous_pipeline, s->compose_pipeline,
-		s->bloom_pipeline, s->resolve_pipeline, s->grade_pipeline})
+		s->bloom_pipeline, s->resolve_pipeline, s->grade_pipeline, s->between_pipeline})
 		if (p)
 			vkDestroyPipeline(s->device, p, nullptr);
 	if (s->trace_playout) vkDestroyPipelineLayout(s->device, s->trace_playout, nullptr);
@@ -1793,7 +1924,7 @@ void DestroyScene(RtxBackend *s)
 
 void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 {
-	vkQueueWaitIdle(s->queue);
+	QueueIdle(s);
 
 	// the map before this one
 	s->world_loaded = false;
@@ -2062,7 +2193,7 @@ void SubmitTrace(RtxBackend *s)
 	si.pCommandBufferInfos = &cbi;
 	vkResetFences(s->device, 1, &s->fence_trace);
 	s->trace_pending = false;
-	Check(vkQueueSubmit2(s->queue, 1, &si, s->fence_trace), "vkQueueSubmit2");
+	Check(QueueSubmit(s, 1, &si, s->fence_trace), "vkQueueSubmit2");
 }
 
 // the card's own times for the view it traced last, once it has finished it
@@ -2236,6 +2367,24 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	memcpy(s->camera, f.origin, sizeof(s->camera));			// origin, forward, right, up
 	memcpy(f.prev_origin, was.origin, sizeof(s->camera));
 
+	// A picture between the last frame and this one can be made up if there
+	// was a last frame, of this same sequence: not after a cut from one place
+	// to another, and not for the further views of a frame that has several
+	// (the passes of a screenshot), which have no frame before them.
+	{
+		float gone = 0.0f, turned = 0.0f;
+		for (int i = 0; i < 3; i++)
+		{
+			gone += (f.origin[i] - f.prev_origin[i]) * (f.origin[i] - f.prev_origin[i]);
+			turned += f.forward[i] * f.prev_forward[i];
+		}
+		if (s->viewed)
+			s->gen_ready = false;
+		s->gen_wanted = view->frame_generation && !view->debug && !view->restart && s->has_history
+			&& !s->viewed && gone < 96.0f * 96.0f && turned > 0.7f;
+		s->viewed = true;
+	}
+
 	// each frame looks through a slightly different point of every pixel, so
 	// that over time edges are seen from all across it
 	// (which only shows as shaking where frames are not being added up)
@@ -2381,10 +2530,10 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	if (s->stages_known)
 		snprintf(times, sizeof(times), "|scene %.1f build %.1f trace %.1f history %.1f filter %.1f out %.1f",
 			s->stage_ms[0], s->stage_ms[1], s->stage_ms[2], s->stage_ms[3], s->stage_ms[4], s->stage_ms[5]);
-	snprintf(s->stats, sizeof(s->stats), "%dx%d to %dx%d %dspp %db%s|%u + %u triangles, %d + %u lights|exp %.2f%s",
+	snprintf(s->stats, sizeof(s->stats), "%dx%d to %dx%d %dspp %db%s|%u + %u triangles, %d + %u lights|exp %.2f%s%s",
 		rw, rh, s->out_width, s->out_height, paths, bounces, times,
 		s->world.num_solid + s->world.num_glass, n, s->num_world_lights, num_lights,
-		s->exposure_used, still ? " still" : "");
+		s->exposure_used, still ? " still" : "", s->gen_wanted ? "  2 pictures a frame" : "");
 	s->scene_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - began).count();
 }
 
@@ -2521,6 +2670,13 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 	groups_x = ((uint32_t)s->out_width + 7) / 8;
 	groups_y = ((uint32_t)s->out_height + 7) / 8;
 	run(s->resolve_pipeline, 0, 0, 0);
+	// and the picture halfway back to the frame before, if one is wanted
+	if (s->gen_wanted)
+	{
+		BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
+		run(s->between_pipeline, 0, 0, 0);
+		s->gen_ready = true;
+	}
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 	mark();
 	s->stamps_asked = s->stamps != VK_NULL_HANDLE;
@@ -2623,7 +2779,7 @@ void TextureUpdate(pt_backend_t *b, int handle, const uint32_t *pixels)
 		{
 			if (!s->pending.empty())
 				return;		// no room left this frame; the next will do
-			vkQueueWaitIdle(s->queue);
+			QueueIdle(s);
 			FreeBuffer(s, s->updates);
 			s->updates = MakeBuffer(s, std::max<VkDeviceSize>(bytes * 8, 1 << 20), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
 		}
@@ -2642,7 +2798,7 @@ void TextureUpdate(pt_backend_t *b, int handle, const uint32_t *pixels)
 int ReadPixels(pt_backend_t *b, uint32_t *pixels, int with_overlay)
 {
 	RtxBackend *s = Self(b);
-	const Target &picture = s->targets[kPicture];
+	const Target &picture = s->targets[s->shown_made_up ? kBetween : kPicture];
 	if (!picture.image)
 		return 0;
 	try
@@ -2650,7 +2806,7 @@ int ReadPixels(pt_backend_t *b, uint32_t *pixels, int with_overlay)
 		TraceNow(s);
 		const int tw = s->out_width, th = s->out_height;		// the finished picture
 		const VkDeviceSize bytes = (VkDeviceSize)tw * th * 4;
-		vkQueueWaitIdle(s->queue);
+		QueueIdle(s);
 		if (!s->readback.buffer || s->readback.size < bytes)
 		{
 			FreeBuffer(s, s->readback);
@@ -2717,7 +2873,12 @@ int ReadPixels(pt_backend_t *b, uint32_t *pixels, int with_overlay)
 	return 1;
 }
 
-void Record(RtxBackend *s, uint32_t image_index)
+// draws a picture, with the overlay over it, to one of the swapchain's images
+void RecordBlit(RtxBackend *s, VkCommandBuffer cmd, uint32_t image_index, VkDescriptorSet set);
+
+// image_index takes the frame; or, with second >= 0, the picture made up
+// before it, and second the frame
+void Record(RtxBackend *s, uint32_t image_index, int second, bool made_up_alone)
 {
 	VkCommandBuffer cmd = s->cmd;
 	VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -2749,6 +2910,15 @@ void Record(RtxBackend *s, uint32_t image_index)
 		s->trace_pending = false;
 	}
 
+	RecordBlit(s, cmd, image_index, (second >= 0 || made_up_alone) ? s->dset_between : s->dset);
+	if (second >= 0)
+		RecordBlit(s, cmd, (uint32_t)second, s->dset);
+
+	vkEndCommandBuffer(cmd);
+}
+
+void RecordBlit(RtxBackend *s, VkCommandBuffer cmd, uint32_t image_index, VkDescriptorSet set)
+{
 	Barrier(cmd, s->swap_images[image_index], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_NONE,
 		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
@@ -2781,7 +2951,7 @@ void Record(RtxBackend *s, uint32_t image_index)
 	push.has_view = s->trace_ready ? 1.0f : 0.0f;
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s->pipeline);
-	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s->playout, 0, 1, &s->dset, 0, nullptr);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s->playout, 0, 1, &set, 0, nullptr);
 	vkCmdPushConstants(cmd, s->playout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
 	vkCmdDraw(cmd, 3, 1, 0, 0);
 	vkCmdEndRendering(cmd);
@@ -2789,8 +2959,6 @@ void Record(RtxBackend *s, uint32_t image_index)
 	Barrier(cmd, s->swap_images[image_index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
 		VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE);
-
-	vkEndCommandBuffer(cmd);
 }
 
 void PresentFrame(RtxBackend *s, const uint32_t *overlay, const pt_rect_t *changed, int num_changed)
@@ -2799,6 +2967,11 @@ void PresentFrame(RtxBackend *s, const uint32_t *overlay, const pt_rect_t *chang
 	// overlay behind: the next one that is takes all of it
 	const bool behind = s->ov_behind;
 	s->ov_behind = true;
+
+	// the picture held back from the frame before has to have had its turn
+	FinishHeld(s);
+	if (s->swap_stale.exchange(false))
+		RecreateSwapchain(s);
 
 	if (!s->swapchain)
 	{
@@ -2818,6 +2991,33 @@ void PresentFrame(RtxBackend *s, const uint32_t *overlay, const pt_rect_t *chang
 	}
 	if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR)
 		Check(r, "vkAcquireNextImageKHR");
+
+	// how long a frame takes, for timing the second picture
+	const auto shown = std::chrono::steady_clock::now();
+	if (s->have_shown)
+	{
+		const double took = std::chrono::duration<double>(shown - s->shown_at).count();
+		if (took > 0.0 && took < 0.25)
+			s->frame_seconds += (took - s->frame_seconds) * 0.1;
+	}
+	s->shown_at = shown;
+	s->have_shown = true;
+
+	// With a picture made up for this frame there are two to show: that one
+	// now and the frame itself half a frame's time on. Both are drawn at
+	// once, into two of the swapchain's images. If a second is not to be had
+	// this instant, the frame is shown by itself as usual.
+	int second = -1;
+	// (or, to see what the made up pictures are like, those alone)
+	const bool made_up_alone = s->gen_ready && s->trace_ready && s->view.frame_generation == 2;
+	s->shown_made_up = made_up_alone;
+	if (s->gen_ready && s->trace_ready && !made_up_alone)
+	{
+		uint32_t index2 = 0;
+		const VkResult r2 = vkAcquireNextImageKHR(s->device, s->swapchain, 0, s->sem_acquire2, VK_NULL_HANDLE, &index2);
+		if (r2 == VK_SUCCESS || r2 == VK_SUBOPTIMAL_KHR)
+			second = (int)index2;
+	}
 
 	// The card keeps the overlay from frame to frame, and so does the copy
 	// here that a frame is read back with: only what has changed is fetched.
@@ -2861,24 +3061,28 @@ void PresentFrame(RtxBackend *s, const uint32_t *overlay, const pt_rect_t *chang
 	}
 	vkResetFences(s->device, 1, &s->fence);
 	vkResetCommandBuffer(s->cmd, 0);
-	Record(s, index);
+	Record(s, index, second, made_up_alone);
 
-	VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-	wait.semaphore = s->sem_acquire;
-	wait.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-	VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-	signal.semaphore = s->swap_drawn[index];
+	VkSemaphoreSubmitInfo wait[2]{};
+	VkSemaphoreSubmitInfo signal[2]{};
+	wait[0].sType = wait[1].sType = signal[0].sType = signal[1].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+	wait[0].semaphore = s->sem_acquire;
+	wait[1].semaphore = s->sem_acquire2;
+	wait[0].stageMask = wait[1].stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+	signal[0].semaphore = s->swap_drawn[index];
+	if (second >= 0)
+		signal[1].semaphore = s->swap_drawn[second];
 	VkCommandBufferSubmitInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
 	cbi.commandBuffer = s->cmd;
 
 	VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-	si.waitSemaphoreInfoCount = 1;
-	si.pWaitSemaphoreInfos = &wait;
+	si.waitSemaphoreInfoCount = second >= 0 ? 2 : 1;
+	si.pWaitSemaphoreInfos = wait;
 	si.commandBufferInfoCount = 1;
 	si.pCommandBufferInfos = &cbi;
-	si.signalSemaphoreInfoCount = 1;
-	si.pSignalSemaphoreInfos = &signal;
-	Check(vkQueueSubmit2(s->queue, 1, &si, s->fence), "vkQueueSubmit2");
+	si.signalSemaphoreInfoCount = second >= 0 ? 2 : 1;
+	si.pSignalSemaphoreInfos = signal;
+	Check(QueueSubmit(s, 1, &si, s->fence), "vkQueueSubmit2");
 
 	VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
 	pi.waitSemaphoreCount = 1;
@@ -2886,7 +3090,11 @@ void PresentFrame(RtxBackend *s, const uint32_t *overlay, const pt_rect_t *chang
 	pi.swapchainCount = 1;
 	pi.pSwapchains = &s->swapchain;
 	pi.pImageIndices = &index;
-	r = vkQueuePresentKHR(s->queue, &pi);
+	r = QueuePresent(s, &pi);
+	// the frame itself, when its moment comes
+	if (second >= 0)
+		HoldPresent(s, (uint32_t)second, shown + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+			std::chrono::duration<double>(s->frame_seconds * 0.5)));
 	if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR)
 		RecreateSwapchain(s);
 	else
@@ -2911,11 +3119,26 @@ void Present(pt_backend_t *b, const uint32_t *overlay, const pt_rect_t *changed,
 	s->has_view = false;
 	s->trace_ready = false;
 	s->trace_pending = false;
+	s->gen_ready = false;
+	s->viewed = false;
 }
 
 void Destroy(pt_backend_t *b)
 {
 	RtxBackend *s = Self(b);
+	if (s->presenter.joinable())
+	{
+		{
+			std::unique_lock<std::mutex> lock(s->held_lock);
+			s->held_cv.wait(lock, [s] { return !s->held_pending; });
+			s->held_quit = true;
+			s->held_cv.notify_all();
+		}
+		s->presenter.join();
+		if (s->held_shown)
+			Logf(s, "RTX path tracer: %llu frames were shown after a picture made up to go before them, %.2f ms after their moment on average\n",
+				(unsigned long long)s->held_shown, s->held_late / (double)s->held_shown * 1000.0);
+	}
 	if (s->device)
 	{
 		vkDeviceWaitIdle(s->device);
@@ -2932,6 +3155,7 @@ void Destroy(pt_backend_t *b)
 		if (s->ov_memory) vkFreeMemory(s->device, s->ov_memory, nullptr);
 		DestroySwapchain(s);
 		if (s->sem_acquire) vkDestroySemaphore(s->device, s->sem_acquire, nullptr);
+		if (s->sem_acquire2) vkDestroySemaphore(s->device, s->sem_acquire2, nullptr);
 		if (s->fence) vkDestroyFence(s->device, s->fence, nullptr);
 		if (s->fence_trace) vkDestroyFence(s->device, s->fence_trace, nullptr);
 		if (s->cmdpool) vkDestroyCommandPool(s->device, s->cmdpool, nullptr);

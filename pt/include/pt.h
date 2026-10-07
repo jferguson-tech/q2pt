@@ -173,6 +173,9 @@ typedef struct pt_view_s
 	int		bounces;		/* maximum path length after the first hit */
 	float	exposure;
 	int		antialias;	/* blend frames over time to smooth edges */
+	int		frame_generation;	/* 1: show a picture made up between each two frames, for
+						   twice the pictures a second. 2: show the made up ones
+						   alone, to see what they are like. A backend may not have it */
 	int		filter;		/* what is done about noise. 2: frames are blended over time and the
 						   picture filtered. 1: neither; a frame stands alone, except
 						   that while the eye is at rest frames add up. 0: neither, ever */
