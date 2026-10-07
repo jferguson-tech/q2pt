@@ -1414,12 +1414,23 @@ static menulist_s		s_pt_bloom_box;
 static menulist_s		s_pt_fog_box;
 static menulist_s		s_pt_water_list;
 static menulist_s		s_pt_filter_list;
+static menulist_s		s_pt_view_list;
 static menulist_s		s_pt_stats_box;
 static menuaction_s		s_pt_render_action;
 
 void M_Menu_RenderDemo_f (void);
 
 #define	PT_QUALITY_CUSTOM	4
+
+// pt_view's values, in order; the renderers know them as PT_VIEW_
+static const char *pt_view_names[] =
+{
+	"normal",
+	"clay",
+	"mirror",
+	0
+};
+#define	PT_NUM_VIEWS	( (int)( sizeof(pt_view_names) / sizeof(pt_view_names[0]) ) - 1 )
 
 static void PT_QualityFunc( void *unused )
 {
@@ -1509,6 +1520,25 @@ void M_PtFilterCycle_f (void)
 
 /*
 =================
+M_PtViewCycle_f
+
+pt_view_cycle [-1]: steps the path tracers to the next way of drawing the
+scene with its materials overridden (pt_view), or back to the one before
+=================
+*/
+void M_PtViewCycle_f (void)
+{
+	int		step, next;
+
+	step = ( Cmd_Argc() > 1 && atoi( Cmd_Argv( 1 ) ) < 0 ) ? PT_NUM_VIEWS - 1 : 1;
+	Cvar_Get( "pt_view", "0", 0 );
+	next = ( (int)ClampCvar( 0, PT_NUM_VIEWS - 1, Cvar_VariableValue( "pt_view" ) ) + step ) % PT_NUM_VIEWS;
+	Cvar_SetValue( "pt_view", next );
+	Com_Printf( "Path traced view: %s\n", pt_view_names[next] );
+}
+
+/*
+=================
 M_PtSwitch_f
 
 pt_switch <n>: switches one of the things in the path traced picture that
@@ -1588,6 +1618,11 @@ void M_PtSwitch_f (void)
 	}
 }
 
+static void PT_ViewFunc( void *unused )
+{
+	Cvar_SetValue( "pt_view", s_pt_view_list.curvalue );
+}
+
 static void PT_StatsFunc( void *unused )
 {
 	Cvar_SetValue( "pt_stats", s_pt_stats_box.curvalue );
@@ -1622,6 +1657,7 @@ static void PT_SetMenuValues( void )
 	s_pt_fog_box.curvalue = Cvar_VariableValue( "pt_fog" ) != 0;
 	s_pt_water_list.curvalue = (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_water" ) );
 	s_pt_filter_list.curvalue = (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_filter" ) );
+	s_pt_view_list.curvalue = (int)ClampCvar( 0, PT_NUM_VIEWS - 1, Cvar_VariableValue( "pt_view" ) );
 	s_pt_stats_box.curvalue = Cvar_VariableValue( "pt_stats" ) != 0;
 }
 
@@ -1685,6 +1721,7 @@ void PathTrace_MenuInit( void )
 	Cvar_Get( "pt_fog", "1", CVAR_ARCHIVE );
 	Cvar_Get( "pt_water", "2", CVAR_ARCHIVE );
 	Cvar_Get( "pt_filter", "2", CVAR_ARCHIVE );
+	Cvar_Get( "pt_view", "0", 0 );
 	Cvar_Get( "pt_stats", "1", CVAR_ARCHIVE );
 
 	s_pt_menu.x = viddef.width / 2;
@@ -1782,16 +1819,23 @@ void PathTrace_MenuInit( void )
 	s_pt_filter_list.generic.callback	= PT_FilterFunc;
 	s_pt_filter_list.itemnames			= filter_names;
 
+	s_pt_view_list.generic.type			= MTYPE_SPINCONTROL;
+	s_pt_view_list.generic.x			= 0;
+	s_pt_view_list.generic.y			= 130;
+	s_pt_view_list.generic.name			= "view";
+	s_pt_view_list.generic.callback		= PT_ViewFunc;
+	s_pt_view_list.itemnames			= pt_view_names;
+
 	s_pt_stats_box.generic.type			= MTYPE_SPINCONTROL;
 	s_pt_stats_box.generic.x			= 0;
-	s_pt_stats_box.generic.y			= 130;
+	s_pt_stats_box.generic.y			= 140;
 	s_pt_stats_box.generic.name			= "performance info";
 	s_pt_stats_box.generic.callback		= PT_StatsFunc;
 	s_pt_stats_box.itemnames			= yesno_names;
 
 	s_pt_render_action.generic.type		= MTYPE_ACTION;
 	s_pt_render_action.generic.x		= 0;
-	s_pt_render_action.generic.y		= 150;
+	s_pt_render_action.generic.y		= 160;
 	s_pt_render_action.generic.name		= "render a demo";
 	s_pt_render_action.generic.callback	= PT_RenderFunc;
 
@@ -1809,6 +1853,7 @@ void PathTrace_MenuInit( void )
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_fog_box );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_water_list );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_filter_list );
+	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_view_list );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_stats_box );
 	Menu_AddItem( &s_pt_menu, ( void * ) &s_pt_render_action );
 }
@@ -4615,6 +4660,12 @@ void M_Init (void)
 			if ( !keybindings[pad[i].key] )
 				Key_SetBinding (pad[i].key, pad[i].bind);
 	}
+	// the number pad's plus and minus: the next view and the one before
+	Cmd_AddCommand ("pt_view_cycle", M_PtViewCycle_f);
+	if ( !keybindings[K_KP_PLUS] )
+		Key_SetBinding (K_KP_PLUS, "pt_view_cycle");
+	if ( !keybindings[K_KP_MINUS] )
+		Key_SetBinding (K_KP_MINUS, "pt_view_cycle -1");
 	Cmd_AddCommand ("menu_game", M_Menu_Game_f);
 		Cmd_AddCommand ("menu_loadgame", M_Menu_LoadGame_f);
 		Cmd_AddCommand ("menu_savegame", M_Menu_SaveGame_f);

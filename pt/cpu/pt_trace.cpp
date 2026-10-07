@@ -264,6 +264,25 @@ Vec3 Surface::SpecularAlbedo() const
 	return f0 * scale + Vec3(bias);
 }
 
+bool ClayCovers(const Material &mat)
+{
+	return mat.alpha >= 1.0f || (mat.flags & PT_MAT_WAVES);
+}
+
+// A view mode's say over what the surface is made of (pt_view_t's view_mode).
+// What the surface emits is worked out from its colour, which is left alone.
+static void ViewMode(int mode, const Material &mat, Surface &s)
+{
+	if (mode == PT_VIEW_CLAY && ClayCovers(mat))
+	{
+		s.kd = Vec3(0.5f);
+		s.f0 = Vec3(0.04f);
+		s.roughness = 1.0f;
+	}
+	else if (mode == PT_VIEW_MIRROR)
+		s.roughness = 0.0f;
+}
+
 void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth)
 {
 	const Material &mat = tri.mat->At(sc.anim_frame);
@@ -382,6 +401,8 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	{
 		s.kd = s.colour * (1.0f - mat.metallic);
 		s.f0 = Vec3(0.04f) * (1.0f - mat.metallic) + s.colour * mat.metallic;
+		if (sc.view_mode)
+			ViewMode(sc.view_mode, mat, s);
 	}
 	s.alpha = std::max(s.roughness * s.roughness, kMinAlpha);
 	s.light_sampled_spec = s.roughness >= kLightSampledRoughness;
