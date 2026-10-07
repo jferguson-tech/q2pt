@@ -56,7 +56,7 @@ def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed):
     start = time.time()
     log = open(os.path.join(out, 'log.txt'), 'w')
     try:
-        code = subprocess.call(['./quake2', '+set', 'vid_ref', 'ptrtx', '+set', 'vid_fullscreen', '0',
+        code = subprocess.call(['./quake2', '+set', 'vid_ref', args.renderer, '+set', 'vid_fullscreen', '0',
                                 '+set', 'gl_mode', str(args.mode), '+set', 's_initsound', '0',
                                 '+exec', 'q2dn_job.cfg', '+map', m],
                                cwd=args.game, stdout=log, stderr=subprocess.STDOUT, timeout=args.timeout)
@@ -80,6 +80,7 @@ def main():
     ap.add_argument('--maps', default='')
     ap.add_argument('--seed', type=int, default=1)
     ap.add_argument('--timeout', type=int, default=7200)
+    ap.add_argument('--renderer', default='ptrtx', help='ptrtx or ptcpu')
     args = ap.parse_args()
     args.game = os.path.abspath(args.game)
     args.out = os.path.abspath(args.out)
