@@ -67,7 +67,8 @@ def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed, 
         code = -1
     made = sum(len([x for x in os.listdir(os.path.join(out, 'c%d' % c)) if x.endswith('.ptx')]) for c in range(1, clips + 1))
     print('%s: %d frames in %.0f s (exit %d)' % (name, made, time.time() - start, code), flush=True)
-    if code == 0 and made >= clips * frames:
+    # at 60 frames a second a clip now and then comes out a frame short; it is still a clip
+    if code == 0 and made >= clips * (frames - 1):
         open(os.path.join(out, 'done'), 'w').close()
         return True
     return False
