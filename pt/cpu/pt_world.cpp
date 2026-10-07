@@ -216,7 +216,7 @@ std::vector<uint8_t> Marks(const std::vector<Tri> &tris)
 		if (m.alpha < 1.0f)
 			marks[i] = Bvh::kAsk | Bvh::kChancy;
 		else
-			marks[i] = ((m.flags & PT_MAT_ALPHA_TEST) && m.texture) ? Bvh::kAsk : 0;
+			marks[i] = (((m.flags & PT_MAT_ALPHA_TEST) && m.texture) || (m.flags & PT_MAT_HELD)) ? Bvh::kAsk : 0;
 	}
 #else
 	(void)tris;
@@ -481,6 +481,7 @@ void BuildFrame(Frame &f, const pt_scene_t *in, const std::vector<std::unique_pt
 	f.tris.clear();
 	f.prev.clear();
 	f.lights.clear();
+	f.has_held = false;
 	f.hash = 2166136261u;
 
 	std::vector<Vec3> soup;
@@ -516,6 +517,8 @@ void BuildFrame(Frame &f, const pt_scene_t *in, const std::vector<std::unique_pt
 			}
 			const uint32_t m = in->tri_materials[i];
 			t.mat = &f.materials[m < (uint32_t)in->num_materials ? m : 0];
+			if (t.mat->flags & PT_MAT_HELD)
+				f.has_held = true;
 		}
 
 		for (int i = 0; i < in->num_lights; i++)

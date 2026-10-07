@@ -40,6 +40,10 @@ vec4 Load(int k, ivec2 q)
 // where in the world the pixel's ray was, that far along
 vec3 PointSeen(ivec2 q, float depth)
 {
+	// with motion blur each pixel looked from an eye of its own, so the
+	// frame's eye says nothing: the pixel is where it says it is
+	if (fr.open_origin.w != 0.0)
+		return imageLoad(img_seen, q).xyz;
 	const vec3 dir = normalize(fr.forward.xyz
 		+ fr.right.xyz * ((2.0 * (q.x + 0.5 + fr.right.w) / fr.size.x - 1.0) * fr.origin.w)
 		+ fr.up.xyz * ((1.0 - 2.0 * (q.y + 0.5 + fr.up.w) / fr.size.y) * fr.forward.w));

@@ -44,6 +44,14 @@ vec3 Fade(vec3 absorb, float distance)
 	return exp(-absorb * distance);
 }
 
+// the direction from an eye with these axes through a point of the picture
+vec3 EyeDir(vec3 forward, vec3 right, vec3 up, vec2 at)
+{
+	return normalize(forward
+		+ right * ((2.0 * at.x / fr.size.x - 1.0) * fr.origin.w)
+		+ up * ((1.0 - 2.0 * at.y / fr.size.y) * fr.forward.w));
+}
+
 void main()
 {
 	const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -53,10 +61,35 @@ void main()
 	const int now = fr.frame_has.z;
 	rng_state = Hash(uint(pixel.y * size.x + pixel.x), uint(fr.counts.z));
 
-	const vec3 eye = fr.origin.xyz;
-	const vec3 eye_dir = normalize(fr.forward.xyz
-		+ fr.right.xyz * ((2.0 * (pixel.x + 0.5 + fr.right.w) / size.x - 1.0) * fr.origin.w)
-		+ fr.up.xyz * ((1.0 - 2.0 * (pixel.y + 0.5 + fr.up.w) / size.y) * fr.forward.w));
+	// the eye as the shutter closes, and, with motion blur, where it was at
+	// a moment of this pixel's own before that: between the shutter opening
+	// and closing in a straight line, the axes squared up again afterwards
+	const vec2 at = vec2(pixel) + 0.5 + vec2(fr.right.w, fr.up.w);
+	const vec3 frame_dir = EyeDir(fr.forward.xyz, fr.right.xyz, fr.up.xyz, at);
+	vec3 eye = fr.origin.xyz, eye_dir = frame_dir;
+	const bool blur = fr.open_origin.w != 0.0;
+	if (blur)
+	{
+		const float t = Rand();
+		eye = mix(fr.open_origin.xyz, fr.origin.xyz, t);
+		const vec3 forward = normalize(mix(fr.open_forward.xyz, fr.forward.xyz, t));
+		vec3 right = mix(fr.open_right.xyz, fr.right.xyz, t);
+		right = normalize(right - forward * dot(right, forward));
+		eye_dir = EyeDir(forward, right, cross(right, forward), at);
+	}
+
+	// What the eye carries, the weapon in hand, turns with it: it is seen
+	// along the unblurred ray, from the eye at the end of the frame, and the
+	// blurred ray passes through where it is.
+	const bool held_apart = blur && fr.held.y > 0;
+	bool have_held = false;
+	Hit held_hit;
+	Material held_mat;
+	if (held_apart)
+	{
+		float held_tmin = 0.0;
+		have_held = Closest(fr.origin.xyz, frame_dir, held_tmin, true, false, MASK_HELD, held_hit, held_mat);
+	}
 
 	const float max_sample = fr.settings_f.x;
 	const float fog = fr.settings_f.w;
@@ -89,7 +122,19 @@ void main()
 
 	for (int layer = 0; through > 0.001; layer++)
 	{
-		if (!Closest(origin, dir, tmin, true, false, hit, base))
+		bool found = Closest(origin, dir, tmin, true, false, held_apart ? MASK_SCENE : MASK_ALL, hit, base);
+		if (have_held && travelled <= 0.0 && (!found || held_hit.t < hit.t))
+		{
+			// the weapon is the nearest thing: from here on this is the
+			// unblurred path
+			hit = held_hit;
+			base = held_mat;
+			origin = eye = fr.origin.xyz;
+			dir = eye_dir = frame_dir;
+			have_held = false;
+			found = true;
+		}
+		if (!found)
 			break;
 		if ((base.flags & MAT_SKY) != 0u)
 		{
@@ -231,8 +276,9 @@ void main()
 
 	// where to look for this point in the last frame's picture: where the
 	// eye would see it without the water's bend, or where it was if it moved
+	// (not with motion blur, which looks nothing up and wants it where it is)
 	vec3 seen = travelled > 0.0 ? eye + eye_dir * depth : surf.p;
-	if (travelled <= 0.0 && hit.moving && fr.frame_has.y != 0)
+	if (travelled <= 0.0 && hit.moving && fr.frame_has.y != 0 && !blur)
 	{
 		const int i = hit.tri * 9;
 		const vec3 q0 = vec3(frame_prev.v[i], frame_prev.v[i + 1], frame_prev.v[i + 2]);

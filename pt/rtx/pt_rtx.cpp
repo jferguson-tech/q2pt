@@ -116,6 +116,8 @@ struct FrameBlock
 	int32_t	frame_has[4], size[4];
 	float	water_rect[8][4], water_at[8][4];
 	int32_t	out_size[4];
+	float	open_origin[4], open_forward[4], open_right[4], open_up[4];	// motion blur: the eye as the shutter opened; open_origin[3]: there is blur
+	int32_t	held[4];		// first triangle of the frame that the eye carries, how many
 };
 
 // one triangle, one material and one light as the shaders read them (std430)
@@ -156,6 +158,11 @@ struct GpuLight
 };
 
 const uint32_t kBitEmissive = 1, kBitSampled = 2;	// GpuMaterial::bits
+// Instances of the top level structure: the map, its glass, what moves, its
+// glass, and what the eye carries. The last has a mask bit of its own so that
+// a ray can be cast at it alone, or past it: see Nearest in scene.glsl.
+const uint32_t kNumInstances = 5;
+const uint32_t kMaskScene = 1, kMaskHeld = 2;
 const int kNumStyles = 256;							// light styles, at the start of the tables
 const uint32_t kNumBindings = 31;
 
@@ -229,7 +236,8 @@ struct Accel
 };
 
 // The triangles of the map or of a frame, as the GPU holds them: the solid
-// ones first, then the glass and liquid, each with a structure of its own.
+// ones first, then the glass and liquid, then, in a frame, what the eye
+// carries (PT_MAT_HELD), each with a structure of its own.
 struct Geometry
 {
 	Buffer		corners;		// 9 floats a triangle
@@ -237,8 +245,8 @@ struct Geometry
 	Buffer		materials;		// GpuMaterial
 	Buffer		normals;		// 9 floats a triangle; the frame only
 	Buffer		prev;			// where the corners were last frame; the frame only
-	Accel		solid, glass;
-	uint32_t	num_solid = 0, num_glass = 0;
+	Accel		solid, glass, held;
+	uint32_t	num_solid = 0, num_glass = 0, num_held = 0;
 	uint32_t	room_tris = 0, room_materials = 0;
 };
 
@@ -1312,6 +1320,7 @@ void FreeGeometry(RtxBackend *s, Geometry &g)
 	FreeBuffer(s, g.prev);
 	FreeAccel(s, g.solid);
 	FreeAccel(s, g.glass);
+	FreeAccel(s, g.held);
 	g = Geometry();
 }
 
@@ -1343,6 +1352,9 @@ bool Reserve(RtxBackend *s, Geometry &g, uint32_t tris, uint32_t materials, VkBu
 			TriangleGeometry(g.corners.address, g.room_tris), g.room_tris, build);
 		MakeAccel(s, g.glass, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
 			TriangleGeometry(g.corners.address, g.room_tris), g.room_tris, build);
+		if (grows)		// only a frame has anything carried by the eye
+			MakeAccel(s, g.held, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+				TriangleGeometry(g.corners.address, g.room_tris), g.room_tris, build);
 		changed = true;
 	}
 	if (!g.materials.buffer || materials > g.room_materials)
@@ -1700,11 +1712,11 @@ void CreateScene(RtxBackend *s)
 		}
 	}
 
-	// the instances: the map, its glass, what moves, its glass
-	s->instances = MakeBuffer(s, 4 * sizeof(VkAccelerationStructureInstanceKHR),
+	// the instances: the map, its glass, what moves, its glass, what the eye carries
+	s->instances = MakeBuffer(s, kNumInstances * sizeof(VkAccelerationStructureInstanceKHR),
 		VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, true);
 	MakeAccel(s, s->tlas, VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-		InstanceGeometry(s->instances.address), 4, kFrameBuild);
+		InstanceGeometry(s->instances.address), kNumInstances, kFrameBuild);
 	{
 		VkWriteDescriptorSetAccelerationStructureKHR as{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
 		as.accelerationStructureCount = 1;
@@ -2131,9 +2143,9 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	for (uint32_t i = 0; i < num_materials; i++)
 		SetMaterial(s, materials[i], scene->materials[i], [](int handle) { return handle; });
 
-	// solid triangles first, then the glass
+	// solid triangles first, then the glass, then what the eye carries
 	uint32_t hash = 2166136261u;
-	uint32_t num_solid = 0;
+	uint32_t num_solid = 0, num_held = 0;
 	if (n)
 	{
 		const auto material_of = [&](uint32_t t)
@@ -2145,14 +2157,25 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 		float *prev = static_cast<float *>(s->frame.prev.ptr);
 		GpuTri *tris = static_cast<GpuTri *>(s->frame.tris.ptr);
 
-		for (uint32_t t = 0; t < n; t++)
-			if (!num_materials || !OneSided(scene->materials[material_of(t)]))
-				num_solid++;
-		uint32_t at_solid = 0, at_glass = num_solid;
+		// (held glass goes with the glass: it is not kept apart)
+		const auto held_of = [&](uint32_t m)
+		{
+			return num_materials && (scene->materials[m].flags & PT_MAT_HELD) && !OneSided(scene->materials[m]);
+		};
 		for (uint32_t t = 0; t < n; t++)
 		{
 			const uint32_t m = material_of(t);
-			const uint32_t to = (!num_materials || !OneSided(scene->materials[m])) ? at_solid++ : at_glass++;
+			if (held_of(m))
+				num_held++;
+			else if (!num_materials || !OneSided(scene->materials[m]))
+				num_solid++;
+		}
+		uint32_t at_solid = 0, at_glass = num_solid, at_held = n - num_held;
+		for (uint32_t t = 0; t < n; t++)
+		{
+			const uint32_t m = material_of(t);
+			const uint32_t to = held_of(m) ? at_held++
+				: (!num_materials || !OneSided(scene->materials[m])) ? at_solid++ : at_glass++;
 			memcpy(&corners[to * 9], &scene->positions[t * 9], 36);
 			if (scene->normals)
 				memcpy(&normals[to * 9], &scene->normals[t * 9], 36);
@@ -2168,7 +2191,8 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 		hash = HashBytes(scene->positions, (size_t)n * 36, hash);
 	}
 	s->frame.num_solid = num_solid;
-	s->frame.num_glass = n - num_solid;
+	s->frame.num_glass = n - num_solid - num_held;
+	s->frame.num_held = num_held;
 
 	GpuLight *lights = static_cast<GpuLight *>(s->frame_lights.ptr);
 	for (uint32_t i = 0; i < num_lights; i++)
@@ -2184,14 +2208,15 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	if (num_lights)
 		hash = HashBytes(scene->lights, num_lights * sizeof(pt_point_light_t), hash);
 
-	// ---- the instances: the map, its glass, what moves, its glass
+	// ---- the instances: the map, its glass, what moves, its glass, what the eye carries
 	VkAccelerationStructureInstanceKHR *inst = static_cast<VkAccelerationStructureInstanceKHR *>(s->instances.ptr);
-	const struct { const Accel *blas; uint32_t count; } parts[4] = {
+	const struct { const Accel *blas; uint32_t count; } parts[kNumInstances] = {
 		{&s->world.solid, s->world.num_solid}, {&s->world.glass, s->world.num_glass},
 		{&s->frame.solid, s->frame.num_solid}, {&s->frame.glass, s->frame.num_glass},
+		{&s->frame.held, s->frame.num_held},
 	};
 	s->num_instances = 0;
-	for (uint32_t i = 0; i < 4; i++)
+	for (uint32_t i = 0; i < kNumInstances; i++)
 	{
 		if (!parts[i].count)
 			continue;
@@ -2199,7 +2224,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 		memset(&out, 0, sizeof(out));
 		out.transform.matrix[0][0] = out.transform.matrix[1][1] = out.transform.matrix[2][2] = 1.0f;
 		out.instanceCustomIndex = i;		// the shaders tell them apart by this
-		out.mask = 0xff;
+		out.mask = i == 4 ? kMaskHeld : kMaskScene;
 		// rays are told to pass through the backs of triangles; only glass
 		// heeds that. Its front is the side its corners run counter clockwise
 		// seen from, which is how the card takes them unless told otherwise.
@@ -2227,6 +2252,20 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	}
 	f.origin[3] = std::tan(view->fov_x * 0.5f * 3.14159265f / 180.0f);
 	f.forward[3] = std::tan(view->fov_y * 0.5f * 3.14159265f / 180.0f);
+	// motion blur: the eye as the shutter opened, and what it carries
+	if (view->blur)
+	{
+		for (int i = 0; i < 3; i++)
+		{
+			f.open_origin[i] = view->open_origin[i];
+			f.open_forward[i] = view->open_forward[i];
+			f.open_right[i] = view->open_right[i];
+			f.open_up[i] = view->open_up[i];
+		}
+		f.open_origin[3] = 1.0f;
+	}
+	f.held[0] = (int32_t)(num_solid + s->frame.num_glass);
+	f.held[1] = (int32_t)num_held;
 	const bool same_camera = s->has_history && !memcmp(f.origin, s->camera, sizeof(s->camera));
 	// What is done about noise: 2, all there is; 1, nothing, but frames add up
 	// while the eye is at rest; 0, nothing. Without the first there is nothing
@@ -2442,9 +2481,11 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 	mark();
 
 	// the acceleration structures of what moves, then the one over everything
-	const struct { const Accel *blas; VkDeviceAddress corners; uint32_t count; } parts[2] = {
+	const struct { const Accel *blas; VkDeviceAddress corners; uint32_t count; } parts[3] = {
 		{&s->frame.solid, s->frame.corners.address, s->frame.num_solid},
 		{&s->frame.glass, s->frame.corners.address + (VkDeviceAddress)s->frame.num_solid * 36, s->frame.num_glass},
+		{&s->frame.held, s->frame.corners.address + (VkDeviceAddress)(s->frame.num_solid + s->frame.num_glass) * 36,
+			s->frame.num_held},
 	};
 	bool built = false;
 	for (const auto &p : parts)
