@@ -141,6 +141,7 @@ layout(set = 0, binding = 27, rgba16f) uniform image2D img_bloom[2];	// its glow
 // these two are the size of the view, which may be larger than what is traced
 layout(set = 0, binding = 28, rgba16f) uniform image2D img_steady[2];	// the finished picture gathered over frames; a: how much stands behind it
 layout(set = 0, binding = 29, rgba16f) uniform image2D img_graded;		// the picture graded for the screen, as traced
+layout(set = 0, binding = 32, rgba16f) uniform image2D img_fog[2];		// the light the air scatters towards the eye, gathered over time; a: frames. It is in front of the surfaces, so it is kept apart from their light: see temporal.comp
 layout(set = 0, binding = 30, rgba16f) uniform image2D img_m2[2];		// rgb: the mean square of the brightness of the three, over time; a: how many frames stand behind a pixel
 
 // A direction as two numbers, and back: the octahedron unfolded into a square

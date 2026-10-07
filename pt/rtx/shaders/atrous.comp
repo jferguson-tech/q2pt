@@ -166,10 +166,9 @@ void main()
 
 	// How big a difference in brightness is still taken for noise, in units
 	// of how unsure the pixel is. A sharp reflection is a picture in itself
-	// and must not be smeared; light scattered by fog, which shares the third
-	// with reflections in glass and water, is smooth and wants more.
+	// and must not be smeared, and so are the reflections in glass and water.
 	const float roughness = imageLoad(img_seen, pixel).a;
-	const float tolerance[3] = float[3](4.0, 1.0 + 3.0 * roughness, 2.0);
+	const float tolerance[3] = float[3](4.0, 1.0 + 3.0 * roughness, 0.75);
 	float inv_lum[3];
 	for (int k = 0; k < 3; k++)
 		inv_lum[k] = 1.0 / (tolerance[k] * sigma[k] + 1.0e-3);

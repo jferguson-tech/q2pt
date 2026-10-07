@@ -41,6 +41,41 @@ void main()
 
 	vec3 c = albedo_d * diffuse.rgb + albedo_s * specular.rgb + layers.rgb + extra;
 
+	// The air's own light, over all of it. It is one sample of the way to
+	// the surface per frame and still grainy after being gathered over time;
+	// it is also smooth, so it is averaged with what is around it, by how
+	// far the eye sees there and not by what surface is behind: a pixel that
+	// looks past a pillar's edge has more air in front of it than its
+	// neighbour that stops at the pillar.
+	if (fr.settings_f.w > 0.0)
+	{
+		// (kept as so much for each unit of the way: see temporal.comp)
+		const float far = surface.a >= 0.0 ? max(surface.a, 1.0) : 4096.0;
+		vec3 air = imageLoad(img_fog[now], pixel).rgb;
+		if (fr.output_i.y > 0)
+		{
+			const float kernel[4] = float[4](20.0 / 64.0, 15.0 / 64.0, 6.0 / 64.0, 1.0 / 64.0);
+			vec3 sum = vec3(0.0);
+			float wsum = 0.0;
+			for (int dy = -3; dy <= 3; dy++)
+			{
+				for (int dx = -3; dx <= 3; dx++)
+				{
+					const ivec2 q = pixel + ivec2(dx, dy);
+					if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y)
+						continue;
+					const float there = imageLoad(img_surface[now], q).a;
+					const float w = kernel[abs(dx)] * kernel[abs(dy)]
+						* exp(-abs((there >= 0.0 ? there : 4096.0) - far) / (0.1 * far + 1.0));
+					sum += imageLoad(img_fog[now], q).rgb * w;
+					wsum += w;
+				}
+			}
+			air = sum / wsum;
+		}
+		c += air * far;
+	}
+
 	// one part of the picture on its own, for finding where a fault lies
 	const int debug = fr.settings2.w;
 	float exposure = fr.medium.w;

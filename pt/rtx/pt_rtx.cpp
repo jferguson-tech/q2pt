@@ -157,7 +157,7 @@ struct GpuLight
 
 const uint32_t kBitEmissive = 1, kBitSampled = 2;	// GpuMaterial::bits
 const int kNumStyles = 256;							// light styles, at the start of the tables
-const uint32_t kNumBindings = 31;
+const uint32_t kNumBindings = 33;
 
 // The pictures kept per pixel between the passes, in the order the shaders'
 // bindings take them; see scene.glsl.
@@ -176,7 +176,8 @@ enum
 	kSteady = 25,	// 2
 	kGraded = 27,
 	kMoments = 28,	// 2
-	kNumTargets = 30
+	kFog = 30,		// 2
+	kNumTargets = 32
 };
 
 const uint32_t kMaxTextures = 4096;
@@ -1548,7 +1549,7 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 	const struct { uint32_t binding, first, count; } groups[] = {
 		{17, kSurface, 2}, {18, kSeen, 1}, {19, kAlbedo, 2}, {20, kNoisy, 3},
 		{21, kExtra, 1}, {22, kKept, 6}, {23, kFilter, 6}, {24, kPicture, 1},
-		{26, kHdr, 1}, {27, kBloom, 2}, {28, kSteady, 2}, {29, kGraded, 1}, {30, kMoments, 2},
+		{26, kHdr, 1}, {27, kBloom, 2}, {28, kSteady, 2}, {29, kGraded, 1}, {30, kMoments, 2}, {32, kFog, 2},
 	};
 	VkDescriptorImageInfo info[kNumTargets];
 	for (const auto &g : groups)
@@ -1627,6 +1628,7 @@ void CreateScene(RtxBackend *s)
 	bind[27].descriptorCount = 2;
 	bind[28].descriptorCount = 2;
 	bind[30].descriptorCount = 2;
+	bind[32].descriptorCount = 2;
 
 	VkDescriptorSetLayoutCreateInfo dlci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
 	dlci.bindingCount = kNumBindings;

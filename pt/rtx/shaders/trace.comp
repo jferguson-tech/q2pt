@@ -190,6 +190,7 @@ void main()
 
 	// the layers' light is noisy and is gathered and filtered like the rest
 	vec3 over = have_layer ? ClampSample(front_diffuse + front_mirror, max_sample) : vec3(0.0);
+	vec3 air = vec3(0.0);		// what the air itself scatters this way
 
 	if (!solid)
 	{
@@ -206,7 +207,7 @@ void main()
 		{
 			const float at = Rand() * stand_depth;
 			const vec3 lit = DirectMedium(eye + eye_dir * at);
-			over += ClampSample(lit * (fog * (0.25 * INV_PI) * exp(-fog * at) * stand_depth), max_sample);
+			air += ClampSample(lit * (fog * (0.25 * INV_PI) * exp(-fog * at) * stand_depth), max_sample);
 			beyond *= exp(-fog * (sky_hit ? sky_depth : layer_depth));
 		}
 
@@ -219,6 +220,7 @@ void main()
 		imageStore(img_noisy[1], pixel, vec4(0.0));
 		imageStore(img_noisy[2], pixel, vec4(over, Luminance(over) * Luminance(over)));
 		imageStore(img_extra, pixel, vec4(beyond, 1.0));
+		imageStore(img_fog[now], pixel, vec4(air, 0.0));
 		return;
 	}
 
@@ -255,7 +257,7 @@ void main()
 		const float reach = have_layer ? layer_depth : hit.t;		// the straight part of the view
 		const float at = Rand() * reach;
 		const vec3 lit = DirectMedium(eye + eye_dir * at);
-		over += ClampSample(lit * (fog * (0.25 * INV_PI) * exp(-fog * at) * reach), max_sample);
+		air += ClampSample(lit * (fog * (0.25 * INV_PI) * exp(-fog * at) * reach), max_sample);
 
 		const float kept = exp(-fog * depth);
 		kd *= kept;
@@ -340,4 +342,5 @@ void main()
 	imageStore(img_noisy[1], pixel, vec4(sum_s / float(paths), square_s / float(paths)));
 	imageStore(img_noisy[2], pixel, vec4(over, Luminance(over) * Luminance(over)));
 	imageStore(img_extra, pixel, vec4(extra, 1.0));
+	imageStore(img_fog[now], pixel, vec4(air, 0.0));
 }
