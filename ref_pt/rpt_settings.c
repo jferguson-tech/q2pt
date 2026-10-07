@@ -29,6 +29,7 @@ cvar_t	*pt_stats;				// 1: frame rate and timings on screen, 2: and in the conso
 cvar_t	*pt_debug;				// one component of the picture, see below
 cvar_t	*pt_view;				// the scene with its materials overridden, see below
 cvar_t	*pt_simd;				// CPU path tracer: 1 = the build for SSE even where there is AVX2
+cvar_t	*pt_material_cache;		// keep the detail maps read from the pictures in pt_cache in the game directory
 
 static cvar_t	*pt_quality;			// 0 low, 1 medium, 2 high, 3 ultra, -1 custom
 static cvar_t	*pt_quality_applied;	// the preset the variables were last set from
@@ -80,6 +81,7 @@ static cvar_t	*pt_waves;				// ripple strength on liquids
 static cvar_t	*pt_bump;
 static cvar_t	*pt_roughness;
 static cvar_t	*pt_metallic;
+static cvar_t	*pt_material_maps;		// 1: relief and roughness read from each picture's painted light, 0: brightness as height
 
 float	r_skyscale = 2;
 float	r_lampglow = 1.5f;
@@ -89,6 +91,7 @@ int		r_watermode = 2;
 int		r_normalflip;
 float	r_watercell = 8, r_waterwaves = 1, r_watercaustics = 0, r_waterdamping = 1;
 float	r_bumpscale = 1, r_roughscale = 1, r_metalscale = 1;
+int		r_materialmaps = 1;
 
 #define	NUM_PRESETS	4
 
@@ -179,6 +182,8 @@ void R_InitSettings (void)
 	pt_bump = ri.Cvar_Get ("pt_bump", "1", CVAR_ARCHIVE);
 	pt_roughness = ri.Cvar_Get ("pt_roughness", "1", CVAR_ARCHIVE);
 	pt_metallic = ri.Cvar_Get ("pt_metallic", "1", CVAR_ARCHIVE);
+	pt_material_maps = ri.Cvar_Get ("pt_material_maps", "1", CVAR_ARCHIVE);
+	pt_material_cache = ri.Cvar_Get ("pt_material_cache", "1", CVAR_ARCHIVE);
 
 	r_skyscale = pt_sky->value;
 	r_lampglow = pt_lamp_glow->value;
@@ -191,6 +196,7 @@ void R_InitSettings (void)
 	r_bumpscale = pt_bump->value;
 	r_roughscale = pt_roughness->value;
 	r_metalscale = pt_metallic->value;
+	r_materialmaps = pt_material_maps->value != 0;
 }
 
 /*
@@ -281,11 +287,12 @@ qboolean R_UpdateSettings (void)
 	}
 
 	if (pt_bump->value != r_bumpscale || pt_roughness->value != r_roughscale
-		|| pt_metallic->value != r_metalscale)
+		|| pt_metallic->value != r_metalscale || (pt_material_maps->value != 0) != r_materialmaps)
 	{
 		r_bumpscale = pt_bump->value;
 		r_roughscale = pt_roughness->value;
 		r_metalscale = pt_metallic->value;
+		r_materialmaps = pt_material_maps->value != 0;
 		R_MaterialsChanged ();		// the generated maps hold the old values
 		reload = true;
 	}
