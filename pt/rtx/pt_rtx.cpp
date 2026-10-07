@@ -2236,8 +2236,10 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 
 	// each frame looks through a slightly different point of every pixel, so
 	// that over time edges are seen from all across it
-	// (which only shows as shaking where frames are not being added up)
-	if (view->antialias && !view->debug && use_history)
+	// Only where the last pass puts the picture back together from those
+	// points, which is the filtered picture: a raw one would show each
+	// frame where it was traced, and shake by a part of a pixel.
+	if (view->antialias && !view->debug && filtering == 2)
 	{
 		const auto halton = [](uint32_t index, uint32_t base)
 		{
