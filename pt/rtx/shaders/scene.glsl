@@ -102,6 +102,11 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	vec4	water_rect[8];	// each body's extent: min x, min y, max x, max y
 	vec4	water_at[8];	// x: the height of its surface; y: the material that carries its maps
 	ivec4	out_size;		// xy: of the finished picture, the size of the view
+	vec4	open_origin;	// motion blur: the eye as the shutter opened; w: there is blur
+	vec4	open_forward;
+	vec4	open_right;
+	vec4	open_up;
+	ivec4	held;			// x: first triangle of the frame carried by the eye (the weapon in hand); y: how many
 } fr;
 
 // the map and what moves, each as three corners per triangle, what goes with
@@ -273,25 +278,37 @@ struct Hit
 	float	t;
 };
 
-// the nearest thing along the ray, taking every triangle as it comes; glass
-// is only met from its front
-bool Nearest(vec3 origin, vec3 dir, float tmin, float tmax, out Hit hit)
+// The instances of the scene carry one of these masks: everything but what
+// the eye carries (the weapon in hand) has MASK_SCENE, that has MASK_HELD.
+const uint MASK_SCENE = 1u;
+const uint MASK_HELD = 2u;
+const uint MASK_ALL = 0xffu;
+
+// the nearest thing along the ray among the instances the mask lets through,
+// taking every triangle as it comes; glass is only met from its front
+bool Nearest(vec3 origin, vec3 dir, float tmin, float tmax, uint mask, out Hit hit)
 {
 	rayQueryEXT query;
 	rayQueryInitializeEXT(query, scene, gl_RayFlagsOpaqueEXT | gl_RayFlagsCullBackFacingTrianglesEXT,
-		0xff, origin, tmin, dir, tmax);
+		mask, origin, tmin, dir, tmax);
 	while (rayQueryProceedEXT(query))
 		;
 	if (rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT)
 		return false;
 
-	// instances: 0 the map, 1 its glass, 2 what moves, 3 its glass
+	// instances: 0 the map, 1 its glass, 2 what moves, 3 its glass, 4 what the eye carries
 	const int instance = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
 	hit.moving = instance >= 2;
-	hit.tri = rayQueryGetIntersectionPrimitiveIndexEXT(query, true) + ((instance & 1) != 0 ? fr.bases[instance] : 0);
+	hit.tri = rayQueryGetIntersectionPrimitiveIndexEXT(query, true)
+		+ (instance == 4 ? fr.held.x : ((instance & 1) != 0 ? fr.bases[instance] : 0));
 	hit.bary = rayQueryGetIntersectionBarycentricsEXT(query, true);
 	hit.t = rayQueryGetIntersectionTEXT(query, true);
 	return true;
+}
+
+bool Nearest(vec3 origin, vec3 dir, float tmin, float tmax, out Hit hit)
+{
+	return Nearest(origin, dir, tmin, tmax, MASK_ALL, hit);
 }
 
 Tri TriOf(Hit hit)
@@ -316,11 +333,11 @@ bool IsHole(Material mat, Tri tri, vec2 bary)
 // The nearest thing a path meets: not what only casts shadows (for the
 // eye), not the holes in a grating, and, for light finding its way through
 // (cross), a see-through surface only as often as it is opaque.
-bool Closest(vec3 origin, vec3 dir, inout float tmin, bool camera, bool cross_through, out Hit hit, out Material mat)
+bool Closest(vec3 origin, vec3 dir, inout float tmin, bool camera, bool cross_through, uint mask, out Hit hit, out Material mat)
 {
 	for (int skips = 0; ; skips++)
 	{
-		if (!Nearest(origin, dir, tmin, 1.0e30, hit))
+		if (!Nearest(origin, dir, tmin, 1.0e30, mask, hit))
 			return false;
 		const Tri tri = TriOf(hit);
 		mat = MaterialOf(hit.moving, tri.material);
@@ -332,6 +349,11 @@ bool Closest(vec3 origin, vec3 dir, inout float tmin, bool camera, bool cross_th
 			return true;
 		tmin = hit.t + 0.01;
 	}
+}
+
+bool Closest(vec3 origin, vec3 dir, inout float tmin, bool camera, bool cross_through, out Hit hit, out Material mat)
+{
+	return Closest(origin, dir, tmin, camera, cross_through, MASK_ALL, hit, mat);
 }
 
 // how much the waves of a simulated liquid brighten light passing through

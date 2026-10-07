@@ -39,6 +39,9 @@ vertices appear counter clockwise.
 #define PT_MAT_WARP				128u	/* the texture swims, as old engines drew liquids */
 #define PT_MAT_EMIT_BRIGHT		64u	/* only the texture's bright texels emit: screens,
 									   buttons, indicator lights */
+#define PT_MAT_HELD				256u	/* carried by the eye, as a weapon in hand is: with
+									   motion blur it is seen from where the eye is when
+									   the shutter closes, however the eye moved */
 
 typedef struct pt_texture_s
 {
@@ -153,6 +156,14 @@ typedef struct pt_view_s
 	float	origin[3];
 	float	forward[3], right[3], up[3];	/* orthonormal */
 	float	fov_x, fov_y;					/* degrees */
+
+	/* Motion blur. With blur set, each path starts from where the eye was at
+	   a moment of its own, chosen at random between the shutter opening,
+	   when the eye was at the open_ pose, and its closing, when it is at the
+	   pose above. Nothing of an earlier frame is looked up: send restart. */
+	int		blur;
+	float	open_origin[3];
+	float	open_forward[3], open_right[3], open_up[3];
 
 	const pt_scene_t	*scene;				/* may be NULL */
 

@@ -464,21 +464,58 @@ Vec3 Fade(Vec3 absorb, float distance)
 	return Vec3(std::exp(-absorb.x * distance), std::exp(-absorb.y * distance), std::exp(-absorb.z * distance));
 }
 
-// Traces one pixel: what the eye sees there, and samples of the light on it
-void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, float jy, int x, int y, int samples, int bounces)
+// the ray from the eye through a point of the picture
+Ray EyeRay(const CpuBackend *s, const Camera &cam, float px, float py)
+{
+	Ray ray;
+	ray.o = cam.origin;
+	ray.d = Normalize(cam.forward
+		+ cam.right * ((2.0f * px / s->rw - 1.0f) * cam.tx)
+		+ cam.up * ((1.0f - 2.0f * py / s->rh) * cam.ty));
+	ray.tmin = 0.0f;
+	ray.tmax = FLT_MAX;
+	return ray;
+}
+
+// Traces one pixel: what the eye sees there, and samples of the light on it.
+// frame_cam is the eye when the shutter closes; with motion blur the pixel
+// sees from where the eye was at a moment of its own before that.
+void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float jx, float jy, int x, int y, int samples, int bounces)
 {
 	const size_t i = (size_t)y * s->rw + x;
 	Pixels &px = s->cur;
 	Rng rng(Hash((uint32_t)i, s->frame_index));
 
-	Ray ray;
-	ray.o = cam.origin;
-	ray.d = Normalize(cam.forward
-		+ cam.right * ((2.0f * (x + 0.5f + jx) / s->rw - 1.0f) * cam.tx)
-		+ cam.up * ((1.0f - 2.0f * (y + 0.5f + jy) / s->rh) * cam.ty));
-	ray.tmin = 0.0f;
-	ray.tmax = FLT_MAX;
-	const Vec3 eye_dir = ray.d;
+	Camera cam = frame_cam;
+	if (s->view.blur)
+	{
+		// between the shutter opening and closing, in a straight line, the
+		// axes squared up again afterwards
+		const float t = rng.Float();
+		const Vec3 open_origin(s->view.open_origin), open_forward(s->view.open_forward), open_right(s->view.open_right);
+		cam.origin = open_origin + (frame_cam.origin - open_origin) * t;
+		cam.forward = Normalize(open_forward + (frame_cam.forward - open_forward) * t);
+		const Vec3 right = open_right + (frame_cam.right - open_right) * t;
+		cam.right = Normalize(right - cam.forward * Dot(right, cam.forward));
+		cam.up = Cross(cam.right, cam.forward);
+	}
+
+	Ray ray = EyeRay(s, cam, x + 0.5f + jx, y + 0.5f + jy);
+	Vec3 eye_dir = ray.d;
+
+	// What the eye carries, the weapon in hand, turns with it: it is seen
+	// along the unblurred ray, from the eye at the end of the frame, and the
+	// blurred ray passes through where it is.
+	const bool held_apart = s->view.blur && sc.frame->has_held;
+	Ray held_ray;
+	Hit held_hit;
+	const Tri *held_tri = nullptr;
+	if (held_apart)
+	{
+		held_ray = EyeRay(s, frame_cam, x + 0.5f + jx, y + 0.5f + jy);
+		if (!Closest(sc, held_ray, rng, true, false, held_hit, held_tri, kHeldOnly))
+			held_tri = nullptr;
+	}
 
 	px.depth[i] = -1.0f;
 	px.add[i] = Vec3();
@@ -519,7 +556,20 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 
 	for (int layer = 0; through > 0.001f; layer++)
 	{
-		if (!Closest(sc, ray, rng, true, false, hit, tri))
+		bool found = Closest(sc, ray, rng, true, false, hit, tri, held_apart ? kNotHeld : kHeldToo);
+		if (held_tri && travelled <= 0.0f && (!found || held_hit.t < hit.t))
+		{
+			// the weapon is the nearest thing: from here on this is the
+			// unblurred path
+			hit = held_hit;
+			tri = held_tri;
+			ray = held_ray;
+			held_tri = nullptr;
+			cam = frame_cam;
+			eye_dir = ray.d;
+			found = true;
+		}
+		if (!found)
 			break;
 		if (tri->mat->flags & PT_MAT_SKY)
 		{

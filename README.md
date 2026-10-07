@@ -53,7 +53,8 @@ a second.*
 Play and record a demo with any renderer, then render it frame by frame at
 settings far too slow to play with: `pt_render <demo> [fps] [paths per pixel]`.
 Each frame is built from nothing at full resolution and saved as a PNG, with
-optional motion blur. The sound is mixed in step into a WAV, and a script is
+motion blur from the eye's movement (`pt_render_blur`, half the frame's time
+unless set otherwise). The sound is mixed in step into a WAV, and a script is
 written that turns both into a video with ffmpeg.
 
 **Benchmark**
@@ -213,7 +214,7 @@ Some console commands and variables:
 | `screenshot`, `pt_screenshot [paths]` | the frame as shown, or rendered again at high quality |
 | `record <name>`, `stop` | record a demo (the game's own commands) |
 | `pt_render <demo> [fps] [paths] [start] [length]` | render a demo offline into `baseq2\render\<demo>\`; start and length, in seconds, pick a part of it |
-| `pt_render_blur 0`-`1` | motion blur for offline rendering |
+| `pt_render_blur 0`-`1` | motion blur for offline rendering: the share of each frame's time the shutter is open; 0.5 unless set, film's 180 degree shutter |
 | `pt_bench [demo] [seconds] [quit]` | time a demo: `demo1` and 20 seconds unless given, 0 for all of it; `quit` leaves the game afterwards, for scripts (`quake2 +pt_bench demo1 20 quit`) |
 
 ## How it is put together
