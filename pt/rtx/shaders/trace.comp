@@ -217,7 +217,7 @@ void main()
 		imageStore(img_albedo[1], pixel, vec4(0.0));
 		imageStore(img_noisy[0], pixel, vec4(0.0));
 		imageStore(img_noisy[1], pixel, vec4(0.0));
-		imageStore(img_noisy[2], pixel, vec4(over, Luminance(over) * Luminance(over)));
+		imageStore(img_noisy[2], pixel, vec4(over, 1.0));
 		imageStore(img_extra, pixel, vec4(beyond, 1.0));
 		return;
 	}
@@ -271,7 +271,6 @@ void main()
 	const int bounces = fr.settings.x;
 	const int paths = max(1, fr.settings2.z);
 	vec3 sum_d = vec3(0.0), sum_s = vec3(0.0);
-	float square_d = 0.0, square_s = 0.0;	// of each path's brightness
 	for (int k = 0; k < paths; k++)
 	{
 		const Lit direct = DirectWorld(surf, true);
@@ -292,21 +291,16 @@ void main()
 						/ spec_albedo * (1.0 / spec_chance);
 			}
 		}
-		d = ClampSample(d, max_sample);
-		sp = ClampSample(sp, max_sample);
-		sum_d += d;
-		sum_s += sp;
-		square_d += Luminance(d) * Luminance(d);
-		square_s += Luminance(sp) * Luminance(sp);
+		sum_d += ClampSample(d, max_sample);
+		sum_s += ClampSample(sp, max_sample);
 	}
 
 	imageStore(img_surface[now], pixel, vec4(surf.n, depth));
 	imageStore(img_seen, pixel, vec4(seen, surf.roughness));
-	const vec2 facing = OctEncode(surf.ng);
-	imageStore(img_albedo[0], pixel, vec4(kd, facing.x));
-	imageStore(img_albedo[1], pixel, vec4(ks, facing.y));
-	imageStore(img_noisy[0], pixel, vec4(sum_d / float(paths), square_d / float(paths)));
-	imageStore(img_noisy[1], pixel, vec4(sum_s / float(paths), square_s / float(paths)));
-	imageStore(img_noisy[2], pixel, vec4(over, Luminance(over) * Luminance(over)));
+	imageStore(img_albedo[0], pixel, vec4(kd, 1.0));
+	imageStore(img_albedo[1], pixel, vec4(ks, 1.0));
+	imageStore(img_noisy[0], pixel, vec4(sum_d / float(paths), 1.0));
+	imageStore(img_noisy[1], pixel, vec4(sum_s / float(paths), 1.0));
+	imageStore(img_noisy[2], pixel, vec4(over, 1.0));
 	imageStore(img_extra, pixel, vec4(extra, 1.0));
 }
