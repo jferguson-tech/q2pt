@@ -349,13 +349,22 @@ the panel up.
 */
 
 #define	NUM_FILTER_ROWS		8
-#define	FILTER_ROW_CHARS	52
+#define	FILTER_ROW_CHARS	64
 #define	FILTER_PANEL_MSEC	6000
+
+// One row: what it is, ON or OFF, what it is set to, and whether that makes
+// any difference at the moment. In a raw picture most of them make none
+// whichever way they are set, and the row has to say both things.
+static void R_FilterRow (char *row, const char *label, qboolean on, const char *detail, qboolean unused)
+{
+	Com_sprintf (row, FILTER_ROW_CHARS, "%-28s %-4s%-15s%s", label, on ? "ON" : "OFF",
+		on ? detail : "", unused ? "no effect: raw" : "");
+}
 
 // the rows in the order of the number pad keys, the first being F7's
 static void R_FilterRows (char rows[NUM_FILTER_ROWS][FILTER_ROW_CHARS], float values[NUM_FILTER_ROWS])
 {
-	static const char	*pictures[] = { "raw", "raw, adds up at rest", "filtered" };
+	static const char	*pictures[] = { "RAW", "RAW, adds up at rest", "FILTERED" };
 	int			filter;
 	qboolean	raw;
 	char		text[32];
@@ -364,38 +373,33 @@ static void R_FilterRows (char rows[NUM_FILTER_ROWS][FILTER_ROW_CHARS], float va
 	raw = filter != 2;
 
 	values[0] = filter;
-	Com_sprintf (rows[0], FILTER_ROW_CHARS, "F7 picture                   %s", pictures[filter]);
+	Com_sprintf (rows[0], FILTER_ROW_CHARS, "%-28s %s", "F7 picture", pictures[filter]);
 
 	values[1] = pt_taa->value != 0;
-	Com_sprintf (rows[1], FILTER_ROW_CHARS, " 1 anti-aliasing, upscaler   %s",
-		!values[1] ? "OFF" : (raw ? "off (raw picture)" : "on"));
+	R_FilterRow (rows[1], " 1 anti-aliasing, upscaler", values[1] != 0, "", raw);
 
 	values[2] = pt_history->value;
 	Com_sprintf (text, sizeof(text), "%d frames", (int)pt_history->value);
-	Com_sprintf (rows[2], FILTER_ROW_CHARS, " 2 light history, moving     %s",
-		pt_history->value <= 1 ? "OFF" : (raw ? "off (raw picture)" : text));
+	R_FilterRow (rows[2], " 2 light history, moving", pt_history->value > 1, text, raw);
 
 	values[3] = pt_denoise->value;
 	Com_sprintf (text, sizeof(text), "%d passes", (int)pt_denoise->value);
-	Com_sprintf (rows[3], FILTER_ROW_CHARS, " 3 noise filter              %s",
-		pt_denoise->value <= 0 ? "OFF" : (raw ? "off (raw picture)" : text));
+	R_FilterRow (rows[3], " 3 noise filter", pt_denoise->value > 0, text, raw);
 
 	values[4] = pt_adaptive->value;
 	Com_sprintf (text, sizeof(text), "up to %dx", (int)pt_adaptive->value);
-	Com_sprintf (rows[4], FILTER_ROW_CHARS, " 4 adaptive sampling         %s",
-		pt_adaptive->value <= 1 ? "OFF" : (raw ? "off (raw picture)" : text));
+	R_FilterRow (rows[4], " 4 adaptive sampling", pt_adaptive->value > 1, text, raw);
 
 	values[5] = pt_auto_exposure->value != 0;
-	Com_sprintf (rows[5], FILTER_ROW_CHARS, " 5 auto exposure             %s", values[5] ? "on" : "OFF");
+	R_FilterRow (rows[5], " 5 auto exposure", values[5] != 0, "", false);
 
 	values[6] = pt_scale->value;
 	Com_sprintf (text, sizeof(text), "traced at %d%%", (int)(pt_scale->value * 100 + 0.5f));
-	Com_sprintf (rows[6], FILTER_ROW_CHARS, " 6 upscaling                 %s", pt_scale->value >= 1 ? "OFF" : text);
+	R_FilterRow (rows[6], " 6 upscaling", pt_scale->value < 1, text, false);
 
 	values[7] = pt_debug->value;
 	Com_sprintf (text, sizeof(text), "debug view %d", (int)pt_debug->value);
-	Com_sprintf (rows[7], FILTER_ROW_CHARS, " 7 history view              %s",
-		pt_debug->value == 7 ? "ON" : (pt_debug->value ? text : "off"));
+	R_FilterRow (rows[7], " 7 history view", pt_debug->value != 0, pt_debug->value == 7 ? "" : text, false);
 }
 
 /*
