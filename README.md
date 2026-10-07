@@ -239,6 +239,29 @@ Some console commands and variables:
 
 ## How it is put together
 
+```mermaid
+flowchart TD
+    subgraph gpl["GPL v2"]
+        engine["Quake 2 engine<br/>client, server, game, qcommon"]
+        old["ref_gl, ref_soft<br/>the original renderers"]
+        refpt["ref_pt<br/>maps, models, materials, settings,<br/>the scene of each frame"]
+    end
+    subgraph mit["MIT: knows nothing about Quake 2"]
+        api(["pt/include/pt.h<br/>the C interface"])
+        cpu["pt/cpu<br/>BVH, path tracer, denoiser<br/>SSE and AVX2"]
+        rtx["pt/rtx<br/>Vulkan compute shaders,<br/>ray queries"]
+        water["pt/water<br/>wave simulation"]
+        png["pt/png<br/>PNG writer"]
+    end
+    engine -- "renderer interface" --> old
+    engine -- "renderer interface" --> refpt
+    refpt --> api
+    api -- "ref_ptcpu" --> cpu
+    api -- "ref_ptrtx" --> rtx
+    refpt --> water
+    refpt --> png
+```
+
 ```
 pt/         the path tracing core (MIT): knows nothing about Quake 2
   include/pt.h    the C interface a host program uses
@@ -257,6 +280,30 @@ linux/      the Linux build: the program's entry, video, input and sound
 Both path traced renderers are built from the same `ref_pt` sources and differ
 only in the backend they link, so a setting or feature added to the interface
 is available to both.
+
+A frame on the RTX renderer, pass by pass. Each box is a compute shader in
+`pt/rtx/shaders`; "pad" is the number pad key that switches that step off to
+see what it does. With the raw picture (**F7**) the light history and the
+noise filter are left out.
+
+```mermaid
+flowchart TD
+    scene[("scene: triangles, lights, textures")]
+    subgraph small["at the size traced (pt_scale)"]
+        trace["<b>trace</b><br/>paths through each pixel, by ray queries"]
+        temporal["<b>light history</b> · pad 2<br/>each pixel's light gathered over frames"]
+        atrous["<b>noise filter</b> · pad 3<br/>a few passes, each reaching twice as far"]
+        compose["<b>compose</b> · pad 4<br/>light times surface colour, auto exposure"]
+        bloom["<b>glow</b><br/>the brightest parts, blurred at half size"]
+        grade["<b>grade</b><br/>tone mapping"]
+    end
+    subgraph full["at the size of the window"]
+        resolve["<b>resolve</b> · pad 1, pad 5<br/>anti-aliasing and upscaling over frames"]
+        screen(["screen"])
+    end
+    scene --> trace --> temporal --> atrous --> compose --> grade --> resolve --> screen
+    compose --> bloom --> grade
+```
 
 ## Licensing
 
