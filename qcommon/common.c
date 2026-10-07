@@ -118,7 +118,7 @@ void Com_Printf (char *fmt, ...)
 
 	if (rd_target)
 	{
-		if ((strlen (msg) + strlen(rd_buffer)) > (rd_buffersize - 1))
+		if ((strlen (msg) + strlen(rd_buffer)) > (size_t)(rd_buffersize - 1))
 		{
 			rd_flush(rd_target, rd_buffer);
 			*rd_buffer = 0;
@@ -783,7 +783,7 @@ char *MSG_ReadString (sizebuf_t *msg_read)
 			break;
 		string[l] = c;
 		l++;
-	} while (l < sizeof(string)-1);
+	} while (l < (int)sizeof(string)-1);
 	
 	string[l] = 0;
 	
@@ -803,7 +803,7 @@ char *MSG_ReadStringLine (sizebuf_t *msg_read)
 			break;
 		string[l] = c;
 		l++;
-	} while (l < sizeof(string)-1);
+	} while (l < (int)sizeof(string)-1);
 	
 	string[l] = 0;
 	
@@ -1498,10 +1498,10 @@ void Qcommon_Init (int argc, char **argv)
 Qcommon_Frame
 =================
 */
-void Qcommon_Frame (int msec)
+void Qcommon_Frame (volatile int msec)
 {
 	char	*s;
-	int		time_before, time_between, time_after;
+	volatile int	time_before, time_between, time_after;
 
 	if (setjmp (abortframe) )
 		return;			// an ERR_DROP was thrown

@@ -6,7 +6,7 @@
 
 #include "pt_world.h"
 
-namespace pt {
+namespace PT_NS {
 
 const float kRayOffset = 0.03f;			// keeps rays off the surface they leave
 
@@ -88,4 +88,4 @@ bool SampleSpecular(const Surface &s, Rng &rng, Vec3 &wi, Vec3 &weight);
 Vec3 Radiance(const Scene &sc, Ray ray, Rng &rng, bool camera, bool count_emitters, int depth, int max_bounces,
 	float *reached = nullptr);
 
-} // namespace pt
+} // namespace PT_NS

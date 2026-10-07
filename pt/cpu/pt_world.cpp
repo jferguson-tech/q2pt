@@ -7,7 +7,7 @@
 #include <cfloat>
 #include <utility>
 
-namespace pt {
+namespace PT_NS {
 
 float g_to_linear[256];
 
@@ -201,6 +201,29 @@ Vec3 World::SampleSky(Rng &rng, float &pdf) const
 
 namespace {
 
+// What the tree with eight children to a node is told of each triangle, so
+// that it need not ask about the plain ones: which have holes in them, where
+// their texture says, and which a ray gets past by chance. Empty where there
+// is no such tree.
+std::vector<uint8_t> Marks(const std::vector<Tri> &tris)
+{
+	std::vector<uint8_t> marks;
+#ifdef PT_AVX2_KERNELS
+	marks.resize(tris.size());
+	for (size_t i = 0; i < tris.size(); i++)
+	{
+		const Material &m = *tris[i].mat;
+		if (m.alpha < 1.0f)
+			marks[i] = Bvh::kAsk | Bvh::kChancy;
+		else
+			marks[i] = ((m.flags & PT_MAT_ALPHA_TEST) && m.texture) ? Bvh::kAsk : 0;
+	}
+#else
+	(void)tris;
+#endif
+	return marks;
+}
+
 void BuildSkyLight(World &w)
 {
 	w.sky_cdf.clear();
@@ -274,7 +297,7 @@ void BuildSkyChance(World &w)
 				ray.d = w.SampleSky(rng, pdf);
 				ray.tmin = 0.0f;
 				ray.tmax = FLT_MAX;
-				Hit hit;
+				Hit hit = {};
 				// glass and water let the sky through
 				if (w.bvh.IntersectIf(ray, hit, [&](uint32_t t, float, float) { return w.tris[t].mat->alpha >= 1.0f; })
 					&& (w.tris[hit.tri].mat->flags & PT_MAT_SKY))
@@ -361,7 +384,7 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 		const uint32_t m = in->tri_materials[i];
 		t.mat = &w->materials[m < (uint32_t)in->num_materials ? m : 0];
 	}
-	w->bvh.Build(soup.data(), (uint32_t)in->num_triangles);
+	w->bvh.Build(soup.data(), (uint32_t)in->num_triangles, Marks(w->tris).data());
 
 	// the simulated liquid surfaces, for the light they throw back up
 	for (const Tri &t : w->tris)
@@ -520,7 +543,7 @@ void BuildFrame(Frame &f, const pt_scene_t *in, const std::vector<std::unique_pt
 		f.hash = HashBytes(in->materials, (size_t)in->num_materials * sizeof(pt_material_t), f.hash);
 		f.hash = HashBytes(in->lights, (size_t)in->num_lights * sizeof(pt_point_light_t), f.hash);
 	}
-	f.bvh.Build(soup.data(), (uint32_t)f.tris.size());
+	f.bvh.Build(soup.data(), (uint32_t)f.tris.size(), Marks(f.tris).data());
 }
 
-} // namespace pt
+} // namespace PT_NS

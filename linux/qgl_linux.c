@@ -1419,6 +1419,7 @@ static void APIENTRY logGetTexImage(GLenum target, GLint level, GLenum format, G
 	SIG( "glGetTexImage" );
 	dllGetTexImage( target, level, format, type, pixels );
 }
+#if 0	/* not hooked in: see QGL_EnableLogging */
 static void APIENTRY logGetTexLevelParameterfv(GLenum target, GLint level, GLenum pname, GLfloat *params )
 {
 	SIG( "glGetTexLevelParameterfv" );
@@ -1430,6 +1431,7 @@ static void APIENTRY logGetTexLevelParameteriv(GLenum target, GLint level, GLenu
 	SIG( "glGetTexLevelParameteriv" );
 	dllGetTexLevelParameteriv( target, level, pname, params );
 }
+#endif
 
 static void APIENTRY logGetTexParameterfv(GLenum target, GLenum pname, GLfloat *params)
 {

@@ -17,6 +17,8 @@ typedef struct pt_create_s
 	void		*hwnd;			/* Windows: HWND to present into. X11: the Window, cast */
 	int			width, height;	/* client area in pixels */
 	pt_log_fn	log;			/* may be NULL */
+	int			simd;			/* CPU backend: 0 = built for the widest instructions the
+								   processor has, 1 = for SSE only, to compare the two */
 } pt_create_t;
 
 /*
@@ -171,16 +173,15 @@ typedef struct pt_view_s
 	int		bounces;		/* maximum path length after the first hit */
 	float	exposure;
 	int		antialias;	/* blend frames over time to smooth edges */
+	int		filter;		/* what is done about noise. 2: frames are blended over time and the
+						   picture filtered. 1: neither; a frame stands alone, except
+						   that while the eye is at rest frames add up. 0: neither, ever */
 	int		debug;			/* 0 = the picture; otherwise one part of it, see pt_debug */
 
 	/* reflections */
 	int		reflections;		/* 0 none, 1 glass and liquids, 2 every shiny surface */
 	int		reflection_bounces;	/* how far a reflected path is followed; 1 shows
 								   reflected things under direct light only */
-	int		adaptive;			/* up to this many times the paths where the
-								   picture has little to go on: what has just
-								   come into view, or is still noisy. 0 or 1 =
-								   the same number everywhere */
 	float	reflection_rate;	/* scales how often a rough surface gets a
 								   reflection path; 1 = the backend's own choice */
 	int		refraction;			/* liquids bend the view */
@@ -213,6 +214,12 @@ typedef struct pt_stage_s
 	float		ms;
 } pt_stage_t;
 
+/* a rectangle of pixels */
+typedef struct pt_rect_s
+{
+	int		x, y, width, height;
+} pt_rect_t;
+
 /*
 A backend owns everything between "here is the scene" and pixels on screen.
 
@@ -240,7 +247,11 @@ struct pt_backend_s
 	void	(*texture_update)(pt_backend_t *self, int handle, const uint32_t *pixels);
 
 	void	(*render_view)(pt_backend_t *self, const pt_view_t *view);
-	void	(*present)(pt_backend_t *self, const uint32_t *overlay);
+	/* Shows the last view rendered with the overlay over it: width x height
+	   premultiplied R,G,B,A pixels. changed lists the parts of the overlay
+	   that may differ from the one given last time, so that a backend that
+	   keeps a copy has only those to fetch; num_changed < 0: any of it may. */
+	void	(*present)(pt_backend_t *self, const uint32_t *overlay, const pt_rect_t *changed, int num_changed);
 
 	/* about the last view rendered, valid until the next call: a few short
 	   lines of text separated by '|' */

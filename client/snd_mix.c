@@ -252,13 +252,13 @@ void S_PaintChannels(int endtime)
 			ps = s_pendingplays.next;
 			if (ps == &s_pendingplays)
 				break;	// no more pending sounds
-			if (ps->begin <= paintedtime)
+			if (ps->begin <= (unsigned)paintedtime)
 			{
 				S_IssuePlaysound (ps);
 				continue;
 			}
 
-			if (ps->begin < end)
+			if (ps->begin < (unsigned)end)
 				end = ps->begin;		// stop here
 			break;
 		}
@@ -386,7 +386,7 @@ void S_PaintChannelFrom8 (channel_t *ch, sfxcache_t *sc, int count, int offset)
 		
 	lscale = snd_scaletable[ ch->leftvol >> 11];
 	rscale = snd_scaletable[ ch->rightvol >> 11];
-	sfx = (signed char *)sc->data + ch->pos;
+	sfx = (unsigned char *)sc->data + ch->pos;
 
 	samp = &paintbuffer[offset];
 

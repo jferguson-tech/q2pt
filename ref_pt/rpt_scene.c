@@ -34,6 +34,8 @@ typedef struct
 	struct model_s	*model;		// NULL if not something to follow
 	vec3_t			origin;
 	vec3_t			axis[3];
+	int				frame, oldframe;	// a model's pose: between which two of its frames,
+	float			backlerp;			// and how far back toward the older
 } entstate_t;
 
 static entstate_t		s_was[MAX_ENTITIES], s_now[MAX_ENTITIES];
@@ -350,7 +352,7 @@ static void S_AddAlias (entity_t *e, model_t *mod, int index)
 	entstate_t		*before;
 	qboolean		shell;
 	dmdl_t			*hdr;
-	daliasframe_t	*frame, *oldframe;
+	daliasframe_t	*frame, *oldframe, *wasframe, *wasoldframe;
 	dtrivertx_t		*v, *ov;
 	dtriangle_t		*tri;
 	dstvert_t		*st;
@@ -380,6 +382,20 @@ static void S_AddAlias (entity_t *e, model_t *mod, int index)
 	for (j=0 ; j<3 ; j++)
 		origin[j] = e->origin[j] + backlerp * (e->oldorigin[j] - e->origin[j]);
 	before = S_Before (index, e, origin, axis);
+	s_now[index].frame = framenum;
+	s_now[index].oldframe = oldframenum;
+	s_now[index].backlerp = backlerp;
+
+	// last frame: where the entity was then, in the pose it had then. A
+	// weapon in hand moves by its pose alone, and without it what was seen
+	// of it before would be looked for in the wrong place.
+	wasframe = wasoldframe = NULL;
+	if (before && before->frame >= 0 && before->frame < hdr->num_frames
+		&& before->oldframe >= 0 && before->oldframe < hdr->num_frames)
+	{
+		wasframe = (daliasframe_t *)((byte *)hdr + hdr->ofs_frames + before->frame * hdr->framesize);
+		wasoldframe = (daliasframe_t *)((byte *)hdr + hdr->ofs_frames + before->oldframe * hdr->framesize);
+	}
 
 	for (i=0 ; i<hdr->num_xyz ; i++)
 	{
@@ -387,8 +403,14 @@ static void S_AddAlias (entity_t *e, model_t *mod, int index)
 			local[j] = (ov[i].v[j] * oldframe->scale[j] + oldframe->translate[j]) * backlerp
 				+ (v[i].v[j] * frame->scale[j] + frame->translate[j]) * frontlerp;
 		S_Transform (local, origin, axis, verts[i]);
-		// last frame: the same pose, where the entity was then
-		if (before)
+		if (wasframe)
+		{
+			for (j=0 ; j<3 ; j++)
+				local[j] = (wasoldframe->verts[i].v[j] * wasoldframe->scale[j] + wasoldframe->translate[j]) * before->backlerp
+					+ (wasframe->verts[i].v[j] * wasframe->scale[j] + wasframe->translate[j]) * (1.0 - before->backlerp);
+			S_Transform (local, before->origin, before->axis, prevverts[i]);
+		}
+		else if (before)
 			S_Transform (local, before->origin, before->axis, prevverts[i]);
 		else
 			VectorCopy (verts[i], prevverts[i]);
@@ -689,6 +711,9 @@ void R_BuildScene (refdef_t *fd, pt_scene_t *scene)
 
 		mod = e->model;
 		if (!mod)
+			continue;
+		// not one of ours: see R_IsModel. Better not drawn than read.
+		if (!R_IsModel (mod))
 			continue;
 
 		switch (mod->type)

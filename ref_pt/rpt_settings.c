@@ -27,6 +27,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 cvar_t	*pt_stats;				// 1: frame rate and timings on screen, 2: and in the console
 cvar_t	*pt_debug;				// one component of the picture, see below
+cvar_t	*pt_simd;				// CPU path tracer: 1 = the build for SSE even where there is AVX2
 
 static cvar_t	*pt_quality;			// 0 low, 1 medium, 2 high, 3 ultra, -1 custom
 static cvar_t	*pt_quality_applied;	// the preset the variables were last set from
@@ -34,6 +35,8 @@ static cvar_t	*pt_quality_applied;	// the preset the variables were last set fro
 // image
 static cvar_t	*pt_scale;				// internal resolution as a fraction of the window
 static cvar_t	*pt_taa;				// temporal anti-aliasing
+static cvar_t	*pt_filter;				// 2 filtered, 1 raw but adding up at rest, 0 raw
+static cvar_t	*pt_show_filter;		// keep the panel of what depends on earlier frames on screen
 static cvar_t	*pt_denoise;			// passes of the spatial filter, 0-4
 static cvar_t	*pt_history;			// frames of lighting kept while things change
 static cvar_t	*pt_exposure;
@@ -62,7 +65,6 @@ static cvar_t	*pt_detail_glow;			// screens, buttons and indicator lights
 // reflections
 static cvar_t	*pt_reflections;		// 0 none, 1 glass and water, 2 everything shiny
 static cvar_t	*pt_reflection_bounces;	// 0 = as many as pt_bounces
-static cvar_t	*pt_adaptive;			// up to this many times the paths where the picture is new or noisy
 static cvar_t	*pt_reflection_rate;	// how often rough surfaces get a reflection path
 static cvar_t	*pt_refraction;			// water bends the view
 static cvar_t	*pt_normal_flip;			// 1 = hand made normal maps have green pointing up
@@ -104,7 +106,6 @@ static struct
 	{ "pt_reflections",			&pt_reflections,		{ 1, 2, 2, 2 } },
 	{ "pt_reflection_bounces",	&pt_reflection_bounces,	{ 1, 0, 0, 0 } },
 	{ "pt_reflection_rate",		&pt_reflection_rate,	{ 0.5f, 1, 1, 1 } },
-	{ "pt_adaptive",			&pt_adaptive,			{ 1, 2, 4, 4 } },
 };
 
 #define	NUM_PRESET_VARS	(sizeof(presets) / sizeof(presets[0]))
@@ -121,12 +122,20 @@ void R_InitSettings (void)
 	// 5 unfiltered extras, 6 normals, 7 history length, 8 layer history length,
 	// 9 seen through water, 10 depth
 	pt_debug = ri.Cvar_Get ("pt_debug", "0", 0);
+	// which build of the CPU path tracer runs is settled when it starts, so
+	// changing this starts the renderer again: see R_BeginFrame
+	pt_simd = ri.Cvar_Get ("pt_simd", "0", 0);
 
 	pt_quality = ri.Cvar_Get ("pt_quality", "1", CVAR_ARCHIVE);
 	pt_quality_applied = ri.Cvar_Get ("pt_quality_applied", "1", CVAR_ARCHIVE);
 
 	pt_scale = ri.Cvar_Get ("pt_scale", "0.5", CVAR_ARCHIVE);
 	pt_taa = ri.Cvar_Get ("pt_taa", "1", CVAR_ARCHIVE);
+	// The picture as the paths alone make it, noise and all, for when what
+	// blending frames and filtering leave behind is worse than the noise.
+	// 1 lets frames add up while the eye is at rest; 0 never does.
+	pt_filter = ri.Cvar_Get ("pt_filter", "2", CVAR_ARCHIVE);
+	pt_show_filter = ri.Cvar_Get ("pt_show_filter", "0", 0);
 	pt_denoise = ri.Cvar_Get ("pt_denoise", "4", CVAR_ARCHIVE);
 	pt_history = ri.Cvar_Get ("pt_history", "32", CVAR_ARCHIVE);
 	pt_exposure = ri.Cvar_Get ("pt_exposure", "2", CVAR_ARCHIVE);
@@ -154,7 +163,6 @@ void R_InitSettings (void)
 	pt_reflections = ri.Cvar_Get ("pt_reflections", "2", CVAR_ARCHIVE);
 	pt_reflection_bounces = ri.Cvar_Get ("pt_reflection_bounces", "0", CVAR_ARCHIVE);
 	pt_reflection_rate = ri.Cvar_Get ("pt_reflection_rate", "1", CVAR_ARCHIVE);
-	pt_adaptive = ri.Cvar_Get ("pt_adaptive", "2", CVAR_ARCHIVE);
 	pt_refraction = ri.Cvar_Get ("pt_refraction", "1", CVAR_ARCHIVE);
 	pt_waves = ri.Cvar_Get ("pt_waves", "1", CVAR_ARCHIVE);
 	pt_water = ri.Cvar_Get ("pt_water", "2", CVAR_ARCHIVE);
@@ -293,12 +301,12 @@ void R_ViewSettings (pt_view_t *view)
 	view->bounces = pt_bounces->value;
 	view->exposure = pt_exposure->value;
 	view->antialias = pt_taa->value != 0;
+	view->filter = pt_filter->value;
 	view->debug = pt_debug->value;
 
 	view->reflections = pt_reflections->value;
 	view->reflection_bounces = pt_reflection_bounces->value;
 	view->reflection_rate = pt_reflection_rate->value;
-	view->adaptive = pt_adaptive->value;
 	view->refraction = pt_refraction->value != 0;
 	view->wave_strength = pt_waves->value;
 
@@ -320,4 +328,127 @@ void R_ViewSettings (pt_view_t *view)
 
 	if (R_Offline ())
 		R_OfflineSettings (view);
+}
+
+/*
+=============================================================================
+
+What of the picture depends on earlier frames, on screen
+
+Each of these can be switched on its own to find which one a fault in the
+picture comes from (pt_filter, and pt_switch on the number pad). When
+one of them changes, a panel lists them all for a few seconds, what is on
+and what is off, with the one that changed marked. pt_show_filter 1 keeps
+the panel up.
+
+=============================================================================
+*/
+
+#define	NUM_FILTER_ROWS		7
+#define	FILTER_ROW_CHARS	64
+#define	FILTER_PANEL_MSEC	6000
+
+// One row: what it is, ON or OFF, what it is set to, and whether that makes
+// any difference at the moment. In a raw picture most of them make none
+// whichever way they are set, and the row has to say both things.
+static void R_FilterRow (char *row, const char *label, qboolean on, const char *detail, qboolean unused)
+{
+	Com_sprintf (row, FILTER_ROW_CHARS, "%-28s %-4s%-15s%s", label, on ? "ON" : "OFF",
+		on ? detail : "", unused ? "no effect: raw" : "");
+}
+
+// the rows in the order of the number pad keys, the first being F7's
+static void R_FilterRows (char rows[NUM_FILTER_ROWS][FILTER_ROW_CHARS], float values[NUM_FILTER_ROWS])
+{
+	static const char	*pictures[] = { "RAW", "RAW, adds up at rest", "FILTERED" };
+	int			filter;
+	qboolean	raw;
+	char		text[32];
+
+	filter = pt_filter->value < 0 ? 0 : (pt_filter->value > 2 ? 2 : (int)pt_filter->value);
+	raw = filter != 2;
+
+	values[0] = filter;
+	Com_sprintf (rows[0], FILTER_ROW_CHARS, "%-28s %s", "F7 picture", pictures[filter]);
+
+	values[1] = pt_taa->value != 0;
+	R_FilterRow (rows[1], " 1 anti-aliasing, upscaler", values[1] != 0, "", raw);
+
+	values[2] = pt_history->value;
+	Com_sprintf (text, sizeof(text), "%d frames", (int)pt_history->value);
+	R_FilterRow (rows[2], " 2 light history, moving", pt_history->value > 1, text, raw);
+
+	values[3] = pt_denoise->value;
+	Com_sprintf (text, sizeof(text), "%d passes", (int)pt_denoise->value);
+	R_FilterRow (rows[3], " 3 noise filter", pt_denoise->value > 0, text, raw);
+
+	values[4] = pt_auto_exposure->value != 0;
+	R_FilterRow (rows[4], " 4 auto exposure", values[4] != 0, "", false);
+
+	values[5] = pt_scale->value;
+	Com_sprintf (text, sizeof(text), "traced at %d%%", (int)(pt_scale->value * 100 + 0.5f));
+	R_FilterRow (rows[5], " 5 upscaling", pt_scale->value < 1, text, false);
+
+	values[6] = pt_debug->value;
+	Com_sprintf (text, sizeof(text), "debug view %d", (int)pt_debug->value);
+	R_FilterRow (rows[6], " 6 history view", pt_debug->value != 0, pt_debug->value == 7 ? "" : text, false);
+}
+
+/*
+=============
+R_DrawFilterPanel
+
+Called once a frame, after the view
+=============
+*/
+void R_DrawFilterPanel (refdef_t *fd)
+{
+	static float	was[NUM_FILTER_ROWS];
+	static int		changed_at[NUM_FILTER_ROWS];
+	static int		shown_until;
+	static qboolean	known;
+	char			rows[NUM_FILTER_ROWS][FILTER_ROW_CHARS];
+	float			values[NUM_FILTER_ROWS];
+	char			line[FILTER_ROW_CHARS + 2];
+	int				i, j, now, x, y;
+
+	R_FilterRows (rows, values);
+	now = Sys_Milliseconds ();
+	for (i=0 ; i<NUM_FILTER_ROWS ; i++)
+	{
+		if (known && values[i] != was[i])
+		{
+			changed_at[i] = now;
+			shown_until = now + FILTER_PANEL_MSEC;
+		}
+		was[i] = values[i];
+	}
+	if (!known)
+	{
+		// nothing has been changed yet: nothing to say
+		known = true;
+		shown_until = now - 1;
+		for (i=0 ; i<NUM_FILTER_ROWS ; i++)
+			changed_at[i] = now - FILTER_PANEL_MSEC;
+	}
+	if (now >= shown_until && !pt_show_filter->value)
+		return;
+
+	// under the console's lines at the top left
+	x = fd->x + 4;
+	y = fd->y + 44;
+	Draw_FadeBox (x, y, (FILTER_ROW_CHARS + 1) * 8, NUM_FILTER_ROWS * 10 + 6);
+	for (i=0 ; i<NUM_FILTER_ROWS ; i++)
+	{
+		// the one just changed: marked, and in the other colour
+		const qboolean	fresh = now - changed_at[i] < FILTER_PANEL_MSEC;
+
+		line[0] = fresh ? '>' : ' ';
+		strncpy (line + 1, rows[i], FILTER_ROW_CHARS);
+		line[FILTER_ROW_CHARS] = 0;
+		if (fresh)
+			for (j=0 ; line[j] ; j++)
+				line[j] |= 128;
+		Draw_String (x + 4, y + 4 + i * 10, line);
+	}
 }

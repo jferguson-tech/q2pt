@@ -136,8 +136,8 @@ void R_OfflineSettings (pt_view_t *view)
 	view->scale = 1;
 	view->samples = PATHS_PER_PASS;
 	view->antialias = 1;
+	view->filter = 2;		// as before: offline frames are made of many passes added up
 	view->debug = 0;
-	view->adaptive = 1;		// every frame is new all over: there is nowhere to favour
 	view->bounces = pt_render_bounces->value;
 	view->light_samples = pt_render_light_samples->value;
 	view->reflections = 2;
@@ -321,6 +321,7 @@ void R_OfflineRender (refdef_t *fd, pt_view_t *view)
 
 		// the backend only has the last moment to show: put the whole
 		// picture over it, under whatever the game draws next
+		Draw_Touch (fd->x, fd->y, fd->x + fd->width, fd->y + fd->height);
 		for (y=fd->y ; y<fd->y+fd->height && y<rpt.height ; y++)
 		{
 			if (y < 0)

@@ -183,7 +183,7 @@ qboolean VID_GetModeInfo( int *width, int *height, int mode )
 {
 	SDL_DisplayMode	desktop;
 
-	if ( mode < 0 || mode >= VID_NUM_MODES )
+	if ( mode < 0 || mode >= (int)VID_NUM_MODES )
 		return false;
 
 	*width  = vid_modes[mode].width;
@@ -281,7 +281,7 @@ qboolean VID_LoadRefresh( char *name )
 	}
 
 	// the renderer notes its window in vid_window
-	if ( re.Init( &vid_window, NULL ) == -1 )
+	if ( (int)re.Init( &vid_window, NULL ) == -1 )
 	{
 		re.Shutdown();
 		VID_FreeReflib ();

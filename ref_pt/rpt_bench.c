@@ -150,12 +150,12 @@ static void Bench_Report (void)
 	// what a run has to have in common with another to be compared with it
 	static char	*settings[] = {
 		"pt_quality", "pt_scale", "pt_samples", "pt_bounces", "pt_light_samples", "pt_reflections",
-		"pt_adaptive", "pt_denoise", "pt_taa", "pt_fog", "pt_water", "pt_bloom", NULL
+		"pt_denoise", "pt_taa", "pt_fog", "pt_water", "pt_bloom", NULL
 	};
 	benchstage_t	*stage;
 	char		path[MAX_OSPATH], when[32];
 	time_t		now;
-	double		total;
+	double		total, rest;
 	float		*sorted;
 	int			i;
 
@@ -195,8 +195,16 @@ static void Bench_Report (void)
 	if (bench_numstages)
 	{
 		Bench_Printf ("%-10s %9s %9s\n", "ms", "average", "worst");
+		rest = total / bench_num;
 		for (i=0, stage=bench_stages ; i<bench_numstages ; i++, stage++)
+		{
 			Bench_Printf ("%-10s %9.2f %9.2f\n", stage->name, stage->sum / stage->count, stage->worst);
+			rest -= stage->sum / stage->count;
+		}
+		// What of a frame none of the parts account for: the game's own
+		// work, the 2D drawing, and getting the picture to the screen. On a
+		// graphics card it is time the card mostly spends waiting.
+		Bench_Printf ("%-10s %9.2f\n", "the rest", rest);
 	}
 
 	if (bench_file)

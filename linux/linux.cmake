@@ -21,9 +21,19 @@ find_package(Threads REQUIRED)
 
 # _GNU_SOURCE: q_shlinux.c needs the declaration of mremap, which returns a pointer
 add_compile_definitions(_GNU_SOURCE C_ONLY stricmp=strcasecmp strnicmp=strncasecmp _stricmp=strcasecmp)
+# Every warning is an error, so that none is left to pile up. Unused
+# parameters are not warned about: the engine's callbacks take arguments a
+# given one has no use for, as on Windows at /W3. Q2_WERROR OFF lets a newer
+# compiler with a new warning build the thing while that warning is dealt with.
+option(Q2_WERROR "Treat compiler warnings as errors" ON)
+set(Q2_WARN_FLAGS -Wall -Wextra -Wno-unused-parameter)
+if(Q2_WERROR)
+	list(APPEND Q2_WARN_FLAGS -Werror)
+endif()
+
 # The engine is C of 1997: it relies on signed overflow wrapping, on reading
 # one type through a pointer to another, and on a char that is signed.
-set(Q2_C_FLAGS -fno-strict-aliasing -fwrapv -fsigned-char -fcommon -w)
+set(Q2_C_FLAGS -fno-strict-aliasing -fwrapv -fsigned-char -fcommon ${Q2_WARN_FLAGS})
 # every library keeps to its own copy of the functions they all have
 set(Q2_LINK_FLAGS -Wl,-Bsymbolic)
 
@@ -84,16 +94,45 @@ set(REF_PT_SRC
 	pt/water/pt_water.c pt/png/pt_png.c
 	linux/q_shlinux.c linux/glob.c ${SHARED_SRC})
 
-option(PT_AVX2 "Build the CPU path tracer for AVX2" ON)
-set(PT_CXX_FLAGS -O2 -ffast-math -fno-finite-math-only)
+option(PT_AVX2 "Build the CPU path tracer for AVX2 as well as for any processor" ON)
+set(PT_BASE_FLAGS -O2 -ffast-math -fno-finite-math-only ${Q2_WARN_FLAGS})
+set(PT_CXX_FLAGS ${PT_BASE_FLAGS})
 if(PT_AVX2)
 	list(APPEND PT_CXX_FLAGS -mavx2 -mfma)
 endif()
 
-add_library(pt_cpu STATIC pt/cpu/pt_cpu.cpp pt/cpu/pt_bvh.cpp pt/cpu/pt_world.cpp pt/cpu/pt_trace.cpp)
-target_compile_options(pt_cpu PRIVATE ${PT_CXX_FLAGS})
-target_include_directories(pt_cpu PRIVATE ${X11_INCLUDE_DIR})
-target_link_libraries(pt_cpu PUBLIC ${X11_LIBRARIES} Threads::Threads)
+# The CPU path tracer is built twice into ref_ptcpu: for processors with
+# AVX2 and for any other, with pt/cpu/pt_cpu_pick.cpp to pick one when the
+# renderer starts. Each build has a namespace of its own (PT_NS). What the
+# two still share, the standard library's templates, the linker takes from
+# whichever objects it meets first: those built for any processor are listed
+# first, so that none of the code the older processors run is built for AVX2.
+set(PT_CPU_SRC pt/cpu/pt_cpu.cpp pt/cpu/pt_bvh.cpp pt/cpu/pt_world.cpp pt/cpu/pt_trace.cpp)
+if(PT_AVX2)
+	add_library(pt_cpu_sse OBJECT ${PT_CPU_SRC})
+	target_compile_options(pt_cpu_sse PRIVATE ${PT_BASE_FLAGS})
+	target_compile_definitions(pt_cpu_sse PRIVATE PT_NS=pt_sse PT_CPU_CREATE=pt_cpu_create_sse)
+	add_library(pt_cpu_avx2 OBJECT ${PT_CPU_SRC})
+	target_compile_options(pt_cpu_avx2 PRIVATE ${PT_CXX_FLAGS})
+	target_compile_definitions(pt_cpu_avx2 PRIVATE PT_NS=pt_avx2 PT_CPU_CREATE=pt_cpu_create_avx2 PT_AVX2_KERNELS)
+	add_library(pt_cpu_pick OBJECT pt/cpu/pt_cpu_pick.cpp)
+	target_compile_options(pt_cpu_pick PRIVATE ${PT_BASE_FLAGS})
+	set(PT_CPU_PARTS pt_cpu_sse pt_cpu_avx2)
+	set(PT_CPU_OBJECTS $<TARGET_OBJECTS:pt_cpu_pick> $<TARGET_OBJECTS:pt_cpu_sse> $<TARGET_OBJECTS:pt_cpu_avx2>)
+else()
+	add_library(pt_cpu_one OBJECT ${PT_CPU_SRC})
+	target_compile_options(pt_cpu_one PRIVATE ${PT_BASE_FLAGS})
+	set(PT_CPU_PARTS pt_cpu_one)
+	set(PT_CPU_OBJECTS $<TARGET_OBJECTS:pt_cpu_one>)
+endif()
+foreach(part ${PT_CPU_PARTS})
+	target_include_directories(${part} PRIVATE ${X11_INCLUDE_DIR})
+endforeach()
+
+# what a renderer links to get the CPU backend: its objects, in that order
+add_library(pt_cpu INTERFACE)
+target_sources(pt_cpu INTERFACE ${PT_CPU_OBJECTS})
+target_link_libraries(pt_cpu INTERFACE ${X11_LIBRARIES} Threads::Threads)
 
 function(q2_ref name backend)
 	add_library(${name} SHARED ${REF_PT_SRC})
@@ -136,7 +175,9 @@ if(Vulkan_FOUND AND (PT_GLSLC OR PT_GLSLANG))
 	endforeach()
 
 	add_library(pt_rtx STATIC pt/rtx/pt_rtx.cpp pt/cpu/pt_world.cpp pt/cpu/pt_bvh.cpp ${PT_SHADER_INC})
-	target_compile_options(pt_rtx PRIVATE ${PT_CXX_FLAGS})
+	# Vulkan's structures are set up as { VK_STRUCTURE_TYPE_... } and left zero
+	# from there on, which is what the API expects of them
+	target_compile_options(pt_rtx PRIVATE ${PT_CXX_FLAGS} -Wno-missing-field-initializers)
 	target_include_directories(pt_rtx PRIVATE ${PT_SHADER_DIR} ${X11_INCLUDE_DIR})
 	target_link_libraries(pt_rtx PUBLIC Vulkan::Vulkan ${X11_LIBRARIES} Threads::Threads)
 

@@ -32,7 +32,7 @@
 
 namespace {
 
-using namespace pt;
+using namespace PT_NS;
 
 const int kMaxFilterPasses = 4;
 
@@ -127,6 +127,46 @@ struct Pixels
 	}
 };
 
+#ifdef PT_AVX2_KERNELS
+
+// What the filter reads. The AVX2 build filters eight pixels of a row at a
+// time, so it keeps a row of the picture as a row of each quantity in turn:
+// eight neighbours are then eight numbers side by side.
+enum
+{
+	kGeoPosX, kGeoPosY, kGeoPosZ, kGeoDepth, kGeoNormalX, kGeoNormalY, kGeoNormalZ, kGeoRoughness,
+	kGeoPlaneX, kGeoPlaneY, kGeoPlaneZ, kGeoRows
+};
+// red, green, blue and variance of each channel, and one row unused: with an
+// odd number the rows of the picture do not all fall in the same cache sets
+enum { kLightRows = 4 * kChannels + 1 };
+
+struct FilterRows
+{
+	// either side of every row, so that eight neighbours of which some are
+	// off the picture can still be read, and eight pixels of which some are
+	// past the end of the row still written
+	enum { kMargin = 8 };
+
+	std::vector<float>	data;
+	size_t	stride = 0;		// from the row of one quantity to that of the next
+	int		quantities = 0;
+
+	void Resize(int rw, int rh, int count)
+	{
+		quantities = count;
+		stride = ((size_t)rw + 2 * kMargin + 15) / 16;
+		stride = (stride | 1) * 16;		// an odd number of cache lines, for the same reason
+		data.assign(stride * quantities * rh, 0.0f);
+	}
+
+	// row y of the picture, at its first quantity and first pixel
+	float *Row(int y) { return data.data() + (size_t)y * quantities * stride + kMargin; }
+	const float *Row(int y) const { return data.data() + (size_t)y * quantities * stride + kMargin; }
+};
+
+#else
+
 // What the filter reads, packed so that a neighbour is two cache lines
 // rather than a dozen
 struct FilterGeo
@@ -145,6 +185,8 @@ struct FilterLight
 	float	r[4], g[4], b[4];
 	float	var[4];
 };
+
+#endif
 
 struct CpuBackend
 {
@@ -174,8 +216,12 @@ struct CpuBackend
 	Frame					frame;
 
 	Pixels					cur, prev;
+#ifdef PT_AVX2_KERNELS
+	FilterRows				filter_geo, filter_a, filter_b;
+#else
 	std::vector<FilterGeo>	filter_geo;
 	std::vector<FilterLight> filter_a, filter_b;
+#endif
 	std::vector<Vec3>		hdr;			// this frame's picture, at traced resolution
 	std::vector<Vec3>		near_lo, near_hi;	// range of hdr around each traced pixel
 	std::vector<Vec3>		bloom_a, bloom_b;
@@ -191,6 +237,7 @@ struct CpuBackend
 	bool					have_exposure = false;	// auto_exposure has been measured at least once
 	bool					antialiased = false;	// last frame was
 	float					jitter_x = 0.0f, jitter_y = 0.0f;	// this frame's offset within the pixel
+	int						filtering = 2;		// what is done about noise this frame, see pt_view_t
 	float					moving_history = 32.0f;	// frames of lighting kept while anything changes
 	Camera					prev_camera;
 	uint32_t				prev_hash = 0;
@@ -234,7 +281,13 @@ void NameDevice(char *out, size_t size, int threads)
 	size_t len = strlen(first);
 	while (len && first[len - 1] == ' ')
 		len--;
-	snprintf(out, size, "%.*s%s%d threads", (int)len, first, len ? ", " : "", threads);
+	// and which of the two builds of this backend is the one running
+#ifdef PT_AVX2_KERNELS
+	const char *const built_for = "AVX2";
+#else
+	const char *const built_for = "SSE";
+#endif
+	snprintf(out, size, "%.*s%s%d threads, %s", (int)len, first, len ? ", " : "", threads, built_for);
 }
 
 void Destroy(pt_backend_t *b)
@@ -702,42 +755,6 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &cam, float jx, flo
 	const float spec_chance = (!has_specular || sc.reflections < 2) ? 0.0f
 		: std::min(1.0f, std::max(0.1f, Luminance(surf.SpecularAlbedo()) * 10.0f) * sc.reflection_rate);
 
-	// Paths are best spent where the picture has little to go on: on what
-	// has just come into view, and on what is still noisy. What last frame
-	// knew of this point says which that is.
-	if (sc.adaptive > 1)
-	{
-		float known = 0.0f, noise = 0.0f;
-		if (s->have_history)
-		{
-			const Camera &pc = s->prev_camera;
-			const Pixels &prev = s->prev;
-			const Vec3 v = px.seen[i] - pc.origin;
-			const float z = Dot(v, pc.forward);
-			if (z > 0.01f)
-			{
-				const int qx = (int)std::floor((Dot(v, pc.right) / (z * pc.tx) * 0.5f + 0.5f) * s->rw);
-				const int qy = (int)std::floor((0.5f - Dot(v, pc.up) / (z * pc.ty) * 0.5f) * s->rh);
-				if (qx >= 0 && qy >= 0 && qx < s->rw && qy < s->rh)
-				{
-					const size_t q = (size_t)qy * s->rw + qx;
-					if (prev.depth[q] > 0.0f && std::fabs(prev.depth[q] - px.depth[i]) < 0.1f * px.depth[i])
-					{
-						known = prev.length[q];
-						const float mean = prev.m1[kDiffuse][q];
-						noise = std::sqrt(std::max(0.0f, prev.m2[kDiffuse][q] - mean * mean)) / (mean + 0.01f);
-					}
-				}
-			}
-		}
-		if (known < 2.0f)
-			samples *= sc.adaptive;
-		else if (known < 8.0f)
-			samples *= std::max(1, sc.adaptive / 2);
-		else if (noise > 2.0f && known < 32.0f)
-			samples *= 2;
-	}
-
 	Vec3 sum[2];
 	float m1[2] = {}, m2[2] = {};
 	float spec_reach = -1.0f;
@@ -851,7 +868,9 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 		bool have_spot = false;
 		int spot_x = 0, spot_y = 0;	// the pixel this point was nearest to last frame
 
-		if (s->have_history)
+		// Where frames are only added up with the eye at rest, what moves
+		// starts afresh, so that nothing of where it was shows.
+		if (s->have_history && !(s->filtering == 1 && cur.moved[i]))
 		{
 			// where was this point on screen last frame?
 			const Vec3 v = cur.seen[i] - prev_cam.origin;
@@ -1088,6 +1107,161 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 // One pass of an a-trous wavelet filter. Neighbours count for less the more
 // they differ in plane, facing or brightness, and brightness matters less
 // where the estimate is still noisy. Sharp reflections are left sharper.
+#ifdef PT_AVX2_KERNELS
+// Eight pixels of the row ride in the lanes of one AVX register. The sums
+// are those the other build makes, pixel by pixel and in its order, with
+// the arithmetic the compiler makes of that code for AVX2, fused
+// multiply-adds where it fuses them: the picture is the same to the last
+// bit. Where that code passes a neighbour over, this one works it out for
+// all eight and leaves the sums of the pixels it does not count for alone.
+void FilterRow(int rw, int rh, const FilterRows &geo, const FilterRows &in, FilterRows &out, int step, int y)
+{
+	static const float kernel[5] = {1.0f / 16, 1.0f / 4, 3.0f / 8, 1.0f / 4, 1.0f / 16};
+	// how big a brightness difference is still taken for noise, per channel;
+	// the specular one goes by roughness
+	static const float tolerances[kChannels] = {4.0f, 0.0f, 0.75f, 6.0f};
+	const __m256 lum_r = _mm256_set1_ps(0.2126f), lum_g = _mm256_set1_ps(0.7152f), lum_b = _mm256_set1_ps(0.0722f);
+	const __m256 sign = _mm256_set1_ps(-0.0f), zero = _mm256_setzero_ps(), one = _mm256_set1_ps(1.0f);
+	const __m256i lanes = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+	const size_t gs = geo.stride, ls = in.stride;
+	const float w0 = kernel[2] * kernel[2];
+
+	for (int x = 0; x < rw; x += 8)
+	{
+		const float *g = geo.Row(y) + x;
+		const float *centre = in.Row(y) + x;
+		float *to = out.Row(y) + x;
+
+		// Pixels to be left as they are: those past the end of the row, those
+		// with no surface, and those settled already, with nothing to gain
+		// from blurring them
+		const __m256 depth = _mm256_loadu_ps(g + kGeoDepth * gs);
+		__m256 lum[kChannels], sigma[kChannels];
+		__m256 leave = _mm256_cmp_ps(zero, zero, _CMP_EQ_OQ);
+		for (int c = 0; c < kChannels; c++)
+		{
+			const float *l = centre + 4 * c * ls;
+			const __m256 cr = _mm256_loadu_ps(l), cg = _mm256_loadu_ps(l + ls), cb = _mm256_loadu_ps(l + 2 * ls);
+			lum[c] = _mm256_fmadd_ps(cg, lum_g, _mm256_fmadd_ps(cr, lum_r, _mm256_mul_ps(cb, lum_b)));
+			sigma[c] = _mm256_sqrt_ps(_mm256_loadu_ps(l + 3 * ls));
+			leave = _mm256_and_ps(leave, _mm256_cmp_ps(sigma[c],
+				_mm256_fmadd_ps(lum[c], _mm256_set1_ps(0.01f), _mm256_set1_ps(1e-4f)), _CMP_LE_OS));
+		}
+		leave = _mm256_or_ps(leave, _mm256_cmp_ps(depth, zero, _CMP_NGE_UQ));
+		leave = _mm256_or_ps(leave, _mm256_castsi256_ps(_mm256_cmpgt_epi32(lanes, _mm256_set1_epi32(rw - 1 - x))));
+		if (_mm256_movemask_ps(leave) == 255)
+		{
+			for (int q = 0; q < 4 * kChannels; q++)
+				_mm256_storeu_ps(to + q * ls, _mm256_loadu_ps(centre + q * ls));
+			continue;
+		}
+
+		// What a neighbour counts for by where it is and how it faces is the
+		// same for every channel: that first, for the neighbours that count
+		// for any of the eight
+		const __m256 gpx = _mm256_loadu_ps(g + kGeoPosX * gs), gpy = _mm256_loadu_ps(g + kGeoPosY * gs);
+		const __m256 gpz = _mm256_loadu_ps(g + kGeoPosZ * gs);
+		const __m256 gnx = _mm256_loadu_ps(g + kGeoNormalX * gs), gny = _mm256_loadu_ps(g + kGeoNormalY * gs);
+		const __m256 gnz = _mm256_loadu_ps(g + kGeoNormalZ * gs);
+		const __m256 glx = _mm256_loadu_ps(g + kGeoPlaneX * gs), gly = _mm256_loadu_ps(g + kGeoPlaneY * gs);
+		const __m256 glz = _mm256_loadu_ps(g + kGeoPlaneZ * gs);
+		const __m256 roughness = _mm256_loadu_ps(g + kGeoRoughness * gs);
+		const __m256 inv_plane = _mm256_div_ps(one, _mm256_fmadd_ps(_mm256_set1_ps(0.004f), depth, one));
+
+		__m256 counts[24], weight[24], wz[24], wr[24];
+		const float *from[24];
+		int taps = 0;
+		for (int dy = -2; dy <= 2; dy++)
+		{
+			const int qy = y + dy * step;
+			if (qy < 0 || qy >= rh)
+				continue;
+			for (int dx = -2; dx <= 2; dx++)
+			{
+				const int qx = x + dx * step;
+				if (qx <= -8 || qx >= rw || (!dx && !dy))
+					continue;
+				const float *h = geo.Row(qy) + qx;
+
+				const __m256i at = _mm256_add_epi32(lanes, _mm256_set1_epi32(qx));
+				__m256 ok = _mm256_castsi256_ps(_mm256_and_si256(
+					_mm256_cmpgt_epi32(at, _mm256_set1_epi32(-1)), _mm256_cmpgt_epi32(_mm256_set1_epi32(rw), at)));
+				ok = _mm256_andnot_ps(leave, ok);
+				ok = _mm256_and_ps(ok, _mm256_cmp_ps(_mm256_loadu_ps(h + kGeoDepth * gs), zero, _CMP_NLT_UQ));
+
+				const __m256 wn = _mm256_fmadd_ps(_mm256_loadu_ps(h + kGeoNormalZ * gs), gnz,
+					_mm256_fmadd_ps(_mm256_loadu_ps(h + kGeoNormalX * gs), gnx,
+						_mm256_mul_ps(gny, _mm256_loadu_ps(h + kGeoNormalY * gs))));
+				ok = _mm256_and_ps(ok, _mm256_cmp_ps(wn, zero, _CMP_GT_OQ));
+
+				const __m256 px = _mm256_sub_ps(_mm256_loadu_ps(h + kGeoPosX * gs), gpx);
+				const __m256 py = _mm256_sub_ps(_mm256_loadu_ps(h + kGeoPosY * gs), gpy);
+				const __m256 pz = _mm256_sub_ps(_mm256_loadu_ps(h + kGeoPosZ * gs), gpz);
+				const __m256 off = _mm256_fmadd_ps(pz, glz, _mm256_fmadd_ps(glx, px, _mm256_mul_ps(py, gly)));
+				const __m256 z = _mm256_mul_ps(_mm256_andnot_ps(sign, off), inv_plane);
+				ok = _mm256_and_ps(ok, _mm256_cmp_ps(z, _mm256_set1_ps(4.0f), _CMP_NGE_UQ));
+				if (!_mm256_movemask_ps(ok))
+					continue;
+
+				const __m256 wn2 = _mm256_mul_ps(wn, wn), wn4 = _mm256_mul_ps(wn2, wn2);		// ^8 below
+				counts[taps] = ok;
+				weight[taps] = _mm256_mul_ps(_mm256_set1_ps(kernel[dx + 2] * kernel[dy + 2]), _mm256_mul_ps(wn4, wn4));
+				wz[taps] = z;
+				wr[taps] = _mm256_mul_ps(_mm256_andnot_ps(sign,
+					_mm256_sub_ps(_mm256_loadu_ps(h + kGeoRoughness * gs), roughness)), _mm256_set1_ps(8.0f));	// specular only
+				from[taps] = in.Row(qy) + qx;
+				taps++;
+			}
+		}
+
+		// then the sums, a channel at a time
+		for (int c = 0; c < kChannels; c++)
+		{
+			const size_t channel = 4 * c * ls;
+			const __m256 cr = _mm256_loadu_ps(centre + channel), cg = _mm256_loadu_ps(centre + channel + ls);
+			const __m256 cb = _mm256_loadu_ps(centre + channel + 2 * ls), cvar = _mm256_loadu_ps(centre + channel + 3 * ls);
+			const __m256 tolerance = c == kSpecular ?
+				_mm256_fmadd_ps(_mm256_set1_ps(3.0f), roughness, one) : _mm256_set1_ps(tolerances[c]);
+			const __m256 inv_lum = _mm256_div_ps(one, _mm256_fmadd_ps(tolerance, sigma[c], _mm256_set1_ps(1e-3f)));
+			const __m256 clum = lum[c];
+
+			__m256 wsum = _mm256_set1_ps(w0);
+			__m256 sr = _mm256_mul_ps(cr, wsum), sg = _mm256_mul_ps(cg, wsum), sb = _mm256_mul_ps(cb, wsum);
+			__m256 vsum = _mm256_mul_ps(cvar, _mm256_set1_ps(w0 * w0));
+
+			for (int t = 0; t < taps; t++)
+			{
+				const float *q = from[t] + channel;
+				const __m256 qr = _mm256_loadu_ps(q), qg = _mm256_loadu_ps(q + ls), qb = _mm256_loadu_ps(q + 2 * ls);
+				const __m256 qlum = _mm256_fmadd_ps(qg, lum_g, _mm256_fmadd_ps(qr, lum_r, _mm256_mul_ps(qb, lum_b)));
+
+				// weight * exp(-(wz + wl + wr)), with the exponential as (1 - x/4)^4
+				__m256 e = _mm256_fmadd_ps(_mm256_andnot_ps(sign, _mm256_sub_ps(qlum, clum)), inv_lum, wz[t]);
+				if (c == kSpecular)
+					e = _mm256_add_ps(e, wr[t]);
+				e = _mm256_max_ps(zero, _mm256_fnmadd_ps(e, _mm256_set1_ps(0.25f), one));
+				e = _mm256_mul_ps(e, e);
+				e = _mm256_mul_ps(e, e);
+				const __m256 w = _mm256_mul_ps(weight[t], e);
+
+				const __m256 ok = counts[t];
+				sr = _mm256_blendv_ps(sr, _mm256_fmadd_ps(w, qr, sr), ok);
+				sg = _mm256_blendv_ps(sg, _mm256_fmadd_ps(w, qg, sg), ok);
+				sb = _mm256_blendv_ps(sb, _mm256_fmadd_ps(w, qb, sb), ok);
+				vsum = _mm256_blendv_ps(vsum, _mm256_fmadd_ps(_mm256_mul_ps(w, w), _mm256_loadu_ps(q + 3 * ls), vsum), ok);
+				wsum = _mm256_blendv_ps(wsum, _mm256_add_ps(w, wsum), ok);
+			}
+
+			const __m256 inv = _mm256_div_ps(one, wsum);
+			_mm256_storeu_ps(to + channel, _mm256_blendv_ps(_mm256_mul_ps(inv, sr), cr, leave));
+			_mm256_storeu_ps(to + channel + ls, _mm256_blendv_ps(_mm256_mul_ps(inv, sg), cg, leave));
+			_mm256_storeu_ps(to + channel + 2 * ls, _mm256_blendv_ps(_mm256_mul_ps(inv, sb), cb, leave));
+			_mm256_storeu_ps(to + channel + 3 * ls,
+				_mm256_blendv_ps(_mm256_mul_ps(_mm256_mul_ps(inv, inv), vsum), cvar, leave));
+		}
+	}
+}
+#else
 // The three channels ride in the lanes of one SSE register.
 void FilterRow(int rw, int rh, const FilterGeo *geo, const FilterLight *in, FilterLight *out, int step, int y)
 {
@@ -1179,6 +1353,7 @@ void FilterRow(int rw, int rh, const FilterGeo *geo, const FilterLight *in, Filt
 		_mm_storeu_ps(out[i].var, _mm_mul_ps(vsum, _mm_mul_ps(inv, inv)));
 	}
 }
+#endif
 
 // low discrepancy sequence: successive values fill [0, 1) evenly
 float Halton(uint32_t index, uint32_t base)
@@ -1392,6 +1567,7 @@ void ResolveRow(CpuBackend *s, const Camera &cam, const Camera &prev_cam, bool h
 
 				// this view pixel moved as its traced sample did
 				float hx = ox + (fx - sx) * to_view_x, hy = oy + (fy - sy) * to_view_y;
+				bool here = false;
 
 				// Something that moves with the eye, like the weapon in hand,
 				// was not where the world says: it was on this same pixel. Take
@@ -1410,10 +1586,32 @@ void ResolveRow(CpuBackend *s, const Camera &cam, const Camera &prev_cam, bool h
 					{
 						hx = (float)ox;
 						hy = (float)oy;
+						here = true;
 					}
 				}
 
-				if (hx >= 0.0f && hy >= 0.0f && hx <= vw - 1.0f && hy <= vh - 1.0f)
+				// Was it this point that was seen there, or something in
+				// front of it? Where the weapon or a door has just moved
+				// aside, what the picture held was the weapon or the door:
+				// nothing to do with what shows now. Last frame's traced
+				// picture knows how far off what it showed was, to within a
+				// traced pixel of where.
+				bool there = sky || here;
+				if (!there)
+				{
+					const float expected = std::sqrt(Dot(v, v));
+					const int qx = (int)std::floor(fx + 0.5f), qy = (int)std::floor(fy + 0.5f);
+					for (int t = 0; t < 9 && !there; t++)
+					{
+						const int x = qx + t % 3 - 1, y = qy + t / 3 - 1;
+						if (x < 0 || y < 0 || x >= rw || y >= rh)
+							continue;
+						const float held = was.depth[(size_t)y * rw + x];
+						there = held >= 0.0f && std::fabs(held - expected) <= 0.1f * expected;
+					}
+				}
+
+				if (there && hx >= 0.0f && hy >= 0.0f && hx <= vw - 1.0f && hy <= vh - 1.0f)
 				{
 					const int ix = std::min((int)hx, vw - 2 < 0 ? 0 : vw - 2), iy = std::min((int)hy, vh - 2 < 0 ? 0 : vh - 2);
 					const int ix1 = std::min(ix + 1, vw - 1), iy1 = std::min(iy + 1, vh - 1);
@@ -1486,9 +1684,15 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		s->rh = rh;
 		s->cur.Resize(count);
 		s->prev.Resize(count);
+#ifdef PT_AVX2_KERNELS
+		s->filter_geo.Resize(rw, rh, kGeoRows);
+		s->filter_a.Resize(rw, rh, kLightRows);
+		s->filter_b.Resize(rw, rh, kLightRows);
+#else
 		s->filter_geo.assign(count, FilterGeo());
 		s->filter_a.assign(count, FilterLight());
 		s->filter_b.assign(count, FilterLight());
+#endif
 		s->hdr.assign(count, Vec3());
 		s->near_lo.assign(count, Vec3());
 		s->near_hi.assign(count, Vec3());
@@ -1538,13 +1742,12 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	sc.reflections = view->reflections;
 	sc.reflection_bounces = std::max(1, view->reflection_bounces > 0 ? view->reflection_bounces : bounces);
 	sc.reflection_rate = std::max(0.0f, view->reflection_rate);
-	sc.adaptive = std::min(std::max(view->adaptive, 1), 16);
 	sc.refraction = view->refraction != 0;
 	sc.fog_density = view->fog ? std::min(std::max(view->fog_density, 0.0f), 0.05f) : 0.0f;
 	if (bounces < 1)
 		sc.reflections = 0;		// no bounces at all means none off mirrors either
 	s->moving_history = (float)std::min(std::max(view->history, 1), 512);
-	const int passes = std::min(std::max(view->denoise, 0), kMaxFilterPasses);
+	const int passes = (view->debug || view->filter >= 2) ? std::min(std::max(view->denoise, 0), kMaxFilterPasses) : 0;
 	s->pool.SetLimit(view->threads);
 	s->frame_index++;
 
@@ -1556,7 +1759,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	{
 		const float settings[] = {(float)samples, (float)sc.light_samples, sc.max_sample, sc.wave_strength,
 			(float)sc.filter_textures, (float)sc.reflections, (float)sc.reflection_bounces, sc.reflection_rate,
-			(float)sc.refraction, view->exposure, sc.fog_density, (float)sc.adaptive};
+			(float)sc.refraction, view->exposure, sc.fog_density};
 		hash = HashBytes(settings, sizeof(settings), hash);
 	}
 	if (s->world->has_waves)
@@ -1565,7 +1768,17 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 
 	// each frame looks through a slightly different point of every pixel, so
 	// that over time edges are seen from all across it
-	const bool antialias = view->antialias != 0;
+	// What is done about noise: 2, all there is; 1, nothing, but frames add up
+	// while the eye is at rest; 0, nothing. Without the first there is nothing
+	// of an earlier view in the picture, ever. A debug view is shown filtered.
+	const int filtering = view->debug ? 2 : std::min(std::max(view->filter, 0), 2);
+	const bool same_camera = s->have_history && cam == s->prev_camera;
+	const bool had_history = s->have_history;
+	s->have_history = had_history && (filtering == 2 || (filtering == 1 && same_camera));
+	s->filtering = filtering;
+	// (only for the filtered picture, whose last pass puts it back together
+	// from those points: a raw one would shake by a part of a pixel)
+	const bool antialias = view->antialias != 0 && filtering == 2;
 	const float jx = antialias ? Halton(s->frame_index % 16 + 1, 2) - 0.5f : 0.0f;
 	const float jy = antialias ? Halton(s->frame_index % 16 + 1, 3) - 0.5f : 0.0f;
 	s->jitter_x = jx;
@@ -1579,13 +1792,59 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	const auto traced = std::chrono::steady_clock::now();
 
 	// with nothing changing the average may run forever and converge
-	const bool still = s->have_history && cam == s->prev_camera && hash == s->prev_hash;
+	// (or, adding frames up at rest, whenever the eye has not moved: what
+	// does move in the view starts afresh by itself, see Accumulate)
+	const bool still = s->have_history && cam == s->prev_camera && (filtering == 1 || hash == s->prev_hash);
 	const float max_history = still ? 65536.0f : s->moving_history;
 	const Camera prev_cam = s->prev_camera;
 	s->pool.Run(rh, [&](int y) { Accumulate(s, prev_cam, max_history, y); });
 	const auto accumulated = std::chrono::steady_clock::now();
 
 	// gather what the filter needs, then let it ping-pong between two buffers
+#ifdef PT_AVX2_KERNELS
+	s->pool.Run(rh, [&](int y)
+	{
+		const size_t gs = s->filter_geo.stride, ls = s->filter_a.stride;
+		float *g = s->filter_geo.Row(y), *l = s->filter_a.Row(y);
+		for (int x = 0; x < rw; x++)
+		{
+			const size_t i = (size_t)y * rw + x;
+			g[kGeoPosX * gs + x] = s->cur.pos[i].x;
+			g[kGeoPosY * gs + x] = s->cur.pos[i].y;
+			g[kGeoPosZ * gs + x] = s->cur.pos[i].z;
+			g[kGeoDepth * gs + x] = s->cur.depth[i];
+			g[kGeoNormalX * gs + x] = s->cur.normal[i].x;
+			g[kGeoNormalY * gs + x] = s->cur.normal[i].y;
+			g[kGeoNormalZ * gs + x] = s->cur.normal[i].z;
+			g[kGeoRoughness * gs + x] = s->cur.roughness[i];
+			g[kGeoPlaneX * gs + x] = s->cur.plane[i].x;
+			g[kGeoPlaneY * gs + x] = s->cur.plane[i].y;
+			g[kGeoPlaneZ * gs + x] = s->cur.plane[i].z;
+			for (int c = 0; c < kChannels; c++)
+			{
+				float *to = l + 4 * c * ls + x;
+				to[0] = s->cur.light[c][i].x;
+				to[ls] = s->cur.light[c][i].y;
+				to[2 * ls] = s->cur.light[c][i].z;
+				to[3 * ls] = s->cur.variance[c][i];
+			}
+		}
+	});
+
+	const FilterRows *in = &s->filter_a;
+	for (int pass = 0; pass < passes; pass++)
+	{
+		FilterRows *out = (pass & 1) ? &s->filter_a : &s->filter_b;
+		s->pool.Run(rh, [&](int y) { FilterRow(rw, rh, s->filter_geo, *in, *out, 1 << pass, y); });
+		in = out;
+	}
+	// the light the filter leaves in a channel of a pixel
+	const auto lit = [&](int x, int y, int ch)
+	{
+		const float *l = in->Row(y) + 4 * ch * in->stride + x;
+		return Vec3(l[0], l[in->stride], l[2 * in->stride]);
+	};
+#else
 	s->pool.Run(rh, [&](int y)
 	{
 		for (int x = 0; x < rw; x++)
@@ -1616,6 +1875,13 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		s->pool.Run(rh, [&](int y) { FilterRow(rw, rh, geo, in, out, 1 << pass, y); });
 		in = out;
 	}
+	// the light the filter leaves in a channel of a pixel
+	const auto lit = [&](int x, int y, int ch)
+	{
+		const FilterLight &l = in[(size_t)y * rw + x];
+		return Vec3(l.r[ch], l.g[ch], l.b[ch]);
+	};
+#endif
 	const auto filtered = std::chrono::steady_clock::now();
 
 	// Exposure: the user's setting times, if wanted, whatever brings this
@@ -1629,22 +1895,22 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 			const size_t i = (size_t)y * rw + x;
 			Vec3 c = s->cur.add[i];
 			for (int ch = 0; ch < kChannels; ch++)
-				c += s->cur.albedo[ch][i] * Vec3(in[i].r[ch], in[i].g[ch], in[i].b[ch]);
+				c += s->cur.albedo[ch][i] * lit(x, y, ch);
 
 			// one part of the picture on its own, for finding where a fault lies
 			switch (debug)
 			{
 			case 1: c = s->cur.albedo[kDiffuse][i]; break;
-			case 2: c = Vec3(in[i].r[kDiffuse], in[i].g[kDiffuse], in[i].b[kDiffuse]); break;
-			case 3: c = s->cur.albedo[kSpecular][i] * Vec3(in[i].r[kSpecular], in[i].g[kSpecular], in[i].b[kSpecular]); break;
-			case 4: c = s->cur.albedo[kOver][i] * Vec3(in[i].r[kOver], in[i].g[kOver], in[i].b[kOver]); break;
+			case 2: c = lit(x, y, kDiffuse); break;
+			case 3: c = s->cur.albedo[kSpecular][i] * lit(x, y, kSpecular); break;
+			case 4: c = s->cur.albedo[kOver][i] * lit(x, y, kOver); break;
 			case 5: c = s->cur.add[i]; break;
 			case 6: c = s->cur.normal[i] * 0.25f + Vec3(0.25f); break;
 			case 7: c = Vec3(std::min(s->cur.length[i], 32.0f) / 64.0f); break;
 			case 8: c = Vec3(std::min(s->cur.over_length[i], 32.0f) / 64.0f); break;
 			case 9: c = Vec3(s->cur.bent[i] ? 0.5f : 0.05f); break;
 			case 10: c = Vec3(s->cur.depth[i] * 0.002f); break;
-			case 11: c = Vec3(in[i].r[kFog], in[i].g[kFog], in[i].b[kFog]); break;
+			case 11: c = lit(x, y, kFog); break;
 			default: break;
 			}
 			s->hdr[i] = c * exposure;
@@ -1700,7 +1966,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		s->antialiased = false;
 	}
 
-	const bool resolve_history = s->have_history && antialias && s->antialiased && !debug;
+	const bool resolve_history = s->have_history && antialias && s->antialiased && !debug && filtering == 2;
 	s->antialiased = antialias;
 	if (antialias)
 	{
@@ -1762,7 +2028,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	s->stages_new = true;
 }
 
-void Present(pt_backend_t *b, const uint32_t *overlay)
+void Present(pt_backend_t *b, const uint32_t *overlay, const pt_rect_t *, int)
 {
 	CpuBackend *s = Self(b);
 
@@ -1895,7 +2161,13 @@ int Stages(pt_backend_t *b, pt_stage_t *stages, int max)
 
 } // namespace
 
-extern "C" pt_backend_t *pt_cpu_create(const pt_create_t *ci, char *err, int errlen)
+// built twice into one program, each build is made under a name of its own
+// and pt_cpu_create picks between them: see pt_cpu_pick.cpp
+#ifndef PT_CPU_CREATE
+#define PT_CPU_CREATE pt_cpu_create
+#endif
+
+extern "C" pt_backend_t *PT_CPU_CREATE(const pt_create_t *ci, char *err, int errlen)
 {
 	InitTables();
 

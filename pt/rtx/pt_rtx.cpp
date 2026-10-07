@@ -257,7 +257,9 @@ struct RtxBackend
 	VkCommandPool		cmdpool = VK_NULL_HANDLE;
 	VkCommandBuffer		cmd = VK_NULL_HANDLE;
 	VkCommandBuffer		cmd_once = VK_NULL_HANDLE;	// for work done at once, outside a frame
+	VkCommandBuffer		cmd_trace = VK_NULL_HANDLE;	// the tracing of a view, sent off before the frame that shows it
 	VkFence				fence = VK_NULL_HANDLE;
+	VkFence				fence_trace = VK_NULL_HANDLE;	// the card has finished cmd_trace
 	VkSemaphore			sem_acquire = VK_NULL_HANDLE;
 
 	VkSwapchainKHR		swapchain = VK_NULL_HANDLE;
@@ -358,6 +360,8 @@ struct RtxBackend
 	// for reading a frame back
 	Buffer					readback;
 	std::vector<uint32_t>	last_overlay;
+	std::vector<VkBufferImageCopy>	ov_regions;	// what of the overlay goes to the card this frame
+	bool					ov_behind = true;	// a frame's changes did not reach the card
 	int						view_rect[4] = {0, 0, 0, 0};	// x, y, width, height of this frame's view
 	int						shown[4] = {0, 0, 0, 0};		// and of the one last presented
 	bool					shown_traced = false;
@@ -570,6 +574,7 @@ void CreateDevice(RtxBackend *s)
 	cai.commandBufferCount = 1;
 	Check(vkAllocateCommandBuffers(s->device, &cai, &s->cmd), "vkAllocateCommandBuffers");
 	Check(vkAllocateCommandBuffers(s->device, &cai, &s->cmd_once), "vkAllocateCommandBuffers");
+	Check(vkAllocateCommandBuffers(s->device, &cai, &s->cmd_trace), "vkAllocateCommandBuffers");
 
 #define LOAD(name) \
 	s->name = (PFN_vk##name##KHR)vkGetDeviceProcAddr(s->device, "vk" #name "KHR"); \
@@ -590,6 +595,7 @@ void CreateDevice(RtxBackend *s)
 	VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
 	fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 	Check(vkCreateFence(s->device, &fci, nullptr, &s->fence), "vkCreateFence");
+	Check(vkCreateFence(s->device, &fci, nullptr, &s->fence_trace), "vkCreateFence");
 
 	VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 	Check(vkCreateSemaphore(s->device, &sci, nullptr, &s->sem_acquire), "vkCreateSemaphore");
@@ -2027,6 +2033,36 @@ void TraceNow(RtxBackend *s)
 	s->trace_pending = false;
 }
 
+// Sends the tracing of the view just described to the card at once, without
+// waiting for the frame that will show it. The card can then be tracing
+// while the game draws its status bar and menus and the frame's own commands
+// are put together; left until then, it sat idle for as long as that took,
+// every frame. The frame's commands follow on the same queue, so they find
+// the picture finished.
+void SubmitTrace(RtxBackend *s)
+{
+	if (!s->trace_pending)
+		return;
+	vkWaitForFences(s->device, 1, &s->fence_trace, VK_TRUE, UINT64_MAX);
+	vkResetCommandBuffer(s->cmd_trace, 0);
+	VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	Check(vkBeginCommandBuffer(s->cmd_trace, &bi), "vkBeginCommandBuffer");
+	if (!s->pending.empty())
+		RecordUpdates(s, s->cmd_trace);
+	RecordTrace(s, s->cmd_trace);
+	Check(vkEndCommandBuffer(s->cmd_trace), "vkEndCommandBuffer");
+
+	VkCommandBufferSubmitInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+	cbi.commandBuffer = s->cmd_trace;
+	VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+	si.commandBufferInfoCount = 1;
+	si.pCommandBufferInfos = &cbi;
+	vkResetFences(s->device, 1, &s->fence_trace);
+	s->trace_pending = false;
+	Check(vkQueueSubmit2(s->queue, 1, &si, s->fence_trace), "vkQueueSubmit2");
+}
+
 // the card's own times for the view it traced last, once it has finished it
 void ReadStamps(RtxBackend *s)
 {
@@ -2060,8 +2096,8 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	if (!s->world_loaded || view->width <= 0 || view->height <= 0)
 		return;
 
-	// the card may still be reading last frame's buffers
-	vkWaitForFences(s->device, 1, &s->fence, VK_TRUE, UINT64_MAX);
+	// the card may still be tracing the last view from these buffers
+	vkWaitForFences(s->device, 1, &s->fence_trace, VK_TRUE, UINT64_MAX);
 	ReadStamps(s);		// and once it is done, how long that frame took it is known
 	const auto began = std::chrono::steady_clock::now();
 
@@ -2190,12 +2226,20 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.origin[3] = std::tan(view->fov_x * 0.5f * 3.14159265f / 180.0f);
 	f.forward[3] = std::tan(view->fov_y * 0.5f * 3.14159265f / 180.0f);
 	const bool same_camera = s->has_history && !memcmp(f.origin, s->camera, sizeof(s->camera));
+	// What is done about noise: 2, all there is; 1, nothing, but frames add up
+	// while the eye is at rest; 0, nothing. Without the first there is nothing
+	// of an earlier view in the picture, ever. A debug view is shown filtered.
+	const int filtering = view->debug ? 2 : std::min(std::max(view->filter, 0), 2);
+	const bool use_history = filtering == 2 || (filtering == 1 && same_camera);
 	memcpy(s->camera, f.origin, sizeof(s->camera));			// origin, forward, right, up
 	memcpy(f.prev_origin, was.origin, sizeof(s->camera));
 
 	// each frame looks through a slightly different point of every pixel, so
 	// that over time edges are seen from all across it
-	if (view->antialias && !view->debug)
+	// Only where the last pass puts the picture back together from those
+	// points, which is the filtered picture: a raw one would show each
+	// frame where it was traced, and shake by a part of a pixel.
+	if (view->antialias && !view->debug && filtering == 2)
 	{
 		const auto halton = [](uint32_t index, uint32_t base)
 		{
@@ -2251,7 +2295,8 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.counts[1] = (int32_t)num_lights;
 	f.counts[2] = (int32_t)s->frame_index;
 	f.counts[3] = view->anim_frame;
-	f.bases[0] = std::min(std::max(view->adaptive, 1), 16);
+	f.bases[0] = 0;
+	f.bases[2] = filtering;
 	f.bases[1] = (int32_t)s->world.num_solid;
 	f.bases[3] = (int32_t)s->frame.num_solid;
 	f.grid_dims[3] = s->has_grid ? 1 : 0;
@@ -2282,11 +2327,11 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 
 	s->exposure_used = view->debug ? 1.0f : view->exposure * (view->auto_exposure ? s->auto_exposure : 1.0f);
 	f.medium[3] = s->exposure_used;
-	s->filter_passes = std::min(std::max(view->denoise, 0), 4);
+	s->filter_passes = filtering == 2 ? std::min(std::max(view->denoise, 0), 4) : 0;
 	f.output_i[0] = view->tonemap;
 	f.output_i[1] = s->filter_passes;
 	f.output_i[2] = std::min(std::max(view->history, 1), 512);
-	f.output_i[3] = s->has_history ? 1 : 0;
+	f.output_i[3] = (s->has_history && use_history) ? 1 : 0;
 	f.output_f[0] = view->saturation;
 	f.output_f[1] = view->contrast;
 	f.output_f[2] = view->bloom;
@@ -2305,7 +2350,9 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	if (s->world_has_waves || s->pending.size())
 		hash = HashBytes(&view->time, sizeof(view->time), hash);
 	// with nothing changing the average may run on and converge
-	const bool still = same_camera && hash == s->prev_hash;
+	// (or, adding frames up at rest, whenever the eye has not moved: what
+	// does move in the view starts afresh by itself, see temporal.comp)
+	const bool still = same_camera && (filtering == 1 || hash == s->prev_hash);
 	s->prev_hash = hash;
 	f.output_f[3] = still ? 1.0f : 0.0f;
 
@@ -2313,7 +2360,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.frame_has[0] = (scene && scene->normals) ? 1 : 0;
 	f.frame_has[1] = (scene && scene->prev_positions) ? 1 : 0;
 	f.frame_has[2] = s->parity;
-	f.frame_has[3] = (view->antialias && !view->debug) ? 1 : 0;
+	f.frame_has[3] = (view->antialias && !view->debug && filtering == 2) ? 1 : 0;
 	s->bloom_on = view->bloom > 0.0f && !view->debug;
 	f.size[0] = rw;
 	f.size[1] = rh;
@@ -2491,11 +2538,13 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	try
 	{
 		RenderViewNow(s, view);
+		SubmitTrace(s);
 	}
 	catch (const Fail &f)
 	{
 		Logf(s, "RTX path tracer: %s\n", f.msg.c_str());
 		s->trace_ready = false;
+		s->trace_pending = false;
 	}
 }
 
@@ -2566,7 +2615,10 @@ void TextureUpdate(pt_backend_t *b, int handle, const uint32_t *pixels)
 		const VkDeviceSize bytes = (VkDeviceSize)t.width * t.height * 4;
 		// the card may still be copying from here for the last frame
 		if (s->pending.empty())
-			vkWaitForFences(s->device, 1, &s->fence, VK_TRUE, UINT64_MAX);
+		{
+			const VkFence both[2] = {s->fence, s->fence_trace};
+			vkWaitForFences(s->device, 2, both, VK_TRUE, UINT64_MAX);
+		}
 		if (!s->updates.buffer || s->updates_used + bytes > s->updates.size)
 		{
 			if (!s->pending.empty())
@@ -2788,21 +2840,22 @@ void Record(RtxBackend *s, uint32_t image_index)
 	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	vkBeginCommandBuffer(cmd, &bi);
 
-	// upload this frame's overlay
+	// upload what has changed of the overlay
+	if (!s->ov_regions.empty())
+	{
 	Barrier(cmd, s->ov_image,
 		s->ov_initialized ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
 		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 		s->ov_initialized ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_2_NONE,
 		s->ov_initialized ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : VK_ACCESS_2_NONE,
 		VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-	VkBufferImageCopy region{};
-	region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-	region.imageExtent = {(uint32_t)s->width, (uint32_t)s->height, 1};
-	vkCmdCopyBufferToImage(cmd, s->staging, s->ov_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+	vkCmdCopyBufferToImage(cmd, s->staging, s->ov_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		(uint32_t)s->ov_regions.size(), s->ov_regions.data());
 	Barrier(cmd, s->ov_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
 		VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 	s->ov_initialized = true;
+	}
 
 	if (!s->pending.empty())
 		RecordUpdates(s, cmd);
@@ -2856,8 +2909,13 @@ void Record(RtxBackend *s, uint32_t image_index)
 	vkEndCommandBuffer(cmd);
 }
 
-void PresentFrame(RtxBackend *s, const uint32_t *overlay)
+void PresentFrame(RtxBackend *s, const uint32_t *overlay, const pt_rect_t *changed, int num_changed)
 {
+	// a frame that is not shown, for whatever reason, leaves the card's
+	// overlay behind: the next one that is takes all of it
+	const bool behind = s->ov_behind;
+	s->ov_behind = true;
+
 	if (!s->swapchain)
 	{
 		CreateSwapchain(s);		// window may have been minimized
@@ -2877,8 +2935,46 @@ void PresentFrame(RtxBackend *s, const uint32_t *overlay)
 	if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR)
 		Check(r, "vkAcquireNextImageKHR");
 
-	memcpy(s->staging_ptr, overlay, (size_t)s->width * s->height * 4);
-	s->last_overlay.assign(overlay, overlay + (size_t)s->width * s->height);	// for reading the frame back
+	// The card keeps the overlay from frame to frame, and so does the copy
+	// here that a frame is read back with: only what has changed is fetched.
+	// Most frames that is a status bar and a few lines of text, where all of
+	// it is tens of megabytes, copied while the card waits.
+	const size_t count = (size_t)s->width * s->height;
+	s->ov_regions.clear();
+	if (behind || num_changed < 0 || !changed || !s->ov_initialized || s->last_overlay.size() != count)
+	{
+		memcpy(s->staging_ptr, overlay, count * 4);
+		s->last_overlay.assign(overlay, overlay + count);
+		VkBufferImageCopy region{};
+		region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+		region.imageExtent = {(uint32_t)s->width, (uint32_t)s->height, 1};
+		s->ov_regions.push_back(region);
+	}
+	else
+	{
+		for (int i = 0; i < num_changed; i++)
+		{
+			const int x0 = std::max(changed[i].x, 0), y0 = std::max(changed[i].y, 0);
+			const int x1 = std::min(changed[i].x + changed[i].width, s->width);
+			const int y1 = std::min(changed[i].y + changed[i].height, s->height);
+			if (x0 >= x1 || y0 >= y1)
+				continue;
+			for (int y = y0; y < y1; y++)
+			{
+				const size_t at = (size_t)y * s->width + x0;
+				memcpy(static_cast<uint32_t *>(s->staging_ptr) + at, overlay + at, (size_t)(x1 - x0) * 4);
+				memcpy(s->last_overlay.data() + at, overlay + at, (size_t)(x1 - x0) * 4);
+			}
+			// the buffer is laid out as the picture is
+			VkBufferImageCopy region{};
+			region.bufferOffset = ((VkDeviceSize)y0 * s->width + x0) * 4;
+			region.bufferRowLength = (uint32_t)s->width;
+			region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+			region.imageOffset = {x0, y0, 0};
+			region.imageExtent = {(uint32_t)(x1 - x0), (uint32_t)(y1 - y0), 1};
+			s->ov_regions.push_back(region);
+		}
+	}
 	vkResetFences(s->device, 1, &s->fence);
 	vkResetCommandBuffer(s->cmd, 0);
 	Record(s, index);
@@ -2911,14 +3007,15 @@ void PresentFrame(RtxBackend *s, const uint32_t *overlay)
 		RecreateSwapchain(s);
 	else
 		Check(r, "vkQueuePresentKHR");
+	s->ov_behind = false;		// the commands with the overlay's changes were sent
 }
 
-void Present(pt_backend_t *b, const uint32_t *overlay)
+void Present(pt_backend_t *b, const uint32_t *overlay, const pt_rect_t *changed, int num_changed)
 {
 	RtxBackend *s = Self(b);
 	try
 	{
-		PresentFrame(s, overlay);
+		PresentFrame(s, overlay, changed, num_changed);
 	}
 	catch (const Fail &f)
 	{
@@ -2952,6 +3049,7 @@ void Destroy(pt_backend_t *b)
 		DestroySwapchain(s);
 		if (s->sem_acquire) vkDestroySemaphore(s->device, s->sem_acquire, nullptr);
 		if (s->fence) vkDestroyFence(s->device, s->fence, nullptr);
+		if (s->fence_trace) vkDestroyFence(s->device, s->fence_trace, nullptr);
 		if (s->cmdpool) vkDestroyCommandPool(s->device, s->cmdpool, nullptr);
 		vkDestroyDevice(s->device, nullptr);
 	}
