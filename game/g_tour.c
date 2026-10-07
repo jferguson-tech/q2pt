@@ -181,7 +181,7 @@ static void Tour_Fire (edict_t *ent, const tourpoint_t *p)
 	angles[YAW] = p->yaw;
 	angles[ROLL] = 0;
 	AngleVectors (angles, forward, right, up);
-	VectorMA (p->eye, 24, forward, start);
+	VectorMA ((float *)p->eye, 24, forward, start);
 	VectorMA (start, 8, right, start);
 	VectorMA (start, -8, up, start);
 

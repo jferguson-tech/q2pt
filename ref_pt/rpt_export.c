@@ -228,7 +228,6 @@ qboolean R_ExportRender (const pt_view_t *view, int paths, float blur, const pt_
 	base.scale = 1;
 	base.restart = 1;
 	base.denoise = 0;
-	base.adaptive = 0;
 	base.auto_exposure = 0;
 	base.exposure = 1;
 	base.bloom = 0;

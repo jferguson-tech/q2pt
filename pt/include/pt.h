@@ -273,7 +273,7 @@ struct pt_backend_s
 	   size set all the same if all that was wrong was too little room. They are
 	   what something outside the backend needs to filter the picture itself:
 	   to mean anything the view should be rendered with restart set, no
-	   denoising, no adaptive sampling and an exposure of 1. */
+	   denoising and an exposure of 1. */
 	int		(*read_buffer)(pt_backend_t *self, int buffer, float *out, int max_pixels, int *width, int *height);
 };
 
