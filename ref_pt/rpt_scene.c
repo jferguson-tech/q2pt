@@ -112,8 +112,10 @@ static int S_ImageMaterial (image_t *image, float r, float g, float b, float alp
 	{
 		R_MaterialInfo (image->name, &info);
 		mat.roughness = info.roughness;
-		mat.metallic = info.metallic;
+		mat.metallic = info.metallic_unread;
 		mat.normal_texture = R_ImageNormalTexture (image);
+		if (mat.normal_texture >= 0 && image->normal_metal)
+			mat.flags |= PT_MAT_METAL_TEXTURE | PT_MAT_METAL_PAINTED;
 	}
 	return S_FindMaterial (&mat);
 }

@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Jonathan Ferguson
 
 #include "pt_trace.h"
+#include "../material/pt_material.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -301,8 +302,8 @@ void WhiteSurface(Surface &s)
 {
 	if (s.mat->flags & PT_MAT_BLACK)
 		return;
-	s.kd = Vec3(1.0f - s.mat->metallic);
-	s.f0 = Vec3(0.04f * (1.0f - s.mat->metallic) + s.mat->metallic);
+	s.kd = Vec3(1.0f - s.metallic);
+	s.f0 = Vec3(0.04f * (1.0f - s.metallic) + s.metallic);
 }
 
 Vec3 SurfaceChannel(int mode, const Surface &s)
@@ -318,7 +319,7 @@ Vec3 SurfaceChannel(int mode, const Surface &s)
 	case PT_VIEW_ROUGHNESS:
 		return Vec3(plain(s.roughness));
 	case PT_VIEW_METAL:
-		return Vec3(plain(s.mat->metallic));
+		return Vec3(plain(s.metallic));
 	case PT_VIEW_GLOW:
 	{
 		if (!s.mat->emissive || !s.front)
@@ -352,6 +353,15 @@ Vec3 CostColour(float rays)
 	// a colour for each doubling from PT_COST_BLUE up, and a fade to black below it
 	const float at = rays / PT_COST_BLUE;
 	return CountColour(at < 1.0f ? at : 1.0f + std::log2(at));
+}
+
+// what a metal reflects, worked out from the colour it was painted (PT_MAT_METAL_PAINTED)
+static Vec3 MetalColour(Vec3 c, float level)
+{
+	const float painted[3] = {c.x, c.y, c.z};
+	float reflects[3];
+	pt_material_metal_colour(painted, level, reflects);
+	return Vec3(reflects[0], reflects[1], reflects[2]);
 }
 
 void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth)
@@ -406,6 +416,7 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	if (mat.emission_map)
 		s.glow = smooth ? mat.emission_map->Smooth(u, v) : Decode(mat.emission_map->Texel(u, v));
 	s.roughness = mat.roughness;
+	float metallic = mat.metallic;
 
 	Vec3 n = s.ng;
 	if (tri.smooth)
@@ -435,7 +446,13 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 		}
 		const float tx = c[0] * (2.0f / 255.0f) - 1.0f;
 		const float ty = c[1] * (2.0f / 255.0f) - 1.0f;
-		const float tz = c[2] * (2.0f / 255.0f) - 1.0f;
+		float tz = c[2] * (2.0f / 255.0f) - 1.0f;
+		if (mat.flags & PT_MAT_METAL_TEXTURE)
+		{
+			// the third number is metal: z is what is left of the normal's length
+			tz = std::sqrt(std::max(1.0f - tx * tx - ty * ty, 0.01f));
+			metallic = c[2] * (1.0f / 255.0f);
+		}
 		n = Normalize(tri.tu * tx + tri.tv * ty + n * tz);
 		s.roughness = c[3] * (1.0f / 255.0f);
 	}
@@ -463,6 +480,7 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 		n = s.ng;
 	s.n = n;
 
+	s.metallic = metallic;
 	if (mat.flags & PT_MAT_BLACK)
 	{
 		s.kd = Vec3();
@@ -470,8 +488,9 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	}
 	else
 	{
-		s.kd = s.colour * (1.0f - mat.metallic);
-		s.f0 = Vec3(0.04f) * (1.0f - mat.metallic) + s.colour * mat.metallic;
+		s.kd = s.colour * (1.0f - metallic);
+		s.f0 = Vec3(0.04f) * (1.0f - metallic)
+			+ ((mat.flags & PT_MAT_METAL_PAINTED) ? MetalColour(s.colour, sc.metal_colour) : s.colour) * metallic;
 		if (sc.view_mode)
 			ViewMode(sc.view_mode, mat, s);
 	}
