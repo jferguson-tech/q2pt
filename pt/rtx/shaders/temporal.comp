@@ -171,16 +171,19 @@ void main()
 		}
 		// By how much of the pixel's whole light what the frame's lights
 		// put on it has changed: the rest of the light is what was
-		// gathered, as it will be seen. History is kept for the inverse of
-		// that many frames at most, taken four times over: a change of a
-		// quarter or more starts afresh, one of a tenth keeps two and a half
-		// frames, since what the rest of the light did was most likely the
-		// same, and what is kept of its old value is an error of that size.
+		// gathered, as it will be seen. A change below a fortieth is let be:
+		// a light moving far off, or in another room, shifts the air's glow
+		// a little everywhere, as it is reckoned with nothing in the way.
+		// Above that, history is kept for the inverse of the change at
+		// most, taken four times over: a change of a quarter or more starts
+		// afresh, one of a tenth keeps three frames or so, since what the
+		// rest of the light did was most likely the same, and what is kept
+		// of its old value is an error of that size.
 		flash_was *= inv;
 		const float flash_now = imageLoad(img_flash[now], pixel).x;
 		const float rest = Luminance(imageLoad(img_albedo[0], pixel).rgb * hist[0]
 			+ imageLoad(img_albedo[1], pixel).rgb * hist[1] + hist[2]);
-		changed = min(4.0 * abs(flash_now - flash_was) / (max(flash_now, flash_was) + rest + 1.0e-4), 1.0);
+		changed = min(4.0 * max(abs(flash_now - flash_was) / (max(flash_now, flash_was) + rest + 1.0e-4) - 0.025, 0.0), 1.0);
 		if (changed > 0.0)
 			kept_frames = min(kept_frames, 1.0 / changed);
 		for (int k = 0; k < 3; k++)

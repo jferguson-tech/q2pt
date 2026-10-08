@@ -1113,17 +1113,19 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 			len = std::min(hlen * inv + 1.0f, max_history);
 			// By how much of the pixel's whole light what the frame's lights
 			// put on it has changed: the rest of the light is what was
-			// gathered, as it will be seen. History is kept for the inverse
-			// of that many frames at most, taken four times over: a change of
-			// a quarter or more starts afresh, one of a tenth keeps two and a
-			// half frames, since what the rest of the light did was most
-			// likely the same, and what is kept of its old value is an error
-			// of that size.
+			// gathered, as it will be seen. A change below a fortieth is let
+			// be: a light moving far off, or in another room, shifts the air's
+			// glow a little everywhere, as it is reckoned with nothing in the
+			// way. Above that, history is kept for the inverse of the change
+			// at most, taken four times over: a change of a quarter or more
+			// starts afresh, one of a tenth keeps three frames or so, since
+			// what the rest of the light did was most likely the same, and
+			// what is kept of its old value is an error of that size.
 			float rest = 0.0f;
 			for (int c = 0; c < kChannels; c++)
 				rest += Luminance(cur.albedo[c][i] * hist[c]) * inv;
 			const float flash_was = hflash * inv;
-			changed = std::min(4.0f * std::fabs(cur.flash[i] - flash_was) / (std::max(cur.flash[i], flash_was) + rest + 1e-4f), 1.0f);
+			changed = std::min(4.0f * std::max(std::fabs(cur.flash[i] - flash_was) / (std::max(cur.flash[i], flash_was) + rest + 1e-4f) - 0.025f, 0.0f), 1.0f);
 			if (changed > 0.0f)
 				len = std::min(len, 1.0f / changed);
 			for (int c = 0; c < kChannels; c++)
