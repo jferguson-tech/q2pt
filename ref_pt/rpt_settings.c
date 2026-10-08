@@ -165,7 +165,7 @@ void R_InitSettings (void)
 	pt_filter = ri.Cvar_Get ("pt_filter", "2", CVAR_ARCHIVE);
 	pt_show_filter = ri.Cvar_Get ("pt_show_filter", "0", 0);
 	pt_denoise = ri.Cvar_Get ("pt_denoise", "4", CVAR_ARCHIVE);
-	pt_history = ri.Cvar_Get ("pt_history", "32", CVAR_ARCHIVE);
+	pt_history = ri.Cvar_Get ("pt_history", "8", CVAR_ARCHIVE);
 	pt_reflection_history = ri.Cvar_Get ("pt_reflection_history", "1", CVAR_ARCHIVE);
 	pt_exposure = ri.Cvar_Get ("pt_exposure", "2", CVAR_ARCHIVE);
 	pt_auto_exposure = ri.Cvar_Get ("pt_auto_exposure", "1", CVAR_ARCHIVE);
