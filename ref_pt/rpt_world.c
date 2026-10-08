@@ -436,11 +436,21 @@ static int W_LoadFaces (byte *base, int filelen, int modelnum)
 			&& fabs (normal[2]) > 0.99f)
 		{
 			char	texname[40];
+			float	stream[2], len;
 			int		body;
 
 			Com_sprintf (texname, sizeof(texname), "%.32s", tex->texture);
 			strlwr (texname);
-			body = R_WaterBody (w_matkeys[material].image, texname, points[0][2], points, numedgesface);
+			// a flowing liquid runs the way its picture slides: along the
+			// texture's first axis
+			stream[0] = stream[1] = 0;
+			len = sqrt (tex->vecs[0][0]*tex->vecs[0][0] + tex->vecs[0][1]*tex->vecs[0][1]);
+			if ((LittleLong (tex->flags) & SURF_FLOWING) && len > 0)
+			{
+				stream[0] = tex->vecs[0][0] / len;
+				stream[1] = tex->vecs[0][1] / len;
+			}
+			body = R_WaterBody (w_matkeys[material].image, texname, points[0][2], points, numedgesface, stream);
 			if (body >= 0)
 			{
 				material = W_AddMaterial (tex, body);
@@ -850,4 +860,11 @@ void R_WorldMaterial (int index, pt_material_t *material, image_t **image)
 pt_material_t *R_WorldMaterialPtr (int index)
 {
 	return &w_materials[index];
+}
+
+// the triangles of the map itself, nine numbers each; valid until the next map is loaded
+int R_WorldTriangles (const float **positions)
+{
+	*positions = w_world.positions;
+	return w_world.num;
 }

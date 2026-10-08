@@ -97,6 +97,10 @@ struct PassPush
 	int32_t	a, b, c, d;
 };
 
+// simulated bodies of liquid the shaders are told of; those of a map beyond
+// that stay the level sheets the map has for them
+const int kMaxWaters = 24;
+
 // What the shaders are told about the frame (std140); see scene.glsl, which
 // says what is in each.
 struct FrameBlock
@@ -114,7 +118,7 @@ struct FrameBlock
 	int32_t	output_i[4];
 	float	output_f[4];
 	int32_t	frame_has[4], size[4];
-	float	water_rect[8][4], water_at[8][4], water_wave[8][4];
+	float	water_rect[kMaxWaters][4], water_at[kMaxWaters][4], water_wave[kMaxWaters][4];
 	int32_t	out_size[4];
 	float	open_origin[4], open_forward[4], open_right[4], open_up[4];	// motion blur: the eye as the shutter opened; open_origin[3]: there is blur
 	int32_t	held[4];		// first triangle of the frame that the eye carries, how many; [2]: reflections are followed where they appear to be
@@ -337,7 +341,7 @@ struct RtxBackend
 	float					sky_total = 0.0f, sky_scale = 1.0f;
 	// simulated bodies of liquid: extent, height of the surface, material
 	int						num_waters = 0;
-	float					water_rect[8][4] = {}, water_at[8][4] = {}, water_wave[8][4] = {};
+	float					water_rect[kMaxWaters][4] = {}, water_at[kMaxWaters][4] = {}, water_wave[kMaxWaters][4] = {};
 
 	// textures the host has changed, until the next frame takes them
 	Buffer					updates;
@@ -1976,7 +1980,7 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 	s->num_waters = 0;
 	for (const pt::World::Water &body : w->waters)
 	{
-		if (s->num_waters == 8)
+		if (s->num_waters == kMaxWaters)
 			break;
 		float *rect = s->water_rect[s->num_waters], *at = s->water_at[s->num_waters];
 		rect[0] = body.min_x;
@@ -1984,7 +1988,7 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 		rect[2] = body.max_x;
 		rect[3] = body.max_y;
 		at[0] = body.z;
-		at[1] = (float)(body.mat - w->materials.data());
+		at[1] = body.top ? (float)(body.mat - w->materials.data()) : -1.0f;
 		// as SetMaterial has them
 		const auto used = [&](int t) { return (t >= 0 && t < (int)kMaxTextures && s->textures[t].view) ? t : -1; };
 		at[2] = (float)used(body.mat->wave_map - 1);
