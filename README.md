@@ -251,6 +251,7 @@ Some console commands and variables:
 | `screenshot`, `pt_screenshot [paths]` | the frame as shown, or rendered again at high quality |
 | `record <name>`, `stop` | record a demo (the game's own commands) |
 | `pt_render <demo> [fps] [paths] [start] [length]` | render a demo offline into `baseq2\render\<demo>\`; start and length, in seconds, pick a part of it |
+| `pt_render_live 0`-`1` | with `1`, `pt_render` saves the frames the game itself would show, with the settings it is played with, instead of offline ones; the paths argument is not used. Given the frame rate a renderer reaches, that is a film of how it plays; off unless set, and not kept in the config |
 | `pt_render_blur 0`-`1` | motion blur for offline rendering: the share of each frame's time the shutter is open; 0.5 unless set, film's 180 degree shutter |
 | `pt_bench [demo] [seconds] [quit]` | time a demo: `demo1` and 20 seconds unless given, 0 for all of it; `quit` leaves the game afterwards, for scripts (`quake2 +pt_bench demo1 20 quit`) |
 
