@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from PIL import Image
 
 import ptx
-from model import Denoiser, TYPICAL_TARGET, adapted, display, pad_to, picture, widen
+from model import Denoiser, TYPICAL_TARGET, display, network_scale, pad_to, picture, widen
 
 
 def load_model(weights, device):
@@ -49,6 +49,7 @@ class Film:
 
     STRETCH = 48         # frames gone over backwards at a time
     LEAD = 12            # frames past a stretch that the backward pass starts from
+    STEADY = 8           # frames on each side that brightness is averaged over
 
     def __init__(self, model, device, paths='all', both_ways=True):
         self.model, self.device, self.paths, self.both_ways = model, device, paths, both_ways
@@ -76,16 +77,16 @@ class Film:
         n = len(frames)
         # a cut, or a frame missing: nothing is carried across
         joined = [i > 0 and frames[i].follows and frames[i].frame == frames[i - 1].frame + 1 for i in range(n)]
-        # brightness for the network: as the game's exposure would follow it through each shot
-        typical = [ptx.brightness(f, *choose_sets(f, self.paths)) for f in frames]
+        shot, shots = 0, []
+        for i in range(n):
+            shot += not joined[i]
+            shots.append(shot)
+        # brightness for the network: steady over a shot's neighbouring frames, so that it does not jump
+        logs = [math.log(ptx.brightness(f, *choose_sets(f, self.paths))) for f in frames]
         scales = []
         for i in range(n):
-            if not joined[i]:
-                j = i + 1
-                while j < n and joined[j]:
-                    j += 1
-                scales += [torch.tensor([3.0 * e], device=self.device)
-                           for e in adapted(typical[i:j], [f.time for f in frames[i:j]])]
+            near = [logs[j] for j in range(max(0, i - self.STEADY), min(n, i + self.STEADY + 1)) if shots[j] == shots[i]]
+            scales.append(torch.tensor([network_scale(math.exp(sum(near) / len(near)))], device=self.device))
 
         state = None
         for first in range(0, n, self.STRETCH):

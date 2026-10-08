@@ -4,59 +4,29 @@
 
     python train.py --data /data/q2dn/train --out runs/a
 """
-import argparse, glob, json, os, random, time
-from concurrent.futures import ProcessPoolExecutor
+import argparse, glob, os, random, time
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 import ptx
-from model import Denoiser, adapted, display, luminance, picture, warp, widen
+from model import Denoiser, display, exposure_for, luminance, network_scale, picture, warp, widen
 
 KEYS = ('light', 'variance', 'exact', 'albedo', 'specular', 'normal', 'depth', 'motion', 'known', 'onward', 'onward_known')
-
-
-LEAD = 12       # frames before a stretch that the exposure it is shown at is followed over
-FLASH = 4.0     # a clip whose brightness jumps this many times between two frames has a flash in it
-FLASH_SHARE = 3 # and is drawn this many times as often: they are few, and where the denoiser is weakest
-
-
-def brightness_of(d):
-    """for each frame of a clip: its time, and its typical brightness as the game's exposure would judge it"""
-    out = []
-    for p in sorted(glob.glob(os.path.join(d, '*.ptx'))):
-        f = ptx.Frame(p)
-        out.append((float(f.time), ptx.typical(ptx.clean(f.data[ptx.ALL_PICTURE:ptx.ALL_PICTURE + 3, ::8, ::8]))))
-    return out
 
 
 class Clips(torch.utils.data.Dataset):
     """Stretches of consecutive frames, cut to a square, at 4, 8 or 16 paths a pixel."""
 
     def __init__(self, root, length=8, size=256, epoch=4000):
-        self.clips, dirs = [], []
+        self.clips = []
         for d in sorted(glob.glob(os.path.join(root, '*', 'c*'))):
             frames = sorted(glob.glob(os.path.join(d, '*.ptx')))
             if len(frames) >= 2:
                 self.clips.append(frames)
-                dirs.append(d)
         if not self.clips:
             raise SystemExit('no clips under %s' % root)
-        # every frame's brightness, kept beside the data: it is the same each run
-        kept = os.path.join(root, 'brightness.json')
-        known = json.load(open(kept)) if os.path.exists(kept) else {}
-        new = [d for d, frames in zip(dirs, self.clips) if len(known.get(os.path.relpath(d, root), ())) != len(frames)]
-        if new:
-            with ProcessPoolExecutor(min(24, os.cpu_count() or 1)) as pool:
-                for d, b in zip(new, pool.map(brightness_of, new)):
-                    known[os.path.relpath(d, root)] = b
-            with open(kept, 'w') as f:
-                json.dump(known, f)
-        self.bright = [known[os.path.relpath(d, root)] for d in dirs]
-        self.weights = [FLASH_SHARE if any(max(a[1], b[1]) > FLASH * min(a[1], b[1]) for a, b in zip(c, c[1:])) else 1
-                        for c in self.bright]
-        self.flashes = sum(w > 1 for w in self.weights)
         self.length, self.size, self.epoch = length, size, epoch
 
     def __len__(self):
@@ -64,8 +34,7 @@ class Clips(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         rng = random.Random()        # from the system: every pass over the data is different
-        which = rng.choices(range(len(self.clips)), self.weights)[0]
-        frames = self.clips[which]
+        frames = rng.choice(self.clips)
         n = min(self.length, len(frames))
         first = rng.randrange(0, len(frames) - n + 1)
         opened = [ptx.Frame(p) for p in frames[first:first + n]]
@@ -92,10 +61,11 @@ class Clips(torch.utils.data.Dataset):
                 a['onward'][0] *= -1
             for k in out:
                 out[k].append(a[k])
-        # brightness is judged on whole frames, as it is when a film is denoised, and from some
-        # way before the stretch: the game's exposure is still catching up with what came earlier
-        seen = self.bright[which][max(0, first - LEAD):first + n]
-        seen = [seen[0]] * (LEAD + n - len(seen)) + seen + [seen[-1]] * (self.length - n)
+        # brightness is judged on whole frames, as it is when a film is denoised, and for the clip as one
+        step = 8
+        logs = [np.log(ptx.typical(ptx.clean(f.data[ptx.ALL_PICTURE:ptx.ALL_PICTURE + 3, ::step, ::step])))
+                for f in (opened[0], opened[n // 2], opened[-1])]
+        typical = float(np.exp(np.mean(logs)))
         item = {k: torch.from_numpy(np.stack(v)) for k, v in out.items()}
         # a short clip is filled out by standing on its last frame
         if n < self.length:
@@ -107,8 +77,7 @@ class Clips(torch.utils.data.Dataset):
             item['onward'][n - 1:] = 0
             item['onward_known'][n - 1:-1] = 1
         item['paths'] = torch.tensor(paths)
-        item['times'] = torch.tensor([t for t, _ in seen], dtype=torch.float64)
-        item['typical'] = torch.tensor([b for _, b in seen], dtype=torch.float64)
+        item['typical'] = torch.tensor(typical)
         return item
 
 
@@ -196,7 +165,7 @@ def main():
         step = ck['step']
 
     data = Clips(args.data, args.length, args.size, epoch=args.batch * 1000)
-    print('%d clips, %d with a flash, %.2fM weights' % (len(data.clips), data.flashes, sum(p.numel() for p in model.parameters()) / 1e6), flush=True)
+    print('%d clips, %.2fM weights' % (len(data.clips), sum(p.numel() for p in model.parameters()) / 1e6), flush=True)
     loader = torch.utils.data.DataLoader(data, batch_size=args.batch, num_workers=args.workers, drop_last=True,
                                          persistent_workers=True, prefetch_factor=4)
     log = open(os.path.join(args.out, 'log.txt'), 'a')
@@ -212,15 +181,12 @@ def main():
             for k in ('light', 'exact', 'ref_light', 'ref_picture'):
                 item[k] = item[k] * j
             item['variance'] = item['variance'] * j * j
-            # each frame is shown at the exposure the game would have reached by then, and the
-            # network's light is scaled by the same: [B, frames]
-            typical = (item['typical'] * jitter.view(-1, 1).double()).tolist()
-            follow = torch.tensor([adapted(a, t)[-args.length:] for a, t in zip(typical, item['times'].tolist())],
-                                  dtype=torch.float32, device=device)
-            expo = (2.0 * follow).view(b, args.length, 1, 1, 1)
+            typical = item['typical'] * jitter
+            expo = torch.tensor([exposure_for(t) for t in typical.tolist()], device=device).view(-1, 1, 1, 1)
             # the network's own scale is judged from the noisy frames in use, so not exactly
-            scale = 3.0 * follow * torch.exp2(torch.empty(b, 1, device=device).uniform_(-1.0, 1.0))
-            haze(item, scale[:, 0], item['paths'], args.length)
+            scale = torch.tensor([network_scale(t) for t in typical.tolist()], device=device) \
+                * torch.exp2(torch.empty(b, device=device).uniform_(-1.0, 1.0))
+            haze(item, scale, item['paths'], args.length)
             frames = [{k: item[k][:, t] for k in KEYS} for t in range(args.length)]
             opt.zero_grad(set_to_none=True)
 
@@ -230,8 +196,8 @@ def main():
             for t in reversed(range(args.length)):
                 f = frames[t]
                 with torch.autocast('cuda', dtype=torch.bfloat16):
-                    light, state = model(f, item['paths'], scale[:, t], state, None, backwards=True)
-                whole, apart, seen, _, _ = measure(light, f, item['ref_picture'][:, t], item['ref_light'][:, t], expo[:, t])
+                    light, state = model(f, item['paths'], scale, state, None, backwards=True)
+                whole, apart, seen, _, _ = measure(light, f, item['ref_picture'][:, t], item['ref_light'][:, t], expo)
                 back = back + whole + 0.5 * apart + 0.2 * seen
                 # what the second pass is given is a fact to it, not something to change
                 state = (state[0].detach(), state[1])
@@ -250,8 +216,8 @@ def main():
                     state = None                             # a cut: learn to start again
                 f = frames[t]
                 with torch.autocast('cuda', dtype=torch.bfloat16):
-                    light, state = model(f, item['paths'], scale[:, t], state, ahead[t])
-                whole, apart, seen, shown, want = measure(light, f, item['ref_picture'][:, t], item['ref_light'][:, t], expo[:, t])
+                    light, state = model(f, item['paths'], scale, state, ahead[t])
+                whole, apart, seen, shown, want = measure(light, f, item['ref_picture'][:, t], item['ref_light'][:, t], expo)
                 parts[0] += whole
                 parts[1] += apart
                 parts[2] += seen
