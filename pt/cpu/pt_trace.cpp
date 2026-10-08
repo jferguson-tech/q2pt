@@ -243,7 +243,8 @@ bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &
 		const bool skip = skips < 32 && (
 			(camera && (m.flags & PT_MAT_CAMERA_INVISIBLE)) ||
 			IsHole(*tri, hit.u, hit.v) ||
-			(cross && m.alpha < 1.0f && rng.Float() >= m.alpha));
+			(cross && m.alpha < 1.0f && rng.Float() >= m.alpha) ||
+			(sc.view_mode == PT_VIEW_FURNACE && (m.flags & PT_MAT_BLACK)));
 		if (!skip)
 			return true;
 		ray.tmin = hit.t + 0.01f;
@@ -264,16 +265,19 @@ Vec3 Surface::SpecularAlbedo() const
 	return f0 * scale + Vec3(bias);
 }
 
-bool ClayCovers(const Material &mat)
+bool ViewSolid(int mode, const Material &mat)
 {
-	return mat.alpha >= 1.0f || (mat.flags & PT_MAT_WAVES);
+	if (mode == PT_VIEW_CLAY)
+		return mat.alpha >= 1.0f || (mat.flags & PT_MAT_WAVES);
+	return mode == PT_VIEW_FURNACE;
 }
 
 // A view mode's say over what the surface is made of (pt_view_t's view_mode).
-// What the surface emits is worked out from its colour, which is left alone.
+// What the surface emits is worked out from its colour, which clay and
+// mirror leave alone.
 static void ViewMode(int mode, const Material &mat, Surface &s)
 {
-	if (mode == PT_VIEW_CLAY && ClayCovers(mat))
+	if (mode == PT_VIEW_CLAY && ViewSolid(mode, mat))
 	{
 		s.kd = Vec3(0.5f);
 		s.f0 = Vec3(0.04f);
@@ -281,6 +285,57 @@ static void ViewMode(int mode, const Material &mat, Surface &s)
 	}
 	else if (mode == PT_VIEW_MIRROR)
 		s.roughness = 0.0f;
+	else if (mode == PT_VIEW_FURNACE)
+	{
+		s.kd = Vec3(1.0f);
+		s.f0 = Vec3(0.04f);
+		s.roughness = 1.0f;
+		s.colour = Vec3();		// and nothing glows
+		s.glow = Vec3();
+	}
+}
+
+void WhiteSurface(Surface &s)
+{
+	if (s.mat->flags & PT_MAT_BLACK)
+		return;
+	s.kd = Vec3(1.0f - s.mat->metallic);
+	s.f0 = Vec3(0.04f * (1.0f - s.mat->metallic) + s.mat->metallic);
+}
+
+Vec3 SurfaceChannel(int mode, const Surface &s)
+{
+	// shown as the number it is: the display's curve undoes this one
+	const auto plain = [](float v) { return std::pow(std::min(std::max(v, 0.0f), 1.0f), 2.2f); };
+	switch (mode)
+	{
+	case PT_VIEW_BASE_COLOUR:
+		return s.colour;
+	case PT_VIEW_NORMALS:
+		return Vec3(plain(0.5f + 0.5f * s.n.x), plain(0.5f + 0.5f * s.n.y), plain(0.5f + 0.5f * s.n.z));
+	case PT_VIEW_ROUGHNESS:
+		return Vec3(plain(s.roughness));
+	case PT_VIEW_METAL:
+		return Vec3(plain(s.mat->metallic));
+	case PT_VIEW_GLOW:
+	{
+		if (!s.mat->emissive || !s.front)
+			return Vec3();
+		const Vec3 e = Emitted(s, true);
+		return e * (1.0f / std::max(1.0f, MaxComponent(e)));
+	}
+	default:
+		return Vec3();
+	}
+}
+
+Vec3 BounceColour(float bounces)
+{
+	static const Vec3 ramp[] = {Vec3(0, 0, 0), Vec3(0, 0, 1), Vec3(0, 1, 1), Vec3(0, 1, 0),
+		Vec3(1, 1, 0), Vec3(1, 0, 0), Vec3(1, 0, 1), Vec3(1, 1, 1)};
+	const float at = std::min(std::max(bounces, 0.0f), 7.0f);
+	const int below = std::min((int)at, 6);
+	return ramp[below] + (ramp[below + 1] - ramp[below]) * (at - (float)below);
 }
 
 void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth)
@@ -698,6 +753,8 @@ static Lit DirectSky(const Scene &sc, const Surface &s, Rng &rng)
 
 Lit DirectWorld(const Scene &sc, const Surface &s, Rng &rng, bool first_hit)
 {
+	if (sc.view_mode == PT_VIEW_FURNACE)
+		return Lit();		// no light is lit
 	Lit lit = DirectLights(sc, s, rng, first_hit);
 	const Lit sky = DirectSky(sc, s, rng);
 	lit.diffuse += sky.diffuse;
@@ -721,7 +778,7 @@ Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng)
 
 	const std::vector<Light> &lights = sc.frame->lights;
 	Lit none;
-	if (lights.empty())
+	if (lights.empty() || sc.view_mode == PT_VIEW_FURNACE)
 		return none;
 
 	// picked exactly in proportion to its unoccluded contribution
@@ -753,6 +810,8 @@ Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng)
 Lit DirectFrameAll(const Scene &sc, const Surface &s, Rng &rng)
 {
 	Lit sum;
+	if (sc.view_mode == PT_VIEW_FURNACE)
+		return sum;
 	for (const Light &l : sc.frame->lights)
 	{
 		const Lit f = PointLight(s, l, 1.0f);
@@ -823,26 +882,34 @@ bool SampleSpecular(const Surface &s, Rng &rng, Vec3 &wi, Vec3 &weight)
 }
 
 Vec3 Radiance(const Scene &sc, Ray ray, Rng &rng, bool camera, bool count_emitters, int depth, int max_bounces,
-	float *reached)
+	float *reached, int *followed)
 {
 	Vec3 radiance, throughput(1, 1, 1);
 	if (reached)
 		*reached = FLT_MAX;
+	// in the white furnace every path ends in the same light
+	const bool furnace = sc.view_mode == PT_VIEW_FURNACE;
 
 	for (;; depth++, camera = false)
 	{
 		Hit hit;
 		const Tri *tri;
+		if (followed)
+			++*followed;
 		if (!Closest(sc, ray, rng, camera, true, hit, tri))
-			return radiance;
+			return furnace ? radiance + throughput * PT_FURNACE_LIGHT : radiance;
 		if (reached)
 		{
 			*reached = hit.t;
 			reached = nullptr;
 		}
 		if (tri->mat->flags & PT_MAT_SKY)
+		{
+			if (furnace)
+				return radiance + throughput * PT_FURNACE_LIGHT;
 			return (camera || count_emitters || sc.world->sky_cdf.empty())
 				? radiance + throughput * sc.Sky(ray.d) : radiance;
+		}
 
 		Surface s;
 		MakeSurface(sc, *tri, hit, ray, s);
@@ -860,7 +927,7 @@ Vec3 Radiance(const Scene &sc, Ray ray, Rng &rng, bool camera, bool count_emitte
 		radiance += throughput * (s.kd * (world.diffuse + frame.diffuse) * kInvPi + world.specular + frame.specular);
 
 		if (depth >= max_bounces)
-			return radiance;
+			return furnace ? radiance + throughput * PT_FURNACE_LIGHT : radiance;
 
 		// continue through one lobe, chosen by how much each reflects
 		float pick_spec = ls / (ld + ls);

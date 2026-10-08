@@ -21,6 +21,17 @@ const uint MAT_METAL_TEXTURE = 512u;
 const int VIEW_NORMAL = 0;
 const int VIEW_CLAY = 1;
 const int VIEW_MIRROR = 2;
+const int VIEW_FURNACE = 3;
+const int VIEW_LIGHTING = 4;
+const int VIEW_DIRECT = 5;
+const int VIEW_INDIRECT = 6;
+const int VIEW_BASE_COLOUR = 7;
+const int VIEW_NORMALS = 8;
+const int VIEW_ROUGHNESS = 9;
+const int VIEW_METAL = 10;
+const int VIEW_GLOW = 11;
+const int VIEW_BOUNCES = 12;
+const float FURNACE_LIGHT = 0.5;
 
 // Material.bits
 const uint BIT_EMISSIVE = 1u;
@@ -166,6 +177,16 @@ float MaxComponent(vec3 c)
 vec3 ToLinear(vec3 c)
 {
 	return pow(c, vec3(2.2));
+}
+
+// the colour that stands for a number of bounces, see PT_VIEW_BOUNCES
+vec3 BounceColour(float bounces)
+{
+	const vec3 ramp[8] = vec3[8](vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 1.0), vec3(0.0, 1.0, 0.0),
+		vec3(1.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 1.0), vec3(1.0, 1.0, 1.0));
+	const float at = clamp(bounces, 0.0, 7.0);
+	const int below = min(int(at), 6);
+	return mix(ramp[below], ramp[below + 1], at - float(below));
 }
 
 #ifdef TRACING
@@ -350,7 +371,8 @@ bool Closest(vec3 origin, vec3 dir, inout float tmin, bool camera, bool cross_th
 		const bool skip = skips < 32 && (
 			(camera && (mat.flags & MAT_CAMERA_INVISIBLE) != 0u) ||
 			IsHole(mat, tri, hit.bary) ||
-			(cross_through && mat.alpha < 1.0 && Rand() >= mat.alpha));
+			(cross_through && mat.alpha < 1.0 && Rand() >= mat.alpha) ||
+			(fr.bases.x == VIEW_FURNACE && (mat.flags & MAT_BLACK) != 0u));
 		if (!skip)
 			return true;
 		tmin = hit.t + 0.01;
@@ -574,7 +596,7 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 
 		// A view mode's say over what the surface is made of (pt_view_t's
 		// view_mode). What the surface emits is worked out from its colour,
-		// which is left alone.
+		// which clay and mirror leave alone.
 		const int view_mode = fr.bases.x;
 		if (view_mode != VIEW_NORMAL)
 		{
@@ -587,6 +609,15 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 			}
 			else if (view_mode == VIEW_MIRROR)
 				s.roughness = 0.0;
+			else if (view_mode == VIEW_FURNACE)
+			{
+				s.kd = vec3(1.0);
+				s.f0 = vec3(0.04);
+				s.roughness = 1.0;
+				s.mat.alpha = 1.0;		// everything: solid to the eye
+				s.colour = vec3(0.0);	// and nothing glows
+				s.glow = vec3(0.0);
+			}
 		}
 	}
 	s.alpha = max(s.roughness * s.roughness, MIN_ALPHA);
@@ -606,6 +637,38 @@ vec3 Emitted(Surface s, bool seen)
 		return m.emission.rgb * s.colour * (t * t * (3.0 - 2.0 * t));
 	}
 	return (seen && m.emission.a > 0.0) ? s.colour * m.emission.a : m.emission_per_texel.rgb * s.colour;
+}
+
+// the lighting only view: the surface as it would be were its texture white
+void WhiteSurface(inout Surface s)
+{
+	if ((s.mat.flags & MAT_BLACK) != 0u)
+		return;
+	const float metallic = s.mat.emission_per_texel.a;
+	s.kd = vec3(1.0 - metallic);
+	s.f0 = vec3(0.04 * (1.0 - metallic) + metallic);
+}
+
+// what a view of one thing known of the surface shows (VIEW_BASE_COLOUR to
+// VIEW_GLOW)
+vec3 SurfaceChannel(int mode, Surface s)
+{
+	// but for the colour, shown as the number it is: the display's curve
+	// undoes this one
+	if (mode == VIEW_BASE_COLOUR)
+		return s.colour;
+	if (mode == VIEW_NORMALS)
+		return ToLinear(clamp(0.5 + 0.5 * s.n, 0.0, 1.0));
+	if (mode == VIEW_ROUGHNESS)
+		return ToLinear(vec3(clamp(s.roughness, 0.0, 1.0)));
+	if (mode == VIEW_METAL)
+		return ToLinear(vec3(clamp(s.mat.emission_per_texel.a, 0.0, 1.0)));
+	if (mode == VIEW_GLOW && (s.mat.bits & BIT_EMISSIVE) != 0u && s.front)
+	{
+		const vec3 e = Emitted(s, true);
+		return e / max(1.0, MaxComponent(e));
+	}
+	return vec3(0.0);
 }
 
 // ---- GGX microfacet reflection, height correlated Smith shadowing ----
@@ -908,6 +971,8 @@ Lit DirectSky(Surface s)
 
 Lit DirectWorld(Surface s, bool first_hit)
 {
+	if (fr.bases.x == VIEW_FURNACE)
+		return Lit(vec3(0.0), vec3(0.0));		// no light is lit
 	Lit lit = DirectLights(s, first_hit);
 	const Lit sky = DirectSky(s);
 	lit.diffuse += sky.diffuse;
@@ -931,7 +996,7 @@ Lit DirectFrameOne(Surface s)
 {
 	Lit none = Lit(vec3(0.0), vec3(0.0));
 	const int count = fr.counts.y;
-	if (count <= 0)
+	if (count <= 0 || fr.bases.x == VIEW_FURNACE)
 		return none;
 
 	float total = 0.0;
@@ -962,6 +1027,8 @@ Lit DirectFrameOne(Surface s)
 Lit DirectFrameAll(Surface s)
 {
 	Lit sum = Lit(vec3(0.0), vec3(0.0));
+	if (fr.bases.x == VIEW_FURNACE)
+		return sum;
 	for (int i = 0; i < fr.counts.y; i++)
 	{
 		const Lit f = PointLight(s, frame_lights.l[i]);
@@ -1054,26 +1121,36 @@ bool SampleSpecular(Surface s, out vec3 wi, out vec3 weight)
 // The light a ray brings back, following it from surface to surface.
 // count_emitters: lights it runs into count, because nothing has sampled
 // them for it. reached: how far off the first thing it met was.
+// rays_followed is raised by the number of rays the path was made of.
+int rays_followed = 0;
+
 vec3 Radiance(vec3 origin, vec3 dir, bool count_emitters, int depth, int max_bounces, out float reached)
 {
 	vec3 radiance = vec3(0.0), throughput = vec3(1.0);
 	reached = 1.0e30;
 	bool first = true;
+	// in the white furnace every path ends in the same light
+	const bool furnace = fr.bases.x == VIEW_FURNACE;
 
 	for (;; depth++)
 	{
 		Hit hit;
 		Material base;
 		float tmin = 0.0;
+		rays_followed++;
 		if (!Closest(origin, dir, tmin, false, true, hit, base))
-			return radiance;
+			return furnace ? radiance + throughput * FURNACE_LIGHT : radiance;
 		if (first)
 		{
 			reached = hit.t;
 			first = false;
 		}
 		if ((base.flags & MAT_SKY) != 0u)
+		{
+			if (furnace)
+				return radiance + throughput * FURNACE_LIGHT;
 			return (count_emitters || fr.table_at2.y <= 0) ? radiance + throughput * Sky(dir) : radiance;
+		}
 
 		Surface s;
 		MakeSurface(hit, base, origin, dir, false, s);
@@ -1090,7 +1167,7 @@ vec3 Radiance(vec3 origin, vec3 dir, bool count_emitters, int depth, int max_bou
 		radiance += throughput * (s.kd * (world.diffuse + frame.diffuse) * INV_PI + world.specular + frame.specular);
 
 		if (depth >= max_bounces)
-			return radiance;
+			return furnace ? radiance + throughput * FURNACE_LIGHT : radiance;
 
 		// continue through one lobe, chosen by how much each reflects
 		float pick_spec = ls / (ld + ls);
