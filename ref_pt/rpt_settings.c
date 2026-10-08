@@ -81,7 +81,8 @@ static cvar_t	*pt_waves;				// ripple strength on liquids
 static cvar_t	*pt_bump;
 static cvar_t	*pt_roughness;
 static cvar_t	*pt_metallic;
-static cvar_t	*pt_material_maps;		// 1: relief and roughness read from each picture's painted light, 0: brightness as height
+static cvar_t	*pt_material_maps;		// 1: relief, roughness and metal read from each picture's painted light, 0: brightness as height
+static cvar_t	*pt_material_delight;	// how much of that painted light is taken out of the colours, 0 - 1
 
 float	r_skyscale = 2;
 float	r_lampglow = 1.5f;
@@ -92,6 +93,7 @@ int		r_normalflip;
 float	r_watercell = 8, r_waterwaves = 1, r_watercaustics = 0, r_waterdamping = 1;
 float	r_bumpscale = 1, r_roughscale = 1, r_metalscale = 1;
 int		r_materialmaps = 1;
+float	r_materialdelight = 1;
 
 #define	NUM_PRESETS	4
 
@@ -113,6 +115,12 @@ static struct
 };
 
 #define	NUM_PRESET_VARS	(sizeof(presets) / sizeof(presets[0]))
+
+// pt_material_delight, held to what it can mean
+static float R_MaterialDelight (void)
+{
+	return pt_material_delight->value < 0 ? 0 : (pt_material_delight->value > 1 ? 1 : pt_material_delight->value);
+}
 
 /*
 ===============
@@ -183,6 +191,7 @@ void R_InitSettings (void)
 	pt_roughness = ri.Cvar_Get ("pt_roughness", "1", CVAR_ARCHIVE);
 	pt_metallic = ri.Cvar_Get ("pt_metallic", "1", CVAR_ARCHIVE);
 	pt_material_maps = ri.Cvar_Get ("pt_material_maps", "1", CVAR_ARCHIVE);
+	pt_material_delight = ri.Cvar_Get ("pt_material_delight", "1", CVAR_ARCHIVE);
 	pt_material_cache = ri.Cvar_Get ("pt_material_cache", "1", CVAR_ARCHIVE);
 
 	r_skyscale = pt_sky->value;
@@ -197,6 +206,7 @@ void R_InitSettings (void)
 	r_roughscale = pt_roughness->value;
 	r_metalscale = pt_metallic->value;
 	r_materialmaps = pt_material_maps->value != 0;
+	r_materialdelight = R_MaterialDelight ();
 }
 
 /*
@@ -287,12 +297,14 @@ qboolean R_UpdateSettings (void)
 	}
 
 	if (pt_bump->value != r_bumpscale || pt_roughness->value != r_roughscale
-		|| pt_metallic->value != r_metalscale || (pt_material_maps->value != 0) != r_materialmaps)
+		|| pt_metallic->value != r_metalscale || (pt_material_maps->value != 0) != r_materialmaps
+		|| R_MaterialDelight () != r_materialdelight)
 	{
 		r_bumpscale = pt_bump->value;
 		r_roughscale = pt_roughness->value;
 		r_metalscale = pt_metallic->value;
 		r_materialmaps = pt_material_maps->value != 0;
+		r_materialdelight = R_MaterialDelight ();
 		R_MaterialsChanged ();		// the generated maps hold the old values
 		reload = true;
 	}

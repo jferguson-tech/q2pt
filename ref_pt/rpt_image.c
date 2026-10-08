@@ -352,10 +352,24 @@ int R_ImageTexture (image_t *image)
 	{
 		tex.width = image->width;
 		tex.height = image->height;
-		tex.pixels = image->pixels;
+		tex.pixels = R_ImageColours (image);
 		image->pt_texture = rpt.backend->texture_create (rpt.backend, &tex) + 1;
 	}
 	return image->pt_texture - 1;
+}
+
+/*
+===============
+R_ImageColours
+
+The image's picture as surfaces are to show it, width by height: with the
+painted light taken out where its detail map was read from it, see
+R_ImageNormalMap, else as it is
+===============
+*/
+const uint32_t *R_ImageColours (image_t *image)
+{
+	return image->colour ? image->colour : image->pixels;
 }
 
 /*
@@ -414,8 +428,8 @@ void R_MakeSkinMaterials (void)
 ===============
 R_MaterialsChanged
 
-Throws away every generated detail map, so that they are made again from
-the current material settings
+Throws away every generated detail map, and the colours that were made
+with it, so that they are made again from the current material settings
 ===============
 */
 void R_MaterialsChanged (void)
@@ -430,6 +444,16 @@ void R_MaterialsChanged (void)
 		image->pt_normal_texture = 0;
 		free (image->normalmap);
 		image->normalmap = NULL;
+		image->normal_metal = image->normal_byhand = false;
+
+		// a wall's texture may hold the colours about to go, or be due new ones
+		if (image->type == it_wall && image->pt_texture && rpt.backend)
+		{
+			rpt.backend->texture_destroy (rpt.backend, image->pt_texture - 1);
+			image->pt_texture = 0;
+		}
+		free (image->colour);
+		image->colour = NULL;
 	}
 }
 
@@ -440,6 +464,7 @@ static void R_FreeImage (image_t *image)
 	if (image->pt_normal_texture && rpt.backend)
 		rpt.backend->texture_destroy (rpt.backend, image->pt_normal_texture - 1);
 	free (image->normalmap);
+	free (image->colour);
 	free (image->pixels);
 	memset (image, 0, sizeof(*image));
 }

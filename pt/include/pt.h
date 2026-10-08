@@ -42,6 +42,9 @@ vertices appear counter clockwise.
 #define PT_MAT_HELD				256u	/* carried by the eye, as a weapon in hand is: with
 									   motion blur it is seen from where the eye is when
 									   the shutter closes, however the eye moved */
+#define PT_MAT_METAL_TEXTURE	512u	/* the blue of normal_texture is how metallic the
+									   surface is there, in place of metallic; the
+									   normal's z is worked out from its x and y */
 
 typedef struct pt_texture_s
 {
@@ -70,7 +73,8 @@ typedef struct pt_material_s
 								   Found by paths only, not sampled as a light. */
 	int			normal_texture;	/* -1 for none; same numbering as texture. RGB is a
 								   tangent space normal (x along u, y along v),
-								   alpha replaces roughness */
+								   alpha replaces roughness. See also
+								   PT_MAT_METAL_TEXTURE */
 	int			anim_next;		/* world only: the material shown one animation
 								   step later, or -1 */
 	int			wave_map;		/* liquids: texture_create handle + 1 of a wave

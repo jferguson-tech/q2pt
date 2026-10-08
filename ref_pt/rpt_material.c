@@ -23,8 +23,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // The game's art is colour only. The tracer wants to know how rough and how
 // metallic a surface is and which way its small details face. What kind of
 // thing it is is guessed here from the texture's name, and a pt_materials.txt
-// in the game directory overrides the guesses; its relief and how its
-// roughness varies are read from its picture, by pt/material.
+// in the game directory overrides the guesses; its relief and where it is
+// rougher, smoother, bare metal or painted over are read from its picture,
+// by pt/material.
 
 #include "rpt_local.h"
 #include "../pt/material/pt_material.h"
@@ -292,8 +293,14 @@ image_t *R_ImageGlowMap (image_t *image)
 
 DETAIL MAPS
 
-One for each picture, made the first time it is asked for: RGB is a
-tangent space normal, alpha is roughness.
+One for each picture, made the first time it is asked for: a tangent space
+normal, and alpha is roughness. Read from the picture (image->normal_metal)
+the normal is in red and green alone and blue is how metallic the surface is
+there; made the plain way, blue is the normal's z and the metal is the
+material's everywhere.
+
+With the map comes the picture again with its painted light taken out
+(image->colour), where there was any to take.
 
 =================================================================
 */
@@ -374,13 +381,14 @@ picture, and read back the next time. Nothing in there is needed: it can be
 deleted at any time and is made again.
 */
 
-#define	MAT_CACHE_MAGIC		0x314d5450		// "PTM1"
+#define	MAT_CACHE_MAGIC		0x324d5450		// "PTM2"
 
 typedef struct
 {
 	uint32_t	magic;
-	uint32_t	key;				// what the map was made from, see Mat_Key
-	uint32_t	width, height;		// of the map that follows, as it is in memory
+	uint32_t	key;				// what the maps were made from, see Mat_Key
+	uint32_t	width, height;		// of the detail map that follows, as it is in memory
+	uint32_t	colour_width, colour_height;	// of the colours after it; 0 if the picture's own are used
 } matcache_t;
 
 static uint32_t Mat_Hash (const void *data, size_t bytes, uint32_t hash)
@@ -411,6 +419,8 @@ static uint32_t Mat_Key (image_t *image, const pt_material_from_t *from)
 	hash = Mat_Hash (words, sizeof(words), 2166136261u);
 	hash = Mat_Hash (&from->bump, sizeof(from->bump), hash);
 	hash = Mat_Hash (&from->roughness, sizeof(from->roughness), hash);
+	hash = Mat_Hash (&from->metallic, sizeof(from->metallic), hash);
+	hash = Mat_Hash (&from->delight, sizeof(from->delight), hash);
 	return Mat_Hash (image->pixels, (size_t)image->width * image->height * sizeof(uint32_t), hash);
 }
 
@@ -436,36 +446,57 @@ static void Mat_CachePath (image_t *image, char *path, int size)
 	Com_sprintf (path, size, "%s/pt_cache/%s.ptm", ri.FS_Gamedir (), flat);
 }
 
-static uint32_t *Mat_CacheRead (image_t *image, uint32_t key, int width, int height)
+static uint32_t *Mat_ReadPixels (FILE *f, size_t count)
+{
+	uint32_t	*pixels;
+
+	pixels = malloc (count * sizeof(uint32_t));
+	if (pixels && fread (pixels, sizeof(uint32_t), count, f) != count)
+	{	// cut short
+		free (pixels);
+		pixels = NULL;
+	}
+	return pixels;
+}
+
+// the maps kept for the image, if they were made from what key stands for
+static qboolean Mat_CacheRead (image_t *image, uint32_t key, int width, int height, pt_material_maps_t *maps)
 {
 	char		path[MAX_OSPATH];
 	matcache_t	header;
-	uint32_t	*map;
-	size_t		count;
 	FILE		*f;
+
+	memset (maps, 0, sizeof(*maps));
 
 	Mat_CachePath (image, path, sizeof(path));
 	f = fopen (path, "rb");
 	if (!f)
-		return NULL;
+		return false;
 
-	map = NULL;
-	count = (size_t)width * height;
 	if (fread (&header, sizeof(header), 1, f) == 1 && header.magic == MAT_CACHE_MAGIC && header.key == key
-		&& header.width == (uint32_t)width && header.height == (uint32_t)height)
+		&& header.width == (uint32_t)width && header.height == (uint32_t)height
+		&& (!header.colour_width || (header.colour_width == (uint32_t)image->width && header.colour_height == (uint32_t)image->height)))
 	{
-		map = malloc (count * sizeof(uint32_t));
-		if (map && fread (map, sizeof(uint32_t), count, f) != count)
-		{	// cut short
-			free (map);
-			map = NULL;
+		maps->detail = Mat_ReadPixels (f, (size_t)width * height);
+		maps->detail_width = width;
+		maps->detail_height = height;
+		if (maps->detail && header.colour_width)
+		{
+			maps->colour = Mat_ReadPixels (f, (size_t)image->width * image->height);
+			maps->colour_width = image->width;
+			maps->colour_height = image->height;
+			if (!maps->colour)
+			{
+				free (maps->detail);
+				maps->detail = NULL;
+			}
 		}
 	}
 	fclose (f);
-	return map;
+	return maps->detail != NULL;
 }
 
-static void Mat_CacheWrite (image_t *image, uint32_t key, const uint32_t *map, int width, int height)
+static void Mat_CacheWrite (image_t *image, uint32_t key, const pt_material_maps_t *maps)
 {
 	char		path[MAX_OSPATH];
 	matcache_t	header;
@@ -480,10 +511,14 @@ static void Mat_CacheWrite (image_t *image, uint32_t key, const uint32_t *map, i
 		return;		// a game directory that cannot be written to: made again each time
 	header.magic = MAT_CACHE_MAGIC;
 	header.key = key;
-	header.width = width;
-	header.height = height;
+	header.width = maps->detail_width;
+	header.height = maps->detail_height;
+	header.colour_width = maps->colour ? maps->colour_width : 0;
+	header.colour_height = maps->colour ? maps->colour_height : 0;
 	fwrite (&header, sizeof(header), 1, f);
-	fwrite (map, sizeof(uint32_t), (size_t)width * height, f);
+	fwrite (maps->detail, sizeof(uint32_t), (size_t)maps->detail_width * maps->detail_height, f);
+	if (maps->colour)
+		fwrite (maps->colour, sizeof(uint32_t), (size_t)maps->colour_width * maps->colour_height, f);
 	fclose (f);
 }
 
@@ -499,6 +534,9 @@ static void Mat_From (image_t *image, const matinfo_t *info, pt_material_from_t 
 	from->repeats = image->type == it_wall;
 	from->painted_light = image->type == it_wall;
 	from->bump = info->bump;
+	from->metallic = info->metallic;
+	// a screen or a lamp was painted bright for its own sake: that light stays
+	from->delight = (from->painted_light && info->glow <= 0) ? r_materialdelight : 0;
 
 	// a dark picture has always been taken for a rougher thing than a bright
 	// one: the map varies the roughness about what Mat_Plain gives on average
@@ -520,14 +558,15 @@ static void Mat_From (image_t *image, const matinfo_t *info, pt_material_from_t 
 ===============
 Mat_FromPicture
 
-The map read from the picture's painted light, see pt/material. NULL if it
-could not be made.
+The map read from the picture's painted light, see pt/material, and with it
+image->colour. NULL if it could not be made.
 ===============
 */
 static uint32_t *Mat_FromPicture (image_t *image, const matinfo_t *info, int *width, int *height)
 {
 	pt_material_from_t	from;
-	uint32_t			key, *map;
+	pt_material_maps_t	maps;
+	uint32_t			key;
 	int					scale, start;
 	qboolean			keep;
 
@@ -539,28 +578,24 @@ static uint32_t *Mat_FromPicture (image_t *image, const matinfo_t *info, int *wi
 	*width = image->width * scale;
 	*height = image->height * scale;
 
-	key = 0;
-	if (keep)
+	key = keep ? Mat_Key (image, &from) : 0;
+	if (keep && Mat_CacheRead (image, key, *width, *height, &maps))
+		mat_kept++;
+	else
 	{
-		key = Mat_Key (image, &from);
-		map = Mat_CacheRead (image, key, *width, *height);
-		if (map)
-		{
-			mat_kept++;
-			return map;
-		}
+		start = Sys_Milliseconds ();
+		if (!pt_material_read (image->pixels, image->width, image->height, &from, &maps))
+			return NULL;
+		mat_msec += Sys_Milliseconds () - start;
+		mat_made++;
+
+		if (keep)
+			Mat_CacheWrite (image, key, &maps);
 	}
 
-	start = Sys_Milliseconds ();
-	map = pt_material_detail (image->pixels, image->width, image->height, &from);
-	mat_msec += Sys_Milliseconds () - start;
-	if (!map)
-		return NULL;
-	mat_made++;
-
-	if (keep)
-		Mat_CacheWrite (image, key, map, *width, *height);
-	return map;
+	free (image->colour);
+	image->colour = maps.colour;
+	return maps.detail;
 }
 
 /*
@@ -571,10 +606,11 @@ Builds, once, the image's detail map. Returns NULL where the material is
 flat.
 
 It is read from the picture: its painted highlights and shadows as shape,
-its colours as how rough it is from place to place. <name>_n.tga beside the
-image is used as the normals instead if it is there (red to the right, green
-down the picture, as the made ones are; set pt_normal_flip for maps with
-green up), and the red of <name>_r.tga as the roughness.
+its colours as how rough and how metallic it is from place to place.
+<name>_n.tga beside the image is used as the normals instead if it is there
+(red to the right, green down the picture, as the made ones are; set
+pt_normal_flip for maps with green up), and the red of <name>_r.tga as the
+roughness.
 ===============
 */
 uint32_t *R_ImageNormalMap (image_t *image, const matinfo_t *info, int *width, int *height)
@@ -586,6 +622,9 @@ uint32_t *R_ImageNormalMap (image_t *image, const matinfo_t *info, int *width, i
 
 	if (image->normalmap)
 	{
+		// made for a surface with relief; what is flat and shows the same picture has none
+		if (info->bump <= 0 && !image->normal_byhand)
+			return NULL;
 		*width = image->normal_width;
 		*height = image->normal_height;
 		return image->normalmap;
@@ -598,6 +637,8 @@ uint32_t *R_ImageNormalMap (image_t *image, const matinfo_t *info, int *width, i
 
 	// what can be told from the picture itself
 	made = r_materialmaps ? Mat_FromPicture (image, info, &w, &h) : NULL;
+	image->normal_metal = made != NULL;
+	image->normal_byhand = normals || roughs;
 	if (!made)
 		made = Mat_Plain (image, info, &w, &h);
 
@@ -628,7 +669,11 @@ uint32_t *R_ImageNormalMap (image_t *image, const matinfo_t *info, int *width, i
 				{
 					sx = x * normals->width / ow;
 					sy = y * normals->height / oh;
-					c = (c & 0xff000000) | (normals->pixels[sy * normals->width + sx] & 0x00ffffff);
+					// beside metal read from the picture there is room for the normal's x and y only
+					if (image->normal_metal)
+						c = (c & 0xffff0000) | (normals->pixels[sy * normals->width + sx] & 0x0000ffff);
+					else
+						c = (c & 0xff000000) | (normals->pixels[sy * normals->width + sx] & 0x00ffffff);
 					if (r_normalflip)
 						c = (c & 0xffff00ff) | ((255 - ((c >> 8) & 0xff)) << 8);
 				}
@@ -680,18 +725,21 @@ void R_MaterialsReport (void)
 R_MaterialShow_f
 
 pt_material_show <image>: writes the picture beside what was read from it,
-its height, its normals and its roughness, as one PNG in scrnshot
+its colours without the painted light, its height, its normals, its
+roughness and its metal, as one PNG in scrnshot
 ===============
 */
 static void R_MaterialShow_f (void)
 {
 	char				name[MAX_QPATH], flat[MAX_QPATH], path[MAX_OSPATH], *dot, *slash;
 	pt_material_from_t	from;
+	pt_material_maps_t	maps;
 	matinfo_t			info;
 	image_t				*image;
-	uint32_t			*map, *sheet, c;
+	uint32_t			*sheet, *colour, c;
 	unsigned char		*high;
-	int					x, y, w, h, scale;
+	float				nx, ny;
+	int					x, y, w, h, scale, at;
 
 	if (ri.Cmd_Argc () != 2 || strlen (ri.Cmd_Argv (1)) > MAX_QPATH - 8)
 	{
@@ -717,27 +765,36 @@ static void R_MaterialShow_f (void)
 	scale = pt_material_detail_scale (image->width, image->height, from.repeats);
 	w = image->width * scale;
 	h = image->height * scale;
-	map = pt_material_detail (image->pixels, image->width, image->height, &from);
 	high = pt_material_height (image->pixels, image->width, image->height, &from);
-	sheet = malloc ((size_t)w * 4 * h * sizeof(uint32_t));
-	if (!map || !high || !sheet)
+	sheet = malloc ((size_t)w * 6 * h * sizeof(uint32_t));
+	if (!pt_material_read (image->pixels, image->width, image->height, &from, &maps) || !high || !sheet)
 	{
 		ri.Con_Printf (PRINT_ALL, "%s could not be read\n", name);
-		free (map);
+		free (maps.detail);
+		free (maps.colour);
 		free (high);
 		free (sheet);
 		return;
 	}
+	colour = maps.colour ? maps.colour : image->pixels;
 
 	for (y=0 ; y<h ; y++)
 	{
 		for (x=0 ; x<w ; x++)
 		{
-			c = map[y * w + x];
-			sheet[y * w * 4 + x] = image->pixels[(y / scale) * image->width + x / scale] | 0xff000000;
-			sheet[y * w * 4 + w + x] = high[y * w + x] * 0x010101u | 0xff000000;
-			sheet[y * w * 4 + w * 2 + x] = c | 0xff000000;
-			sheet[y * w * 4 + w * 3 + x] = (c >> 24) * 0x010101u | 0xff000000;
+			c = maps.detail[y * w + x];
+			at = (y / scale) * image->width + x / scale;
+			// the normal as such maps are usually shown, with its z worked out
+			nx = (c & 0xff) * (2.0f / 255.0f) - 1.0f;
+			ny = ((c >> 8) & 0xff) * (2.0f / 255.0f) - 1.0f;
+			nx = 1.0f - nx * nx - ny * ny;
+
+			sheet[y * w * 6 + x] = image->pixels[at] | 0xff000000;
+			sheet[y * w * 6 + w + x] = colour[at] | 0xff000000;
+			sheet[y * w * 6 + w * 2 + x] = high[y * w + x] * 0x010101u | 0xff000000;
+			sheet[y * w * 6 + w * 3 + x] = (c & 0xffff) | ((uint32_t)((sqrt (nx > 0 ? nx : 0) * 0.5f + 0.5f) * 255.0f + 0.5f) << 16) | 0xff000000;
+			sheet[y * w * 6 + w * 4 + x] = (c >> 24) * 0x010101u | 0xff000000;
+			sheet[y * w * 6 + w * 5 + x] = ((c >> 16) & 0xff) * 0x010101u | 0xff000000;
 		}
 	}
 
@@ -745,12 +802,14 @@ static void R_MaterialShow_f (void)
 	Sys_Mkdir (path);
 	Mat_FlatName (image, flat);
 	Com_sprintf (path, sizeof(path), "%s/scrnshot/material_%s.png", ri.FS_Gamedir (), flat);
-	if (pt_png_write (path, sheet, w * 4, h))
-		ri.Con_Printf (PRINT_ALL, "Wrote %s: picture, height, normals, roughness (%.2f metallic)\n", path, info.metallic);
+	if (pt_png_write (path, sheet, w * 6, h))
+		ri.Con_Printf (PRINT_ALL, "Wrote %s: picture, %s, height, normals, roughness, metal (the material's: %.2f)\n", path,
+			maps.colour ? "its colours without the painted light" : "the same again (no painted light taken out)", info.metallic);
 	else
 		ri.Con_Printf (PRINT_ALL, "Couldn't write %s\n", path);
 
-	free (map);
+	free (maps.detail);
+	free (maps.colour);
 	free (high);
 	free (sheet);
 }

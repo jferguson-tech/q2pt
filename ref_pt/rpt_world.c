@@ -211,7 +211,13 @@ static int W_AddMaterial (texinfo_t *tex, int body)
 
 		detail = R_ImageNormalMap (image, &info, &detail_width, &detail_height);
 		if (detail)
+		{
 			mat->normal_texture = W_AddTexture (detail_width, detail_height, detail, &image->normalmap);
+			if (image->normal_metal)
+				mat->flags |= PT_MAT_METAL_TEXTURE;
+		}
+		// reading the detail map may have taken the painted light out of the colours
+		w_textures[mat->texture].pixels = R_ImageColours (image);
 
 		// a picture of what glows beats guessing it from what is bright
 		glowmap = R_ImageGlowMap (image);

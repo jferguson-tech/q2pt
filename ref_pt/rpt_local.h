@@ -56,6 +56,10 @@ typedef struct image_s
 	uint32_t	*normalmap;					// made on demand, see rpt_material.c
 	int			normal_width, normal_height;
 	int			pt_normal_texture;			// backend handle + 1 for normalmap
+	qboolean	normal_metal;				// normalmap's blue is how metallic, not the normal's z
+	qboolean	normal_byhand;				// a map made by hand went into normalmap
+	uint32_t	*colour;					// made with normalmap: pixels with the painted light
+											// taken out, or NULL where pixels are as good
 } image_t;
 
 typedef struct
@@ -141,6 +145,7 @@ void	R_SetPalette (const unsigned char *palette);
 void	Draw_Blend (int x, int y, int w, int h, float *blend);
 
 int		R_ImageTexture (image_t *image);
+const uint32_t *R_ImageColours (image_t *image);
 int		R_ImageNormalTexture (image_t *image);
 void	R_MakeSkinMaterials (void);
 void	R_MaterialsChanged (void);
@@ -181,6 +186,7 @@ extern	int		r_watermode;		// 0 classic, 1 realistic, 2 simulated
 extern	float	r_watercell, r_waterwaves, r_watercaustics, r_waterdamping;
 extern	float	r_bumpscale, r_roughscale, r_metalscale;
 extern	int		r_materialmaps;		// detail maps are read from the pictures' painted light
+extern	float	r_materialdelight;	// and this much of that light is taken out of their colours, 0 - 1
 
 void	R_InitSettings (void);
 qboolean R_UpdateSettings (void);

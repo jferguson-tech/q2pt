@@ -335,6 +335,7 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	if (mat.emission_map)
 		s.glow = smooth ? mat.emission_map->Smooth(u, v) : Decode(mat.emission_map->Texel(u, v));
 	s.roughness = mat.roughness;
+	float metallic = mat.metallic;
 
 	Vec3 n = s.ng;
 	if (tri.smooth)
@@ -364,7 +365,13 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 		}
 		const float tx = c[0] * (2.0f / 255.0f) - 1.0f;
 		const float ty = c[1] * (2.0f / 255.0f) - 1.0f;
-		const float tz = c[2] * (2.0f / 255.0f) - 1.0f;
+		float tz = c[2] * (2.0f / 255.0f) - 1.0f;
+		if (mat.flags & PT_MAT_METAL_TEXTURE)
+		{
+			// the third number is metal: z is what is left of the normal's length
+			tz = std::sqrt(std::max(1.0f - tx * tx - ty * ty, 0.01f));
+			metallic = c[2] * (1.0f / 255.0f);
+		}
 		n = Normalize(tri.tu * tx + tri.tv * ty + n * tz);
 		s.roughness = c[3] * (1.0f / 255.0f);
 	}
@@ -399,8 +406,8 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	}
 	else
 	{
-		s.kd = s.colour * (1.0f - mat.metallic);
-		s.f0 = Vec3(0.04f) * (1.0f - mat.metallic) + s.colour * mat.metallic;
+		s.kd = s.colour * (1.0f - metallic);
+		s.f0 = Vec3(0.04f) * (1.0f - metallic) + s.colour * metallic;
 		if (sc.view_mode)
 			ViewMode(sc.view_mode, mat, s);
 	}

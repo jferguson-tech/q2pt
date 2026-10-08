@@ -15,6 +15,7 @@ const uint MAT_BLACK = 16u;
 const uint MAT_WAVES = 32u;
 const uint MAT_EMIT_BRIGHT = 64u;
 const uint MAT_WARP = 128u;
+const uint MAT_METAL_TEXTURE = 512u;
 
 // pt_view_t's view_mode, as in pt.h
 const int VIEW_NORMAL = 0;
@@ -496,6 +497,7 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 	s.colour = mat.texture < 0 ? vec3(1.0) : ToLinear(Texel(mat.texture, uv, smooth_it).rgb);
 	s.glow = mat.emission_map >= 0 ? ToLinear(Texel(mat.emission_map, uv, smooth_it).rgb) : vec3(0.0);
 	s.roughness = mat.roughness;
+	float metallic = mat.emission_per_texel.a;
 
 	vec3 n = s.ng;
 	if (hit.moving && fr.frame_has.x != 0)
@@ -526,7 +528,13 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 		}
 		else
 			Basis(s.tri_n, tu, tv);
-		const vec3 t = c.xyz * 2.0 - 1.0;
+		vec3 t = c.xyz * 2.0 - 1.0;
+		if ((mat.flags & MAT_METAL_TEXTURE) != 0u)
+		{
+			// the third number is metal: z is what is left of the normal's length
+			t.z = sqrt(max(1.0 - dot(t.xy, t.xy), 0.01));
+			metallic = c.b;
+		}
 		n = normalize(tu * t.x + tv * t.y + n * t.z);
 		s.roughness = c.a;
 	}
@@ -561,7 +569,6 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 	}
 	else
 	{
-		const float metallic = mat.emission_per_texel.a;
 		s.kd = s.colour * (1.0 - metallic);
 		s.f0 = vec3(0.04) * (1.0 - metallic) + s.colour * metallic;
 
