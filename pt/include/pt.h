@@ -312,6 +312,13 @@ typedef struct pt_view_s
 	float	contrast;			/* 1 = unchanged */
 	int		fog;				/* light scattering in the air: haze and light shafts */
 	float	fog_density;		/* share of light scattered per unit of distance */
+	int		fog_samples;		/* points along each view ray at which the air's
+								   light is looked for, a frame; below 1 = 1 */
+	int		fog_history;		/* frames of the air's light kept while things
+								   change, in place of history: the air has no
+								   surface to be followed by, so its light
+								   trails what moves; fewer frames trail less
+								   and are noisier. Below 1 = as history */
 	float	bloom;				/* glow around what is brighter than white; 0 = none */
 	float	bloom_max;			/* the most over white that anything adds to the
 								   glow, in whites: up to half of this it adds

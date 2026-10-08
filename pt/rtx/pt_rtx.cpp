@@ -118,7 +118,8 @@ struct FrameBlock
 	int32_t	out_size[4];
 	float	open_origin[4], open_forward[4], open_right[4], open_up[4];	// motion blur: the eye as the shutter opened; open_origin[3]: there is blur
 	int32_t	held[4];		// first triangle of the frame that the eye carries, how many; [2]: reflections are followed where they appear to be
-	float	painted[4];		// [0]: what a metal painted dark reflects, see pt_view_t's metal_colour; [1]: bloom_max
+	float	painted[4];		// [0]: what a metal painted dark reflects, see pt_view_t's metal_colour; [1]: bloom_max; [2]: fog_samples; [3]: fog_history
+	float	liquid[4];		// [0]: wave_reach
 };
 
 // one triangle, one material and one light as the shaders read them (std430)
@@ -166,7 +167,7 @@ const uint32_t kBitEmissive = 1, kBitSampled = 2, kBitSwell = 4;	// GpuMaterial:
 const uint32_t kNumInstances = 5;
 const uint32_t kMaskScene = 1, kMaskHeld = 2;
 const int kNumStyles = 256;							// light styles, at the start of the tables
-const uint32_t kNumBindings = 32;
+const uint32_t kNumBindings = 33;
 
 // The pictures kept per pixel between the passes, in the order the shaders'
 // bindings take them; see scene.glsl.
@@ -186,7 +187,8 @@ enum
 	kGraded = 27,
 	kMirror = 28,	// 2
 	kOver = 30,
-	kNumTargets = 31
+	kMoments = 31,	// 6
+	kNumTargets = 37
 };
 
 const uint32_t kMaxTextures = 4096;
@@ -1526,7 +1528,9 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 		// the smallest of those steps round away and the others do not, and
 		// light is lost: so these are kept at full precision.
 		const bool gathered = i >= kKept && i < kKept + 6;
+		const bool moments = i >= kMoments && i < kMoments + 6;
 		const VkFormat format = (positions || gathered) ? VK_FORMAT_R32G32B32A32_SFLOAT
+			: moments ? VK_FORMAT_R32G32_SFLOAT
 			: (i == kPicture ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R16G16B16A16_SFLOAT);
 
 		VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -1570,7 +1574,7 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 		{17, kSurface, 2}, {18, kSeen, 1}, {19, kAlbedo, 2}, {20, kNoisy, 3},
 		{21, kExtra, 1}, {22, kKept, 6}, {23, kFilter, 6}, {24, kPicture, 1},
 		{26, kHdr, 1}, {27, kBloom, 2}, {28, kSteady, 2}, {29, kGraded, 1},
-		{30, kMirror, 2}, {31, kOver, 1},
+		{30, kMirror, 2}, {31, kOver, 1}, {32, kMoments, 6},
 	};
 	VkDescriptorImageInfo info[kNumTargets];
 	for (const auto &g : groups)
@@ -1649,6 +1653,7 @@ void CreateScene(RtxBackend *s)
 	bind[27].descriptorCount = 2;
 	bind[28].descriptorCount = 2;
 	bind[30].descriptorCount = 2;
+	bind[32].descriptorCount = 6;
 
 	VkDescriptorSetLayoutCreateInfo dlci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
 	dlci.bindingCount = kNumBindings;
@@ -2391,6 +2396,11 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.settings2[3] = view->debug;
 	f.painted[0] = std::max(0.0f, view->metal_colour);
 	f.painted[1] = std::max(0.0f, view->bloom_max);
+	f.painted[2] = (float)std::min(std::max(view->fog_samples, 1), 16);
+	{
+		const float history = (float)std::min(std::max(view->history, 1), 512);
+		f.painted[3] = view->fog_history >= 1 ? std::min((float)view->fog_history, history) : history;
+	}
 
 	s->exposure_used = view->debug ? 1.0f : view->exposure * (view->auto_exposure ? s->auto_exposure : 1.0f);
 	f.medium[3] = s->exposure_used;
@@ -2438,7 +2448,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	memcpy(f.water_rect, s->water_rect, sizeof(f.water_rect));
 	memcpy(f.water_at, s->water_at, sizeof(f.water_at));
 	memcpy(f.water_wave, s->water_wave, sizeof(f.water_wave));
-	f.painted[2] = std::min(std::max(view->wave_reach, 0.0f), 8.0f);
+	f.liquid[0] = std::min(std::max(view->wave_reach, 0.0f), 8.0f);
 
 	memcpy(s->frame_block.ptr, &f, sizeof(f));
 	s->prev_time = view->time;

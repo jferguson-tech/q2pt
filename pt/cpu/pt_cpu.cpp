@@ -239,6 +239,7 @@ struct CpuBackend
 	float					jitter_x = 0.0f, jitter_y = 0.0f;	// this frame's offset within the pixel
 	int						filtering = 2;		// what is done about noise this frame, see pt_view_t
 	float					moving_history = 32.0f;	// frames of lighting kept while anything changes
+	float					fog_history = 32.0f;	// and of the air's light, which has nothing to be followed by
 	bool					reflection_history = true;	// reflections are followed where they appear to be
 	Camera					prev_camera;
 	uint32_t				prev_hash = 0;
@@ -481,6 +482,22 @@ Ray EyeRay(const CpuBackend *s, const Camera &cam, float px, float py)
 // Traces one pixel: what the eye sees there, and samples of the light on it.
 // frame_cam is the eye when the shutter closes; with motion blur the pixel
 // sees from where the eye was at a moment of its own before that.
+// The light the air scatters to the eye from the first reach of a view ray:
+// the reach is cut into as many lengths as there are samples, and a point
+// drawn in each.
+Vec3 FogGlow(const Scene &sc, Vec3 from, Vec3 dir, float reach, Rng &rng)
+{
+	const int count = std::max(1, sc.fog_samples);
+	Vec3 sum;
+	for (int k = 0; k < count; k++)
+	{
+		const float at = (k + rng.Float()) * reach / count;
+		const Vec3 lit = DirectMedium(sc, from + dir * at, rng);
+		sum += ClampSample(lit * (sc.fog_density * (0.25f * kInvPi) * std::exp(-sc.fog_density * at) * reach), sc.max_sample);
+	}
+	return sum * (1.0f / count);
+}
+
 void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float jx, float jy, int x, int y, int samples, int bounces)
 {
 	const size_t i = (size_t)y * s->rw + x;
@@ -757,10 +774,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 		if (sc.fog_density > 0.0f && px.depth[i] >= 0.0f)
 		{
 			const float reach = have_layer ? first_layer_depth : sky_depth;
-			const float at = rng.Float() * reach;
-			const Vec3 lit = DirectMedium(sc, cam.origin + eye_dir * at, rng);
-			const Vec3 glow = ClampSample(lit * (sc.fog_density * (0.25f * kInvPi) * std::exp(-sc.fog_density * at) * reach),
-				sc.max_sample) * direct_on;
+			const Vec3 glow = FogGlow(sc, cam.origin, eye_dir, reach, rng) * direct_on;
 			const float glow_lum = Luminance(glow);
 			px.albedo[kFog][i] = Vec3(1, 1, 1);
 			px.light[kFog][i] = glow;
@@ -816,14 +830,11 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 
 	// Air that scatters light: some of what the surface sends is lost on the
 	// way, and the air itself glows where light falls through it, which is
-	// what shows as shafts. One point along the way is sampled per frame.
+	// what shows as shafts. A few points along the way are sampled per frame.
 	if (sc.fog_density > 0.0f)
 	{
 		const float reach = have_layer ? first_layer_depth : hit.t;		// the straight part of the view
-		const float at = rng.Float() * reach;
-		const Vec3 lit = DirectMedium(sc, cam.origin + eye_dir * at, rng);
-		const Vec3 glow = ClampSample(lit * (sc.fog_density * (0.25f * kInvPi) * std::exp(-sc.fog_density * at) * reach),
-			sc.max_sample) * direct_on;
+		const Vec3 glow = FogGlow(sc, cam.origin, eye_dir, reach, rng) * direct_on;
 		const float glow_lum = Luminance(glow);
 		px.albedo[kFog][i] = Vec3(1, 1, 1);
 		px.light[kFog][i] = glow;
@@ -1095,6 +1106,10 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 				float keep = len;
 				if (c == kSpecular && max_history <= s->moving_history)
 					keep = std::min(len, std::max(2.0f, s->moving_history * cur.roughness[i] * 2.0f));
+				// and the air's light is followed by the surface behind it,
+				// which is not where it is: it keeps less too
+				if (c == kFog && max_history <= s->moving_history)
+					keep = std::min(len, s->fog_history);
 				const float a = 1.0f / keep;
 				const Vec3 h = hist[c] * inv;
 				const float h1 = hm1[c] * inv, h2 = hm2[c] * inv;
@@ -1108,7 +1123,8 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 		// how unsure the average still is; with little history, assume very
 		for (int c = 0; c < kChannels; c++)
 		{
-			float var = std::max(0.0f, cur.m2[c][i] - cur.m1[c][i] * cur.m1[c][i]) / len;
+			const float n = (c == kFog && max_history <= s->moving_history) ? std::min(len, s->fog_history) : len;
+			float var = std::max(0.0f, cur.m2[c][i] - cur.m1[c][i] * cur.m1[c][i]) / n;
 			if (len < 4.0f)
 				var = std::max(var, cur.m1[c][i] * cur.m1[c][i] * 0.25f + 0.01f);
 			cur.variance[c][i] = var;
@@ -1883,6 +1899,8 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	if (bounces < 1)
 		sc.reflections = 0;		// no bounces at all means none off mirrors either
 	s->moving_history = (float)std::min(std::max(view->history, 1), 512);
+	s->fog_history = view->fog_history >= 1 ? std::min((float)view->fog_history, s->moving_history) : s->moving_history;
+	sc.fog_samples = std::min(std::max(view->fog_samples, 1), 16);
 	s->reflection_history = view->reflection_history != 0;
 	const int passes = (view->debug || view->filter >= 2) ? std::min(std::max(view->denoise, 0), kMaxFilterPasses) : 0;
 	s->pool.SetLimit(view->threads);
@@ -1896,7 +1914,8 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	{
 		const float settings[] = {(float)samples, (float)sc.light_samples, sc.max_sample, sc.wave_strength,
 			(float)sc.filter_textures, (float)sc.reflections, (float)sc.reflection_bounces, sc.reflection_rate,
-			(float)sc.refraction, view->exposure, sc.fog_density, (float)sc.view_mode, sc.metal_colour};
+			(float)sc.refraction, view->exposure, sc.fog_density, (float)sc.view_mode, sc.metal_colour,
+			(float)sc.fog_samples};
 		hash = HashBytes(settings, sizeof(settings), hash);
 	}
 	if (s->world->has_waves)
@@ -1975,11 +1994,15 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		s->pool.Run(rh, [&](int y) { FilterRow(rw, rh, s->filter_geo, *in, *out, 1 << pass, y); });
 		in = out;
 	}
-	// the light the filter leaves in a channel of a pixel
+	// the light the filter leaves in a channel of a pixel, and the noise
 	const auto lit = [&](int x, int y, int ch)
 	{
 		const float *l = in->Row(y) + 4 * ch * in->stride + x;
 		return Vec3(l[0], l[in->stride], l[2 * in->stride]);
+	};
+	const auto noise = [&](int x, int y, int ch)
+	{
+		return std::sqrt(in->Row(y)[4 * ch * in->stride + 3 * in->stride + x]);
 	};
 #else
 	s->pool.Run(rh, [&](int y)
@@ -2012,12 +2035,13 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		s->pool.Run(rh, [&](int y) { FilterRow(rw, rh, geo, in, out, 1 << pass, y); });
 		in = out;
 	}
-	// the light the filter leaves in a channel of a pixel
+	// the light the filter leaves in a channel of a pixel, and the noise
 	const auto lit = [&](int x, int y, int ch)
 	{
 		const FilterLight &l = in[(size_t)y * rw + x];
 		return Vec3(l.r[ch], l.g[ch], l.b[ch]);
 	};
+	const auto noise = [&](int x, int y, int ch) { return std::sqrt(in[(size_t)y * rw + x].var[ch]); };
 #endif
 	const auto filtered = std::chrono::steady_clock::now();
 
@@ -2048,6 +2072,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 			case 9: c = Vec3(s->cur.bent[i] ? 0.5f : 0.05f); break;
 			case 10: c = Vec3(s->cur.depth[i] * 0.002f); break;
 			case 11: c = lit(x, y, kFog); break;
+			case 12: c = Vec3(noise(x, y, kDiffuse) * 4.0f); break;
 			default: break;
 			}
 			if (sc.view_mode == PT_VIEW_BOUNCES)
