@@ -57,8 +57,7 @@ so they stay as sharp as they were rendered; mixing in the neighbouring
 frames is what stops a film from flickering.
 
 Light is scaled before the network sees it by the exposure the game would
-be showing that frame at, which lags behind the scene as the game's does:
-a flash in a dark room is judged the way it will be seen.
+choose for that stretch of the film, steadied over neighbouring frames.
 
 ## How good it is
 
@@ -70,6 +69,11 @@ Open Image Denoise at 4 and 16 paths but is still slightly behind it in
 PSNR and SSIM: 38.79 dB against 38.95 dB at 16 paths, 37.64 against 38.10
 at 4. It is ahead on four of the six clips at 4 paths and three at 16; the
 largest loss is where a BFG is fired in a dark room.
+
+A fifth run (`results/stage5.md`) scaled each frame by the exposure the
+game would have reached by then and drew clips with flashes more often. It
+flickered less but was worse overall (38.48 dB at 16 paths), and was taken
+out again; the fourth run's weights are the best so far.
 
 Frames rendered with motion blur denoise far better than sharp frames
 blurred afterwards (33.6 dB against 27.7 dB at 16 paths).
