@@ -1428,6 +1428,16 @@ static const char *pt_view_names[] =
 	"normal",
 	"clay",
 	"mirror",
+	"white furnace",
+	"lighting only",
+	"direct only",
+	"indirect only",
+	"base colour",
+	"normals",
+	"roughness",
+	"metal",
+	"glow",
+	"bounce count",
 	0
 };
 #define	PT_NUM_VIEWS	( (int)( sizeof(pt_view_names) / sizeof(pt_view_names[0]) ) - 1 )
