@@ -1973,11 +1973,15 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		s->pool.Run(rh, [&](int y) { FilterRow(rw, rh, s->filter_geo, *in, *out, 1 << pass, y); });
 		in = out;
 	}
-	// the light the filter leaves in a channel of a pixel
+	// the light the filter leaves in a channel of a pixel, and the noise
 	const auto lit = [&](int x, int y, int ch)
 	{
 		const float *l = in->Row(y) + 4 * ch * in->stride + x;
 		return Vec3(l[0], l[in->stride], l[2 * in->stride]);
+	};
+	const auto noise = [&](int x, int y, int ch)
+	{
+		return std::sqrt(in->Row(y)[4 * ch * in->stride + 3 * in->stride + x]);
 	};
 #else
 	s->pool.Run(rh, [&](int y)
@@ -2010,12 +2014,13 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		s->pool.Run(rh, [&](int y) { FilterRow(rw, rh, geo, in, out, 1 << pass, y); });
 		in = out;
 	}
-	// the light the filter leaves in a channel of a pixel
+	// the light the filter leaves in a channel of a pixel, and the noise
 	const auto lit = [&](int x, int y, int ch)
 	{
 		const FilterLight &l = in[(size_t)y * rw + x];
 		return Vec3(l.r[ch], l.g[ch], l.b[ch]);
 	};
+	const auto noise = [&](int x, int y, int ch) { return std::sqrt(in[(size_t)y * rw + x].var[ch]); };
 #endif
 	const auto filtered = std::chrono::steady_clock::now();
 
@@ -2046,6 +2051,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 			case 9: c = Vec3(s->cur.bent[i] ? 0.5f : 0.05f); break;
 			case 10: c = Vec3(s->cur.depth[i] * 0.002f); break;
 			case 11: c = lit(x, y, kFog); break;
+			case 12: c = Vec3(noise(x, y, kDiffuse) * 4.0f); break;
 			default: break;
 			}
 			if (sc.view_mode == PT_VIEW_BOUNCES)

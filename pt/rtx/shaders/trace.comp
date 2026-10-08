@@ -181,7 +181,7 @@ void main()
 				imageStore(img_albedo[1], pixel, vec4(0.0));
 				imageStore(img_noisy[0], pixel, vec4(0.0));
 				imageStore(img_noisy[1], pixel, vec4(0.0));
-				imageStore(img_noisy[2], pixel, vec4(0.0, 0.0, 0.0, 1.0));
+				imageStore(img_noisy[2], pixel, vec4(0.0));
 				imageStore(img_extra, pixel, vec4(SurfaceChannel(view_mode, surf), 1.0));
 				return;
 			}
@@ -310,9 +310,9 @@ void main()
 		imageStore(img_over, pixel, vec4(over_pos, have_layer ? 1.0 : 0.0));
 		imageStore(img_albedo[0], pixel, vec4(0.0));
 		imageStore(img_albedo[1], pixel, vec4(0.0));
-		imageStore(img_noisy[0], pixel, view_mode == VIEW_COST ? vec4(vec3(float(rays_traced)), 1.0) : vec4(0.0));
+		imageStore(img_noisy[0], pixel, view_mode == VIEW_COST ? vec4(vec3(float(rays_traced)), 0.0) : vec4(0.0));
 		imageStore(img_noisy[1], pixel, vec4(0.0));
-		imageStore(img_noisy[2], pixel, vec4(over, 1.0));
+		imageStore(img_noisy[2], pixel, vec4(over, 0.0));
 		imageStore(img_extra, pixel, vec4(beyond, 1.0));
 		return;
 	}
@@ -371,6 +371,7 @@ void main()
 	const int bounces = fr.settings.x;
 	const int paths = max(1, fr.settings2.z);
 	vec3 sum_d = vec3(0.0), sum_s = vec3(0.0);
+	vec2 moments_d = vec2(0.0), moments_s = vec2(0.0);	// the paths' luminance and its square, summed
 	float spec_reach = -1.0;		// how far the last specular path went before its first hit
 	for (int k = 0; k < paths; k++)
 	{
@@ -422,8 +423,13 @@ void main()
 			d = vec3(float(max(followed_d, followed_s)));
 			sp = vec3(0.0);
 		}
-		sum_d += ClampSample(d, max_sample);
-		sum_s += ClampSample(sp, max_sample);
+		d = ClampSample(d, max_sample);
+		sp = ClampSample(sp, max_sample);
+		sum_d += d;
+		sum_s += sp;
+		const float ld = Luminance(d), ls = Luminance(sp);
+		moments_d += vec2(ld, ld * ld);
+		moments_s += vec2(ls, ls * ls);
 	}
 
 	// A reflection in something close to a mirror appears to sit behind the
@@ -438,14 +444,20 @@ void main()
 	imageStore(img_over, pixel, vec4(over_pos, have_layer ? 1.0 : 0.0));
 	imageStore(img_albedo[0], pixel, vec4(kd, 1.0));
 	imageStore(img_albedo[1], pixel, vec4(ks, 1.0));
+	// how much the paths disagreed among themselves, the first measure of
+	// the noise in this pixel; one path alone can say nothing
+	const float inv_paths = 1.0 / float(paths);
+	float var_d = max(moments_d.y * inv_paths - moments_d.x * moments_d.x * inv_paths * inv_paths, 0.0);
+	float var_s = max(moments_s.y * inv_paths - moments_s.x * moments_s.x * inv_paths * inv_paths, 0.0);
 	if (view_mode == VIEW_COST)
 	{
 		// the rays in place of the light, to be gathered and filtered as light is
 		sum_d = vec3(float(rays_traced * paths));
 		sum_s = vec3(0.0);
+		var_d = var_s = 0.0;
 	}
-	imageStore(img_noisy[0], pixel, vec4(sum_d / float(paths), 1.0));
-	imageStore(img_noisy[1], pixel, vec4(sum_s / float(paths), 1.0));
-	imageStore(img_noisy[2], pixel, vec4(over, 1.0));
+	imageStore(img_noisy[0], pixel, vec4(sum_d * inv_paths, var_d));
+	imageStore(img_noisy[1], pixel, vec4(sum_s * inv_paths, var_s));
+	imageStore(img_noisy[2], pixel, vec4(over, 0.0));
 	imageStore(img_extra, pixel, vec4(extra, 1.0));
 }

@@ -157,7 +157,7 @@ layout(std430, set = 0, binding = 16) readonly buffer FramePrev { float v[]; } f
 layout(set = 0, binding = 17, rgba16f) uniform image2D img_surface[2];	// shading normal, distance (negative: none)
 layout(set = 0, binding = 18, rgba32f) uniform image2D img_seen;		// where to look for it in the last frame; roughness
 layout(set = 0, binding = 19, rgba16f) uniform image2D img_albedo[2];	// what the diffuse and specular light are multiplied by
-layout(set = 0, binding = 20, rgba16f) uniform image2D img_noisy[3];	// this frame's diffuse, specular and layer light
+layout(set = 0, binding = 20, rgba16f) uniform image2D img_noisy[3];	// this frame's diffuse, specular and layer light; a: how much the pixel's paths disagreed, as the variance of their luminance
 layout(set = 0, binding = 21, rgba16f) uniform image2D img_extra;		// light that needs no filtering
 layout(set = 0, binding = 22, rgba16f) uniform image2D img_kept[6];		// the three gathered over time; a: frames
 layout(set = 0, binding = 23, rgba16f) uniform image2D img_filter[6];	// the three being filtered
@@ -173,10 +173,38 @@ layout(set = 0, binding = 29, rgba16f) uniform image2D img_graded;		// the pictu
 // surface reflected last frame is not where the surface was.
 layout(set = 0, binding = 30, rgba32f) uniform image2D img_mirror[2];	// xyz: what a mirror-like solid surface reflects appears to sit here; w: the surface's roughness, plus 2 where there is no such reflection to follow
 layout(set = 0, binding = 31, rgba32f) uniform image2D img_over;		// xyz: the same for what the layers in front reflect; w: there are layers
+// How much each channel's light has varied, gathered over frames the way the
+// light is: the filter smooths as far as the noise measured warrants and no
+// further. The mean and the mean square of the luminance, the frame's and the
+// last one's, in turn, like img_kept.
+layout(set = 0, binding = 32, rg32f) uniform image2D img_moments[6];
 
 float Luminance(vec3 c)
 {
 	return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+// How unsure the light gathered in channel k of pixel q still is: the
+// variance of its mean, from the moments of its luminance and how many
+// frames stand behind it. With little history that cannot be measured and
+// is taken to be large.
+float VarianceOf(vec2 moments, float frames)
+{
+	frames = max(frames, 1.0);
+	float var = max(moments.y - moments.x * moments.x, 0.0) / frames;
+	if (frames < 4.0)
+		var = max(var, moments.x * moments.x * 0.25 + 0.01);
+	return var;
+}
+
+// the same for channel k of pixel q, given how many frames stand behind the
+// channel (a channel with none of its own goes by the surface's)
+float GatheredVariance(int k, ivec2 q, float frames)
+{
+	const int now = fr.frame_has.z;
+	if (frames <= 0.0)
+		frames = imageLoad(img_kept[now * 3], q).a;
+	return VarianceOf(imageLoad(img_moments[now * 3 + k], q).xy, frames);
 }
 
 float MaxComponent(vec3 c)
