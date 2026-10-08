@@ -146,6 +146,18 @@ typedef struct pt_scene_s
 	int						num_lights;
 } pt_scene_t;
 
+/*
+Ways of drawing the scene with its materials overridden, for checking a
+renderer and for pictures. Lights are as they are, and what glows keeps its
+glow. The sky, glass, and what only emits (PT_MAT_BLACK) are left alone.
+*/
+#define PT_VIEW_NORMAL	0
+#define PT_VIEW_CLAY	1	/* every surface matte mid grey, fully rough, not metal,
+						   whatever its textures say. Liquids too: to the eye
+						   they are solid, though light still passes them. */
+#define PT_VIEW_MIRROR	2	/* every surface as smooth as the backend can make
+						   one; its colour and whether it is metal are kept */
+
 /* one 3D view */
 typedef struct pt_view_s
 {
@@ -188,6 +200,9 @@ typedef struct pt_view_s
 						   picture filtered. 1: neither; a frame stands alone, except
 						   that while the eye is at rest frames add up. 0: neither, ever */
 	int		debug;			/* 0 = the picture; otherwise one part of it, see pt_debug */
+	int		view_mode;		/* PT_VIEW_: the scene drawn with its materials overridden.
+						   Send restart when it changes, or the old picture
+						   bleeds into the new one. */
 
 	/* reflections */
 	int		reflections;		/* 0 none, 1 glass and liquids, 2 every shiny surface */

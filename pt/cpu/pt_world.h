@@ -237,6 +237,7 @@ struct Scene
 	float		wave_strength = 1.0f;
 	bool		filter_textures = true;
 	int			reflections = 2;
+	int			view_mode = 0;
 	int			reflection_bounces = 3;
 	float		reflection_rate = 1.0f;
 	bool		refraction = true;

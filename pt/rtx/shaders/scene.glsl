@@ -16,6 +16,11 @@ const uint MAT_WAVES = 32u;
 const uint MAT_EMIT_BRIGHT = 64u;
 const uint MAT_WARP = 128u;
 
+// pt_view_t's view_mode, as in pt.h
+const int VIEW_NORMAL = 0;
+const int VIEW_CLAY = 1;
+const int VIEW_MIRROR = 2;
+
 // Material.bits
 const uint BIT_EMISSIVE = 1u;
 const uint BIT_SAMPLED = 2u;		// reached through the light lists, so not counted when hit by chance
@@ -86,7 +91,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	vec4	sky_turn;		// xyz: the axis the sky turns about; w: sine of the angle
 	vec4	sky_misc;		// cosine, brightness of a white texel, integral of its luminance, time
 	ivec4	counts;			// lights of the map, lights of the frame, frame number, animation step
-	ivec4	bases;			// y, w: first triangle of the map's glass and of the frame's; x: unused; z: what is done about noise, see pt_view_t
+	ivec4	bases;			// y, w: first triangle of the map's glass and of the frame's; x: the view mode; z: what is done about noise, see pt_view_t
 	ivec4	grid_dims;		// xyz; w: there is a grid
 	vec4	grid_origin;	// xyz; w: one over the cell size
 	ivec4	table_at;		// in tables: map wide light cdf, grid pdf, grid cdf, sky chance
@@ -559,6 +564,23 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 		const float metallic = mat.emission_per_texel.a;
 		s.kd = s.colour * (1.0 - metallic);
 		s.f0 = vec3(0.04) * (1.0 - metallic) + s.colour * metallic;
+
+		// A view mode's say over what the surface is made of (pt_view_t's
+		// view_mode). What the surface emits is worked out from its colour,
+		// which is left alone.
+		const int view_mode = fr.bases.x;
+		if (view_mode != VIEW_NORMAL)
+		{
+			if (view_mode == VIEW_CLAY && (mat.alpha >= 1.0 || (mat.flags & MAT_WAVES) != 0u))
+			{
+				s.kd = vec3(0.5);
+				s.f0 = vec3(0.04);
+				s.roughness = 1.0;
+				s.mat.alpha = 1.0;		// liquids: solid to the eye
+			}
+			else if (view_mode == VIEW_MIRROR)
+				s.roughness = 0.0;
+		}
 	}
 	s.alpha = max(s.roughness * s.roughness, MIN_ALPHA);
 	s.light_sampled_spec = s.roughness >= LIGHT_SAMPLED_ROUGHNESS;

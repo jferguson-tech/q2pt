@@ -584,7 +584,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 		const Material &mat = *surf.mat;
 		tint *= Fade(absorb, hit.t - entered);
 		entered = hit.t;
-		if (mat.alpha >= 1.0f || layer >= 8)
+		if (mat.alpha >= 1.0f || layer >= 8 || (sc.view_mode == PT_VIEW_CLAY && ClayCovers(mat)))
 		{
 			solid = true;
 			break;
@@ -1790,6 +1790,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	sc.wave_strength = std::max(0.0f, view->wave_strength);
 	sc.filter_textures = view->texture_filter != 0;
 	sc.reflections = view->reflections;
+	sc.view_mode = view->view_mode;
 	sc.reflection_bounces = std::max(1, view->reflection_bounces > 0 ? view->reflection_bounces : bounces);
 	sc.reflection_rate = std::max(0.0f, view->reflection_rate);
 	sc.refraction = view->refraction != 0;
@@ -1809,7 +1810,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	{
 		const float settings[] = {(float)samples, (float)sc.light_samples, sc.max_sample, sc.wave_strength,
 			(float)sc.filter_textures, (float)sc.reflections, (float)sc.reflection_bounces, sc.reflection_rate,
-			(float)sc.refraction, view->exposure, sc.fog_density};
+			(float)sc.refraction, view->exposure, sc.fog_density, (float)sc.view_mode};
 		hash = HashBytes(settings, sizeof(settings), hash);
 	}
 	if (s->world->has_waves)

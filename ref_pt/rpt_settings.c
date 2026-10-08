@@ -27,6 +27,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 cvar_t	*pt_stats;				// 1: frame rate and timings on screen, 2: and in the console
 cvar_t	*pt_debug;				// one component of the picture, see below
+cvar_t	*pt_view;				// the scene with its materials overridden, see below
 cvar_t	*pt_simd;				// CPU path tracer: 1 = the build for SSE even where there is AVX2
 cvar_t	*pt_material_cache;		// keep the detail maps read from the pictures in pt_cache in the game directory
 
@@ -125,6 +126,9 @@ void R_InitSettings (void)
 	// 5 unfiltered extras, 6 normals, 7 history length, 8 layer history length,
 	// 9 seen through water, 10 depth
 	pt_debug = ri.Cvar_Get ("pt_debug", "0", 0);
+	// 1 clay: every surface matte grey, 2 mirror: every surface smooth.
+	// Not kept in the config: the game does not start in one of these.
+	pt_view = ri.Cvar_Get ("pt_view", "0", 0);
 	// which build of the CPU path tracer runs is settled when it starts, so
 	// changing this starts the renderer again: see R_BeginFrame
 	pt_simd = ri.Cvar_Get ("pt_simd", "0", 0);
@@ -298,6 +302,34 @@ qboolean R_UpdateSettings (void)
 
 /*
 ===============
+R_ViewMode
+
+pt_view, which offline rendering and screenshots honour as the game does
+===============
+*/
+static void R_ViewMode (pt_view_t *view)
+{
+	static int	was;
+	int			mode;
+
+	mode = (int)pt_view->value;
+	if (mode < PT_VIEW_NORMAL || mode > PT_VIEW_MIRROR)
+		mode = PT_VIEW_NORMAL;
+	view->view_mode = mode;
+
+	// nothing is followed off a surface with reflections off, and a mirror
+	// would show nothing
+	if (mode == PT_VIEW_MIRROR)
+		view->reflections = 2;
+
+	// the light gathered so far is of the other view
+	if (mode != was)
+		view->restart = 1;
+	was = mode;
+}
+
+/*
+===============
 R_ViewSettings
 ===============
 */
@@ -335,6 +367,8 @@ void R_ViewSettings (pt_view_t *view)
 
 	if (R_Offline ())
 		R_OfflineSettings (view);
+
+	R_ViewMode (view);
 }
 
 /*
