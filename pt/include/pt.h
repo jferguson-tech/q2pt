@@ -45,6 +45,11 @@ vertices appear counter clockwise.
 #define PT_MAT_METAL_TEXTURE	512u	/* the blue of normal_texture is how metallic the
 									   surface is there, in place of metallic; the
 									   normal's z is worked out from its x and y */
+#define PT_MAT_METAL_PAINTED	1024u	/* the texture was painted to be looked at, and
+									   shows metal as dark as it looks in a dim room:
+									   where the surface is metal, what it reflects
+									   is worked out from the colour, see pt_view_t's
+									   metal_colour. What it emits is not changed. */
 
 typedef struct pt_texture_s
 {
@@ -253,6 +258,12 @@ typedef struct pt_view_s
 								   reflection path; 1 = the backend's own choice */
 	int		refraction;			/* liquids bend the view */
 	float	wave_strength;		/* ripples on liquids; 0 = flat, 1 = normal */
+	float	metal_colour;		/* PT_MAT_METAL_PAINTED: how much of the light a
+								   metal painted mid dark (1.2% of white, as old
+								   game art paints steel) reflects. One painted
+								   four times as bright reflects twice that, none
+								   less than it was painted, and the hue is kept.
+								   0 = the colour as it is. */
 
 	/* lighting */
 	int		light_samples;		/* lights weighed per point the eye sees; half

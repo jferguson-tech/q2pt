@@ -23,18 +23,24 @@ a second.*
   Lights are importance sampled; indirect light comes from further bounces.
 * Physically based materials: GGX specular with roughness and metallic, normal
   maps and smooth shading on models. What kind of thing a surface is is guessed
-  from its texture's name and can be set per texture in `pt_materials.txt`.
+  from its texture's name, which says that it is metal, that it is not, or
+  nothing; it can be set per texture in `pt_materials.txt`.
 * Normal, roughness and metal maps made from the game's own textures, on your
   machine, the first time a level shows them. The artists painted a highlight
   on the edges that face the top left of a texture and a shadow on the others;
   that painted light is read back as shape, so panels, seams, rivets and vents
   catch real light the way they were drawn to. Where nothing was painted, dark
   is taken to be deep, and rust and grooves are made rougher than bare metal.
-  Metal is told from what lies over it: what is vividly coloured in a texture
-  is paint, rust or wood and what is dim is dirt, so a rusted plate shines
-  only where its steel shows through. The painted light, once read, is taken
-  out of the texture's colours, where it would otherwise light each raised
-  edge a second time. The maps are twice as fine as the textures. They are
+  A surface is metal or it is not, texel by texel, on walls and on the skins
+  of models alike: bare steel was painted grey, and rust, paint, wood, cloth
+  and skin vivid, so a rusted plate shines only where its steel shows through
+  and a soldier's armour where his arms do not. Dull metal is rough metal,
+  never half metal. The art shows steel as dark as it looks in a dim room, a
+  small part of what steel reflects, so metal reflects more than it was
+  painted, in its own hue; `pt_metal_colour` says how much. The painted
+  light, once read, is taken out of the texture's colours, where it would
+  otherwise light each raised edge a second time. The maps are twice as fine
+  as the textures. They are
   kept in `baseq2\pt_cache`, about 110 KB a texture, which can be deleted at
   any time; nothing made from the game's art is part of this repository.
   **F11** switches between these maps and the plain ones made before them.
@@ -248,7 +254,7 @@ Some console commands and variables:
 | `pt_view 3` | the white furnace, a test of whether paths keep the light they carry: every surface, glass and liquids too, is matte and reflects everything, no light or glow is lit, sparks and beams are not there, and a path that reaches the sky or runs out of bounces brings back a half. A tracer that neither makes nor loses light draws every pixel at 186; brighter is light made, darker light lost. As it stands the picture comes out a few percent bright, more with more bounces: a white surface reflects all the light in its matte part and some more in its shine. With `pt_reflections 1` it is 186 everywhere |
 | `pt_view 4` | lighting only: what the eye sees is white, of the material it is, lit by the scene as it is |
 | `pt_view 5`, `6` | direct only: light that comes straight from a light, the sky or the air's glow, and what glows seen directly. Indirect only: all the rest, which has bounced or been mirrored on the way. The two add up to the picture, though each is exposed for itself unless `pt_auto_exposure` is `0` |
-| `pt_view 7`-`11` | one thing known of the first surface the eye meets, glass included, unlit: `7` base colour, `8` normals (the shading normal in the world, 0.5 + 0.5 n), `9` roughness, `10` metal, `11` glow (held to 1). The sky is black. But for the base colour a pixel is the number times 255 |
+| `pt_view 7`-`11` | one thing known of the first surface the eye meets, glass included, unlit: `7` base colour, `8` normals (the shading normal in the world, 0.5 + 0.5 n), `9` roughness, `10` metal (white where it is metal, black where it is not), `11` glow (held to 1). The sky is black. But for the base colour a pixel is the number times 255 |
 | `pt_view 12` | bounce count: how many times the paths from each pixel bounced after the first surface, on average. Black none, blue 1, cyan 2, green 3, yellow 4, red 5, magenta 6, white 7 or more |
 | `pt_view 3`, `7`-`12` | shown as traced, to be read off the picture: exposure 1, no auto exposure, no tone curve, no bloom, no fog |
 | `pt_switch 1`-`6` (number pad **1**-**6**) | switch off, or back on, one of the things in the picture that depend on earlier frames, to find which one a fault comes from: anti-aliasing and the upscaler, light history, the noise filter, auto exposure, upscaling, the history view. A list of them all comes up for a few seconds with what is on and off. Number pad **0** puts them all back; **.** keeps the list up (`pt_show_filter`) |
@@ -256,11 +262,12 @@ Some console commands and variables:
 | `pt_stats 0` | hide the performance info, which is on by default (never shown in offline renders) |
 | `pt_simd 0`-`1` | CPU renderer: the build for AVX2 where the processor has it, or the one for any processor, to compare the two |
 | `pt_debug 1`-`11` | one part of the picture on its own |
-| `pt_bump`, `pt_roughness`, `pt_metallic` | scale how deep, how rough and how metallic every surface is taken to be; 1 unless set |
-| `pt_material_maps 0`-`1`, `pt_material_toggle` (**F11**) | normal, roughness and metal maps read from each texture's painted light and colours (`1`, the default), or the plain ones of before, which take brightness for height and have one metal for the whole texture. The key switches between the two while playing; the level's surfaces are made again, which takes a moment |
+| `pt_bump`, `pt_roughness`, `pt_metallic` | scale how deep, how rough and how metallic every surface is taken to be; 1 unless set. Below 1, `pt_metallic` makes what is metal less than metal |
+| `pt_material_maps 0`-`1`, `pt_material_toggle` (**F11**) | normal, roughness and metal maps read from each texture's painted light and colours (`1`, the default), or the plain ones of before, which take brightness for height and give the whole of a texture one number for metal: half for what its name says is metal, less for what the name says nothing of. The key switches between the two while playing; the level's surfaces are made again, which takes a moment |
+| `pt_metal_colour` | how much of the light metal reflects where it was read from a picture: what a metal painted as dark as the game's steel reflects, `0.05` unless set. Brighter painted metal reflects more, none less than it was painted, and the hue is kept. Steel reflects ten times that, but the game's art is that much darker than the things it shows all over, and at `0.5` metal is white beside everything else. `0` leaves metal the colour it was painted, which is next to black. Takes effect at once |
 | `pt_material_delight 0`-`1` | how much of the light painted into a wall texture is taken out of its colours once it has been read as shape: `1` (the default) is all that was read, `0` leaves the colours as they are. Screens and lamps keep theirs |
 | `pt_material_cache 0`-`1` | keep the maps that were made in `baseq2\pt_cache`, so that a texture is read once only; on by default |
-| `pt_material_show <image>` | write a texture beside what was read from it, as a PNG in `baseq2\scrnshot`: its colours without the painted light, its height, normals, roughness and metal. For example `pt_material_show textures/e1u1/metal1_1` |
+| `pt_material_show <image>` | write a texture beside what was read from it, as a PNG in `baseq2\scrnshot`: its colours without the painted light, its height, normals, roughness, metal, and what it reflects head on. For example `pt_material_show textures/e1u1/metal1_1` or `pt_material_show models/monsters/soldier/skin` |
 | `screenshot`, `pt_screenshot [paths]` | the frame as shown, or rendered again at high quality |
 | `record <name>`, `stop` | record a demo (the game's own commands) |
 | `pt_render <demo> [fps] [paths] [start] [length]` | render a demo offline into `baseq2\render\<demo>\`; start and length, in seconds, pick a part of it |

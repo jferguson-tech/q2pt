@@ -29,6 +29,7 @@ struct Surface
 	Vec3			kd;			// diffuse reflectance
 	Vec3			f0;			// specular reflectance head on
 	float			roughness;
+	float			metallic;	// here: the material's, or its texture's
 	float			alpha;		// GGX width, roughness squared
 	bool			light_sampled_spec;
 	bool			medium;		// not a surface at all but a point in the air: no facing, scatters evenly

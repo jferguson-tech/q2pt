@@ -12,6 +12,8 @@ Quake 2's renderer interface to that header lives in `../ref_pt`.
   shaders using ray queries; it builds its light lists with `cpu/pt_world.cpp`
 - `water/` - height field wave simulation for bodies of liquid
 - `material/` - makes a normal, roughness and metal map from the colours of a
-  hand painted texture, reading its painted highlights and shadows as shape,
-  and gives the texture back with that painted light taken out
+  hand painted texture, reading its painted highlights and shadows as shape
+  and telling metal from what covers it by colour, gives the texture back
+  with that painted light taken out, and works out what a metal painted that
+  dark reflects
 - `png/` - PNG writer

@@ -1833,6 +1833,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	sc.filter_textures = view->texture_filter != 0;
 	sc.reflections = view->reflections;
 	sc.view_mode = view->view_mode;
+	sc.metal_colour = std::max(0.0f, view->metal_colour);
 	sc.reflection_bounces = std::max(1, view->reflection_bounces > 0 ? view->reflection_bounces : bounces);
 	sc.reflection_rate = std::max(0.0f, view->reflection_rate);
 	sc.refraction = view->refraction != 0;
@@ -1852,7 +1853,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	{
 		const float settings[] = {(float)samples, (float)sc.light_samples, sc.max_sample, sc.wave_strength,
 			(float)sc.filter_textures, (float)sc.reflections, (float)sc.reflection_bounces, sc.reflection_rate,
-			(float)sc.refraction, view->exposure, sc.fog_density, (float)sc.view_mode};
+			(float)sc.refraction, view->exposure, sc.fog_density, (float)sc.view_mode, sc.metal_colour};
 		hash = HashBytes(settings, sizeof(settings), hash);
 	}
 	if (s->world->has_waves)

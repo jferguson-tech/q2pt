@@ -65,9 +65,13 @@ typedef struct image_s
 typedef struct
 {
 	float	roughness;	// 0 mirror - 1 matte
-	float	metallic;	// 0 - 1
+	float	metallic;	// how metallic its metal is: 1, or 0 for what is not metal. Where the
+						// metal is, its picture says.
 	float	bump;		// how deep the picture's detail is taken to be; 0 = flat
 	float	glow;		// how strongly the bright parts of the picture light up; 0 = not at all
+	qboolean	metal_known;	// it is metal, and its picture shows only what covers the metal;
+								// else the picture says whether there is any
+	float	metallic_unread;	// what the whole of it is given where its picture is not read
 } matinfo_t;
 
 typedef enum
@@ -157,6 +161,7 @@ void	R_InitMaterials (void);
 void	R_ShutdownMaterials (void);
 void	R_MaterialsReport (void);
 void	R_MaterialInfo (const char *name, matinfo_t *info);
+float	R_MetalColour (void);
 uint32_t *R_ImageNormalMap (image_t *image, const matinfo_t *info, int *width, int *height);
 image_t	*R_ImageGlowMap (image_t *image);
 

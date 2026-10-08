@@ -83,6 +83,7 @@ static cvar_t	*pt_roughness;
 static cvar_t	*pt_metallic;
 static cvar_t	*pt_material_maps;		// 1: relief, roughness and metal read from each picture's painted light, 0: brightness as height
 static cvar_t	*pt_material_delight;	// how much of that painted light is taken out of the colours, 0 - 1
+static cvar_t	*pt_metal_colour;		// how much of the light metal read from a picture reflects, see pt_view_t
 
 float	r_skyscale = 2;
 float	r_lampglow = 1.5f;
@@ -192,6 +193,7 @@ void R_InitSettings (void)
 	pt_metallic = ri.Cvar_Get ("pt_metallic", "1", CVAR_ARCHIVE);
 	pt_material_maps = ri.Cvar_Get ("pt_material_maps", "1", CVAR_ARCHIVE);
 	pt_material_delight = ri.Cvar_Get ("pt_material_delight", "1", CVAR_ARCHIVE);
+	pt_metal_colour = ri.Cvar_Get ("pt_metal_colour", "0.05", CVAR_ARCHIVE);
 	pt_material_cache = ri.Cvar_Get ("pt_material_cache", "1", CVAR_ARCHIVE);
 
 	r_skyscale = pt_sky->value;
@@ -314,6 +316,19 @@ qboolean R_UpdateSettings (void)
 
 /*
 ===============
+R_MetalColour
+
+pt_metal_colour: what metal read from a picture is taken to reflect, see
+pt_view_t
+===============
+*/
+float R_MetalColour (void)
+{
+	return pt_metal_colour->value > 0 ? pt_metal_colour->value : 0;
+}
+
+/*
+===============
 R_ViewMode
 
 pt_view, which offline rendering and screenshots honour as the game does
@@ -372,6 +387,7 @@ void R_ViewSettings (pt_view_t *view)
 	view->reflection_rate = pt_reflection_rate->value;
 	view->refraction = pt_refraction->value != 0;
 	view->wave_strength = pt_waves->value;
+	view->metal_colour = R_MetalColour ();
 
 	view->light_samples = pt_light_samples->value;
 	view->firefly_clamp = pt_firefly_clamp->value;

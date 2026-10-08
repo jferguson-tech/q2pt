@@ -173,7 +173,7 @@ static int W_AddMaterial (texinfo_t *tex, int body)
 	if ((flags & SURF_WARP) && r_watermode == 0)
 	{	// classic: a flat sheet whose texture swims, lit by nothing but itself
 		info.roughness = 1;
-		info.metallic = 0;
+		info.metallic = info.metallic_unread = 0;
 		info.bump = 0;
 		mat->flags |= PT_MAT_WARP;
 		classic = true;
@@ -181,7 +181,7 @@ static int W_AddMaterial (texinfo_t *tex, int body)
 	else if (flags & SURF_WARP)
 	{	// water, slime, lava: a smooth, rippling surface that soaks up light
 		info.roughness = 0.05f;
-		info.metallic = 0;
+		info.metallic = info.metallic_unread = 0;
 		info.bump = 0;
 		mat->flags |= PT_MAT_WAVES;
 		R_WaterAbsorb (image, name, mat->absorb);
@@ -189,7 +189,7 @@ static int W_AddMaterial (texinfo_t *tex, int body)
 	else if (flags & (SURF_TRANS33|SURF_TRANS66))
 	{	// glass and force fields
 		info.roughness = 0.05f;
-		info.metallic = 0;
+		info.metallic = info.metallic_unread = 0;
 		info.bump = 0;
 	}
 	mat->roughness = info.roughness;
@@ -202,7 +202,7 @@ static int W_AddMaterial (texinfo_t *tex, int body)
 		mat->flags |= PT_MAT_EMIT_BRIGHT;
 		mat->emission[0] = mat->emission[1] = mat->emission[2] = info.glow * r_detailglow;
 	}
-	mat->metallic = info.metallic;
+	mat->metallic = info.metallic_unread;
 	if (image && !(flags & SURF_SKY))
 	{
 		uint32_t	*detail;
@@ -214,7 +214,7 @@ static int W_AddMaterial (texinfo_t *tex, int body)
 		{
 			mat->normal_texture = W_AddTexture (detail_width, detail_height, detail, &image->normalmap);
 			if (image->normal_metal)
-				mat->flags |= PT_MAT_METAL_TEXTURE;
+				mat->flags |= PT_MAT_METAL_TEXTURE | PT_MAT_METAL_PAINTED;
 		}
 		// reading the detail map may have taken the painted light out of the colours
 		w_textures[mat->texture].pixels = R_ImageColours (image);

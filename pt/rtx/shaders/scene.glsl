@@ -16,6 +16,7 @@ const uint MAT_WAVES = 32u;
 const uint MAT_EMIT_BRIGHT = 64u;
 const uint MAT_WARP = 128u;
 const uint MAT_METAL_TEXTURE = 512u;
+const uint MAT_METAL_PAINTED = 1024u;
 
 // pt_view_t's view_mode, as in pt.h
 const int VIEW_NORMAL = 0;
@@ -124,6 +125,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	vec4	open_right;
 	vec4	open_up;
 	ivec4	held;			// x: first triangle of the frame carried by the eye (the weapon in hand); y: how many
+	vec4	painted;		// x: what a metal painted dark reflects, see pt_view_t's metal_colour
 } fr;
 
 // the map and what moves, each as three corners per triangle, what goes with
@@ -437,11 +439,29 @@ struct Surface
 	vec3	kd;			// diffuse reflectance
 	vec3	f0;			// specular reflectance head on
 	float	roughness;
+	float	metallic;	// here: the material's, or its texture's
 	float	alpha;		// GGX width, roughness squared
 	bool	light_sampled_spec;
 	bool	medium;		// not a surface at all but a point in the air: no facing, scatters evenly
 	Material mat;		// after animation
 };
+
+// What a metal reflects, worked out from the colour it was painted
+// (MAT_METAL_PAINTED): pt_material_metal_colour in pt/material/pt_material.h,
+// which says why, written again here. The two are to be kept the same.
+const float METAL_PAINTED = 0.012;
+const float METAL_HUE_KEPT = 0.6;
+
+vec3 MetalColour(vec3 c, float level)
+{
+	if (level <= 0.0)
+		return c;
+	const float y = max(Luminance(c), 1.0e-6);
+	const float bright = max(level * sqrt(y * (1.0 / METAL_PAINTED)), y);
+	const float keep = (METAL_HUE_KEPT + (1.0 - METAL_HUE_KEPT) * y / bright) * min(MaxComponent(c) * (1.0 / 0.004), 1.0);
+	const vec3 tinted = (vec3(1.0) + (c / y - vec3(1.0)) * keep) * bright;
+	return tinted / max(MaxComponent(tinted), 1.0);
+}
 
 struct Lit
 {
@@ -584,6 +604,7 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 		n = s.ng;
 	s.n = n;
 
+	s.metallic = metallic;
 	if ((mat.flags & MAT_BLACK) != 0u)
 	{
 		s.kd = vec3(0.0);
@@ -592,7 +613,8 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 	else
 	{
 		s.kd = s.colour * (1.0 - metallic);
-		s.f0 = vec3(0.04) * (1.0 - metallic) + s.colour * metallic;
+		s.f0 = vec3(0.04) * (1.0 - metallic)
+			+ ((mat.flags & MAT_METAL_PAINTED) != 0u ? MetalColour(s.colour, fr.painted.x) : s.colour) * metallic;
 
 		// A view mode's say over what the surface is made of (pt_view_t's
 		// view_mode). What the surface emits is worked out from its colour,
@@ -644,9 +666,8 @@ void WhiteSurface(inout Surface s)
 {
 	if ((s.mat.flags & MAT_BLACK) != 0u)
 		return;
-	const float metallic = s.mat.emission_per_texel.a;
-	s.kd = vec3(1.0 - metallic);
-	s.f0 = vec3(0.04 * (1.0 - metallic) + metallic);
+	s.kd = vec3(1.0 - s.metallic);
+	s.f0 = vec3(0.04 * (1.0 - s.metallic) + s.metallic);
 }
 
 // what a view of one thing known of the surface shows (VIEW_BASE_COLOUR to
@@ -662,7 +683,7 @@ vec3 SurfaceChannel(int mode, Surface s)
 	if (mode == VIEW_ROUGHNESS)
 		return ToLinear(vec3(clamp(s.roughness, 0.0, 1.0)));
 	if (mode == VIEW_METAL)
-		return ToLinear(vec3(clamp(s.mat.emission_per_texel.a, 0.0, 1.0)));
+		return ToLinear(vec3(clamp(s.metallic, 0.0, 1.0)));
 	if (mode == VIEW_GLOW && (s.mat.bits & BIT_EMISSIVE) != 0u && s.front)
 	{
 		const vec3 e = Emitted(s, true);
@@ -1053,6 +1074,7 @@ vec3 DirectMedium(vec3 p)
 	s.kd = vec3(1.0);
 	s.f0 = vec3(0.0);
 	s.roughness = 1.0;
+	s.metallic = 0.0;
 	s.alpha = 1.0;
 	s.light_sampled_spec = false;
 	return DirectWorld(s, false).diffuse + DirectFrameOne(s).diffuse;

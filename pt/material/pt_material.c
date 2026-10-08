@@ -60,16 +60,25 @@ units of brightness, so a value means the same on a 16 texel button and a
 #define ROUGH_LESS		0.15f	/* the most a texel is made smoother than the material ... */
 #define ROUGH_MORE		0.3f	/* ... and the most it is made rougher */
 
-/* metal shows where the picture is neither vivid (paint, rust, wood) nor dim (dirt, a gap) */
-#define COLOUR_SPREAD	1.0f	/* the dither's colours are averaged this far before they are judged */
-#define VIVID_FROM		0.6f	/* 1 - least / most of red, green and blue in linear light: grey metal lies below this ... */
-#define VIVID_TO		0.9f	/* ... and paint and rust above this */
-#define DIM_BELOW		0.5f	/* this much darker than the picture as a whole begins to be dirt */
-#define DIM_RANGE		0.7f
-#define METAL_VIVID		0.9f	/* how much of its metal what is vivid loses */
-#define METAL_GROOVE	0.5f	/* and what lies in a groove */
-#define METAL_BARE		0.5f	/* a picture at least this much bare metal has the material's metal on average;
-								   one with less has less */
+/*
+Metal. Bare steel was painted grey, or faintly blue or brown; rust, paint,
+wood, cloth and skin were painted vivid. A texel is metal or it is not: the
+line is drawn through how vivid it is as it is shown, 1 - least / most of
+its red, green and blue.
+*/
+#define COLOUR_SPREAD	1.5f	/* the dither's colours are averaged this far before they are judged */
+#define VIVID_FLOOR		0.02f	/* added under the brightest of the three: black is not vivid */
+#define METAL_LINE		0.22f	/* this vivid or more is not metal ... */
+#define METAL_LINE_SURE	0.28f	/* ... or this, in a picture known to be of metal */
+#define ONE_KIND_FROM	0.06f	/* a picture whose texels differ less than this in how vivid they are is all
+								   of one kind, and is judged as a whole by its average; one whose texels ... */
+#define ONE_KIND_TO		0.11f	/* ... differ by this or more is judged texel by texel */
+#define TOO_DARK		0.05f	/* shown darker than this is a gap or black rubber, whatever its colour */
+#define DARK_COUNTS		0.1f	/* and below this a texel counts for less in the picture's average */
+#define METAL_PATCH		1.0f	/* metal and what covers it come in patches at least about this far across */
+#define METAL_EDGE		1.0f	/* texels of the map the edge of a patch is spread over */
+#define METAL_SOME		0.05f	/* a picture this much metal or more has the rest of it for a covering */
+#define COVER_ROUGHER	0.25f	/* what covers metal is this much rougher than the metal */
 
 /* the painted light the colours are relieved of */
 #define LIT_MOST		1.2f	/* a difference well past this is a lamp or a marking, not a highlight */
@@ -352,10 +361,11 @@ int pt_material_detail_scale(int width, int height, int repeats)
 What is read from the picture. slopes: gw * scale by gh * scale pairs, the
 height's slope to the right and down the picture, or with want_height its
 height and nothing. The rest is on the grid itself. rough: how much rougher
-or smoother than the picture's average each texel is. metal: how much of the
-material's metal it has, 0 - 2. lit: the painted light found there, in log
-units, above 0 for a highlight and below for a shadow. All NULL if there is
-no memory.
+or smoother than the picture's average each texel is. metal: how much of
+what lies about each texel is metal, 0 - 1, so that 0.5 is the edge of a
+patch; metal_share is how much of the picture is. lit: the painted light
+found there, in log units, above 0 for a highlight and below for a shadow.
+All NULL if there is no memory.
 */
 typedef struct
 {
@@ -364,6 +374,7 @@ typedef struct
 	float	*rough;
 	float	*metal;
 	float	*lit;
+	float	metal_share;
 } reading_t;
 
 static void release(reading_t *r)
@@ -380,7 +391,7 @@ static int read_picture(reading_t *r, const uint32_t *pixels, int width, int hei
 	grid_t	*g = &r->g;
 	float	linear[256];
 	float	*block, *lum, *clean, *wide, *band, *tmp, *cr, *cg, *known, *warm, *paint, *ar, *ag, *ab, *z, *line, *table;
-	float	body, mean, counted;
+	float	body, mean;
 	size_t	i, big_count;
 	int		x, y, bw, bh, table_n;
 
@@ -481,28 +492,64 @@ static int read_picture(reading_t *r, const uint32_t *pixels, int width, int hei
 		r->rough[i] -= mean;
 
 	/* metal */
-	blur(ar, ar, tmp, g, COLOUR_SPREAD);
-	blur(ag, ag, tmp, g, COLOUR_SPREAD);
-	blur(ab, ab, tmp, g, COLOUR_SPREAD);
-	mean = counted = 0.0f;
-	for (i = 0; i < g->count; i++)
+	r->metal_share = 0.0f;
+	if (from->metallic > 0.0f)
 	{
-		const float most = ar[i] > ag[i] ? (ar[i] > ab[i] ? ar[i] : ab[i]) : (ag[i] > ab[i] ? ag[i] : ab[i]);
-		const float least = ar[i] < ag[i] ? (ar[i] < ab[i] ? ar[i] : ab[i]) : (ag[i] < ab[i] ? ag[i] : ab[i]);
-		const float vivid = smoothstep(VIVID_FROM, VIVID_TO, (most - least) / (most + 1.0e-4f))
-			* clamp01((ar[i] + ag[i] + ab[i]) / COLOUR_KNOWN);
-		const float dim = clamp01((body - DIM_BELOW - clean[i]) / DIM_RANGE);
+		const float limit = from->metal_known ? METAL_LINE_SURE : METAL_LINE;
+		const float dark = logf(powf(TOO_DARK, 2.2f) + LOG_FLOOR);
+		double	seen = 0.0, sum = 0.0, squares = 0.0;
+		float	*vivid = r->metal;
+		float	spread, own;
+		size_t	metal = 0;
 
-		r->metal[i] = (1.0f - dim) * (1.0f - METAL_VIVID * vivid) * (1.0f - METAL_GROOVE * clamp01(-band[i] / 0.6f));
-		mean += r->metal[i];
-		counted += 1.0f - dim;
+		blur(ar, ar, tmp, g, COLOUR_SPREAD);
+		blur(ag, ag, tmp, g, COLOUR_SPREAD);
+		blur(ab, ab, tmp, g, COLOUR_SPREAD);
+
+		/* how vivid each texel is, and over the picture itself how vivid on average and how varied */
+		for (y = 0; y < g->gh; y++)
+		{
+			for (x = 0; x < g->gw; x++)
+			{
+				float	hi, lo;
+
+				i = (size_t)y * g->gw + x;
+				hi = ar[i] > ag[i] ? (ar[i] > ab[i] ? ar[i] : ab[i]) : (ag[i] > ab[i] ? ag[i] : ab[i]);
+				lo = ar[i] < ag[i] ? (ar[i] < ab[i] ? ar[i] : ab[i]) : (ag[i] < ab[i] ? ag[i] : ab[i]);
+				/* as they are shown, which is how they were chosen */
+				hi = powf(hi > 0.0f ? hi : 0.0f, 1.0f / 2.2f);
+				lo = powf(lo > 0.0f ? lo : 0.0f, 1.0f / 2.2f);
+				vivid[i] = (hi - lo) / (hi + VIVID_FLOOR);
+
+				if (x >= g->ox && x < g->ox + width && y >= g->oy && y < g->oy + height)
+				{
+					const float counts = (1.0f - clamp01((body - HOLE_BELOW - clean[i]) / HOLE_RANGE)) * clamp01(hi / DARK_COUNTS);
+
+					seen += counts;
+					sum += counts * vivid[i];
+					squares += counts * vivid[i] * vivid[i];
+				}
+			}
+		}
+		mean = seen > 1.0e-6 ? (float)(sum / seen) : 0.0f;
+		spread = seen > 1.0e-6 ? (float)(squares / seen) - mean * mean : 0.0f;
+		own = smoothstep(ONE_KIND_FROM, ONE_KIND_TO, sqrtf(spread > 0.0f ? spread : 0.0f));
+
+		for (i = 0; i < g->count; i++)
+		{
+			const float hole = clamp01((body - HOLE_BELOW - clean[i]) / HOLE_RANGE);
+
+			r->metal[i] = (mean + (vivid[i] - mean) * own < limit && hole < 0.5f && clean[i] > dark) ? 1.0f : 0.0f;
+		}
+		/* a texel alone among the other kind is noise: each goes with what lies about it */
+		blur(r->metal, r->metal, tmp, g, METAL_PATCH);
+		for (y = 0; y < height; y++)
+			for (x = 0; x < width; x++)
+				metal += r->metal[(size_t)(y + g->oy) * g->gw + x + g->ox] > 0.5f;
+		r->metal_share = (float)metal / (float)((size_t)width * height);
 	}
-	/* what is dim reflects next to nothing whatever it is made of, and is left out of the average */
-	mean = counted > 1.0e-3f ? mean / counted : 1.0f;
-	if (mean < METAL_BARE)
-		mean = METAL_BARE;
-	for (i = 0; i < g->count; i++)
-		r->metal[i] /= mean;
+	else
+		memset(r->metal, 0, g->count * sizeof(float));
 
 	/* how far each texel's colour is from the colour around it: 1 is certainly paint */
 	{
@@ -646,12 +693,16 @@ int pt_material_read(const uint32_t *pixels, int width, int height, const pt_mat
 	reading_t	r;
 	uint32_t	*map;
 	const grid_t *g = &r.g;
-	float		amount, spread;
+	float		amount, spread, cover, edge;
 	int			x, y, bw, mw, mh;
 
 	memset(maps, 0, sizeof(*maps));
 	if (!read_picture(&r, pixels, width, height, from, 0))
 		return 0;
+	/* beside metal, what is not metal lies over it: rust, paint, dirt. In a picture with no metal it is the thing itself */
+	cover = from->metallic <= 0.0f ? 0.0f : COVER_ROUGHER * (from->metal_known ? 1.0f : clamp01(r.metal_share / METAL_SOME));
+	/* across the straight edge of a patch r.metal rises by 1 / (sqrt(2 pi) METAL_PATCH) a texel of the picture */
+	edge = 2.5066283f * METAL_PATCH * (float)g->scale / METAL_EDGE;
 	mw = width * g->scale;
 	mh = height * g->scale;
 	map = (uint32_t *)malloc((size_t)mw * mh * sizeof(uint32_t));
@@ -688,17 +739,20 @@ int pt_material_read(const uint32_t *pixels, int width, int height, const pt_mat
 			sy *= level;
 			len = 1.0f / sqrtf(sx * sx + sy * sy + 1.0f);
 
+			/* all or nothing, but for the edge of a patch */
+			metal = r.metal[row0 + xa] * w00 + r.metal[row0 + xb] * w01
+				+ r.metal[row1 + xa] * w10 + r.metal[row1 + xb] * w11;
+			metal = clamp01(0.5f + (metal - 0.5f) * edge);
+
 			rough = spread * (r.rough[row0 + xa] * w00 + r.rough[row0 + xb] * w01
 				+ r.rough[row1 + xa] * w10 + r.rough[row1 + xb] * w11);
-			rough = from->roughness + (rough < -ROUGH_LESS ? -ROUGH_LESS : (rough > ROUGH_MORE ? ROUGH_MORE : rough));
+			rough = from->roughness + (rough < -ROUGH_LESS ? -ROUGH_LESS : (rough > ROUGH_MORE ? ROUGH_MORE : rough))
+				+ cover * (1.0f - metal);
 			if (rough < 0.04f)
 				rough = 0.04f;
 
-			metal = from->metallic * (r.metal[row0 + xa] * w00 + r.metal[row0 + xb] * w01
-				+ r.metal[row1 + xa] * w10 + r.metal[row1 + xb] * w11);
-
 			map[(size_t)y * mw + x] = to_byte(-sx * len * 0.5f + 0.5f) | (to_byte(-sy * len * 0.5f + 0.5f) << 8)
-				| (to_byte(metal) << 16) | (to_byte(rough) << 24);
+				| (to_byte(metal * from->metallic) << 16) | (to_byte(rough) << 24);
 		}
 	}
 	maps->detail = map;
