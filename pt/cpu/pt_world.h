@@ -239,6 +239,7 @@ struct Scene
 	bool		filter_textures = true;
 	int			reflections = 2;
 	int			view_mode = 0;
+	float		metal_colour = 0.0f;	// see pt_view_t
 	int			reflection_bounces = 3;
 	float		reflection_rate = 1.0f;
 	bool		refraction = true;

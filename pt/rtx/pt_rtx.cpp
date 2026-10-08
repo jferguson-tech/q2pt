@@ -118,6 +118,7 @@ struct FrameBlock
 	int32_t	out_size[4];
 	float	open_origin[4], open_forward[4], open_right[4], open_up[4];	// motion blur: the eye as the shutter opened; open_origin[3]: there is blur
 	int32_t	held[4];		// first triangle of the frame that the eye carries, how many; [2]: reflections are followed where they appear to be
+	float	painted[4];		// [0]: what a metal painted dark reflects, see pt_view_t's metal_colour
 };
 
 // one triangle, one material and one light as the shaders read them (std430)
@@ -2378,6 +2379,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.settings2[1] = view->texture_filter != 0;
 	f.settings2[2] = paths;
 	f.settings2[3] = view->debug;
+	f.painted[0] = std::max(0.0f, view->metal_colour);
 
 	s->exposure_used = view->debug ? 1.0f : view->exposure * (view->auto_exposure ? s->auto_exposure : 1.0f);
 	f.medium[3] = s->exposure_used;
@@ -2401,6 +2403,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	hash = HashBytes(&view->anim_frame, sizeof(view->anim_frame), hash);
 	hash = HashBytes(f.settings, sizeof(f.settings) + sizeof(f.settings_f) + sizeof(f.settings2), hash);
 	hash = HashBytes(&view->exposure, sizeof(view->exposure), hash);
+	hash = HashBytes(f.painted, sizeof(f.painted), hash);
 	if (s->world_has_waves || s->pending.size())
 		hash = HashBytes(&view->time, sizeof(view->time), hash);
 	// with nothing changing the average may run on and converge

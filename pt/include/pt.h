@@ -42,7 +42,15 @@ vertices appear counter clockwise.
 #define PT_MAT_HELD				256u	/* carried by the eye, as a weapon in hand is: with
 									   motion blur it is seen from where the eye is when
 									   the shutter closes, however the eye moved */
-#define PT_MAT_SAMPLED			512u	/* scene only: what this emits is also given as a
+#define PT_MAT_METAL_TEXTURE	512u	/* the blue of normal_texture is how metallic the
+									   surface is there, in place of metallic; the
+									   normal's z is worked out from its x and y */
+#define PT_MAT_METAL_PAINTED	1024u	/* the texture was painted to be looked at, and
+									   shows metal as dark as it looks in a dim room:
+									   where the surface is metal, what it reflects
+									   is worked out from the colour, see pt_view_t's
+									   metal_colour. What it emits is not changed. */
+#define PT_MAT_SAMPLED			2048u	/* scene only: what this emits is also given as a
 									   light in lights, so a path that comes upon it
 									   counts its glow only where lights are not looked
 									   for: from the eye and in a sharp reflection */
@@ -74,7 +82,8 @@ typedef struct pt_material_s
 								   Found by paths only, not sampled as a light. */
 	int			normal_texture;	/* -1 for none; same numbering as texture. RGB is a
 								   tangent space normal (x along u, y along v),
-								   alpha replaces roughness */
+								   alpha replaces roughness. See also
+								   PT_MAT_METAL_TEXTURE */
 	int			anim_next;		/* world only: the material shown one animation
 								   step later, or -1 */
 	int			wave_map;		/* liquids: texture_create handle + 1 of a wave
@@ -269,6 +278,12 @@ typedef struct pt_view_s
 								   reflection path; 1 = the backend's own choice */
 	int		refraction;			/* liquids bend the view */
 	float	wave_strength;		/* ripples on liquids; 0 = flat, 1 = normal */
+	float	metal_colour;		/* PT_MAT_METAL_PAINTED: how much of the light a
+								   metal painted mid dark (1.2% of white, as old
+								   game art paints steel) reflects. One painted
+								   four times as bright reflects twice that, none
+								   less than it was painted, and the hue is kept.
+								   0 = the colour as it is. */
 
 	/* lighting */
 	int		light_samples;		/* lights weighed per point the eye sees; half
