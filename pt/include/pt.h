@@ -186,8 +186,11 @@ pixel at that level; brighter is light made, darker is light lost.
 #define PT_VIEW_METAL		10
 #define PT_VIEW_GLOW		11	/* what it emits, held to 1 */
 /* How many times the paths from each pixel bounced, on average, after the
-   first surface: black none, then blue 1, cyan 2, green 3, yellow 4, red 5,
-   magenta 6, white 7 or more. */
+   first surface, on a scale that fits the bounces allowed: black none, blue
+   1, green 2 with cyan between, then through yellow to red at `bounces` or
+   more (with 2 allowed, red is 2; with 1, red is 1). Under
+   1, a blue darker than blue, is a pixel some of whose paths did not bounce
+   at all: what reflects nothing, such as a light, mixed with what does. */
 #define PT_VIEW_BOUNCES		12
 #define PT_NUM_VIEWS		13
 /* The furnace, the single values and the bounce count are numbers to be

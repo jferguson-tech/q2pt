@@ -75,8 +75,9 @@ void WhiteSurface(Surface &s);
 // what a view of one thing known of the surface shows (PT_VIEW_BASE_COLOUR
 // to PT_VIEW_GLOW)
 Vec3 SurfaceChannel(int mode, const Surface &s);
-// the colour that stands for a number of bounces, see PT_VIEW_BOUNCES
-Vec3 BounceColour(float bounces);
+// the colour that stands for a number of bounces when `most` is as many as
+// there can be, see PT_VIEW_BOUNCES
+Vec3 BounceColour(float bounces, int most);
 
 // what an emitter sends back along the ray that hit it
 Vec3 Emitted(const Surface &s, bool seen);

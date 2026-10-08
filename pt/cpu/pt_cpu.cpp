@@ -2007,7 +2007,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 			default: break;
 			}
 			if (sc.view_mode == PT_VIEW_BOUNCES)
-				c = BounceColour(lit(x, y, kDiffuse).x);
+				c = BounceColour(lit(x, y, kDiffuse).x, bounces);
 			s->hdr[i] = c * exposure;
 		}
 	});

@@ -329,12 +329,19 @@ Vec3 SurfaceChannel(int mode, const Surface &s)
 	}
 }
 
-Vec3 BounceColour(float bounces)
+Vec3 BounceColour(float bounces, int most)
 {
-	static const Vec3 ramp[] = {Vec3(0, 0, 0), Vec3(0, 0, 1), Vec3(0, 1, 1), Vec3(0, 1, 0),
-		Vec3(1, 1, 0), Vec3(1, 0, 0), Vec3(1, 0, 1), Vec3(1, 1, 1)};
-	const float at = std::min(std::max(bounces, 0.0f), 7.0f);
-	const int below = std::min((int)at, 6);
+	static const Vec3 ramp[] = {Vec3(0, 0, 1), Vec3(0, 1, 1), Vec3(0, 1, 0), Vec3(1, 1, 0), Vec3(1, 0, 0)};
+	if (most <= 1)
+		return ramp[4] * std::min(std::max(bounces, 0.0f), 1.0f);
+	if (bounces < 1.0f)
+		return ramp[0] * std::max(bounces, 0.0f);
+	// blue at 1 and red at the most there can be; where there is room, green
+	// is at 2, so that the first two, which most paths end at, stand apart
+	const float b = std::min(bounces, (float)most);
+	const float at = most == 2 ? (b - 1.0f) * 4.0f
+		: b < 2.0f ? (b - 1.0f) * 2.0f : 2.0f + (b - 2.0f) / (float)(most - 2) * 2.0f;
+	const int below = std::min((int)at, 3);
 	return ramp[below] + (ramp[below + 1] - ramp[below]) * (at - (float)below);
 }
 

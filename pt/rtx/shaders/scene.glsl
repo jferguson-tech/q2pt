@@ -178,13 +178,22 @@ vec3 ToLinear(vec3 c)
 	return pow(c, vec3(2.2));
 }
 
-// the colour that stands for a number of bounces, see PT_VIEW_BOUNCES
-vec3 BounceColour(float bounces)
+// the colour that stands for a number of bounces when `most` is as many as
+// there can be, see PT_VIEW_BOUNCES
+vec3 BounceColour(float bounces, int most)
 {
-	const vec3 ramp[8] = vec3[8](vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 1.0), vec3(0.0, 1.0, 0.0),
-		vec3(1.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 1.0), vec3(1.0, 1.0, 1.0));
-	const float at = clamp(bounces, 0.0, 7.0);
-	const int below = min(int(at), 6);
+	const vec3 ramp[5] = vec3[5](vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 1.0), vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0),
+		vec3(1.0, 0.0, 0.0));
+	if (most <= 1)
+		return ramp[4] * clamp(bounces, 0.0, 1.0);
+	if (bounces < 1.0)
+		return ramp[0] * max(bounces, 0.0);
+	// blue at 1 and red at the most there can be; where there is room, green
+	// is at 2, so that the first two, which most paths end at, stand apart
+	const float b = min(bounces, float(most));
+	const float at = most == 2 ? (b - 1.0) * 4.0
+		: b < 2.0 ? (b - 1.0) * 2.0 : 2.0 + (b - 2.0) / float(most - 2) * 2.0;
+	const int below = min(int(at), 3);
 	return mix(ramp[below], ramp[below + 1], at - float(below));
 }
 
