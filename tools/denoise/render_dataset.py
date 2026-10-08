@@ -43,7 +43,7 @@ TYPICAL_TARGET = 0.0054      # pt/cpu/pt_cpu.cpp
 # --dim renders every map with its own lights and sky turned down 4 to 8
 # times (a strength drawn for each map), so that every map gives dark clips.
 # What is fired is as bright as ever: a flash in a dim room is the hard case.
-DIM_JOBS = [('g', 0.0, 1, 2, 12, 30, 512, MORE)]
+DIM_JOBS = [('g', 0.0, 1, 2, 8, 30, 512, MORE)]
 
 TEST_JOBS = [('s', 0.0, 1, 1, 12, 30, 16384), ('m', 0.5, 1, 1, 12, 30, 4096)]
 
@@ -119,10 +119,15 @@ def dark_clips(args, m, tries):
     if run_job(args, m, 'probe', blur, fog, tries, frames, fps, 16, tag, args.seed, more, mode=0):
         dark = []
         for c in range(1, tries + 1):
-            typical = [ptx.typical(ptx.clean(ptx.Frame(os.path.join(probe, 'c%d' % c, x)).data[ptx.ALL_PICTURE:ptx.ALL_PICTURE + 3, ::2, ::2]))
-                       for x in sorted(os.listdir(os.path.join(probe, 'c%d' % c))) if x.endswith('.ptx')]
-            # the middle one: a shot's flash in a dark room leaves it a dark room
-            if typical and TYPICAL_TARGET / float(np.median(typical)) >= DARK:
+            typical, lit = [], []
+            for x in sorted(os.listdir(os.path.join(probe, 'c%d' % c))):
+                if x.endswith('.ptx'):
+                    pic = ptx.clean(ptx.Frame(os.path.join(probe, 'c%d' % c, x)).data[ptx.ALL_PICTURE:ptx.ALL_PICTURE + 3, ::2, ::2])
+                    typical.append(ptx.typical(pic))
+                    lit.append(float((pic.sum(axis=0) > 1e-5).mean()))
+            # the middle one: a shot's flash in a dark room leaves it a dark room. A tour that
+            # starts inside a wall is black, not dark: most of the picture must have light in it
+            if typical and TYPICAL_TARGET / float(np.median(typical)) >= DARK and float(np.median(lit)) >= 0.5:
                 dark.append((float(np.median(typical)), c))
         keep = [c for _, c in sorted(dark)[:DARK_MOST]]
         with open(found, 'w') as f:
