@@ -97,6 +97,7 @@ struct Pixels
 	std::vector<float>	m1[kChannels], m2[kChannels];	// luminance moments of light
 	std::vector<float>	variance[kChannels];
 	std::vector<float>	length;		// frames accumulated
+	std::vector<float>	flash;		// what the frame's lights put on the pixel, see FrameLightLevel
 	std::vector<Vec3>	over_pos;	// where what kOver shows appears to be: a reflection sits behind the glass
 	std::vector<float>	over_length;	// frames accumulated in kOver, which is followed separately
 
@@ -114,6 +115,7 @@ struct Pixels
 		roughness.assign(n, 1.0f);
 		add.assign(n, Vec3());
 		length.assign(n, 0.0f);
+		flash.assign(n, 0.0f);
 		over_pos.assign(n, Vec3());
 		over_length.assign(n, 0.0f);
 		for (int c = 0; c < kChannels; c++)
@@ -537,6 +539,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 
 	px.depth[i] = -1.0f;
 	px.add[i] = Vec3();
+	px.flash[i] = 0.0f;
 	px.over_pos[i] = Vec3();
 	px.bent[i] = 0;
 	px.moved[i] = 0;
@@ -823,7 +826,8 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 	const Lit flash = DirectFrameAll(sc, surf, rng);
 	// (the matte part has what the shine leaves here too, by the shine's
 	// share on the whole, which has no noise in it)
-	px.add[i] = front_add + (surf.kd * (Vec3(1, 1, 1) - surf.SpecularAlbedo()) * flash.diffuse * kInvPi + flash.specular) * tint * through;
+	const Vec3 flash_light = (surf.kd * (Vec3(1, 1, 1) - surf.SpecularAlbedo()) * flash.diffuse * kInvPi + flash.specular) * tint * through;
+	px.add[i] = front_add + flash_light;
 	if (mat.emissive && surf.front)
 		px.add[i] += Emitted(surf, true) * tint * through;
 	px.add[i] *= direct_on;
@@ -847,6 +851,10 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 		px.albedo[kOver][i] *= kept;
 		px.add[i] *= kept;
 	}
+	// what the frame's lights put here, to be compared with last frame's
+	px.flash[i] = FrameLightLevel(sc, surf,
+		flash_light * (direct_on * (sc.fog_density > 0.0f ? std::exp(-sc.fog_density * px.depth[i]) : 1.0f)),
+		cam.origin, eye_dir, have_layer ? first_layer_depth : hit.t);
 
 	// a specular path costs as much as a diffuse one; where the lobe reflects
 	// little, take it only some of the time
@@ -996,7 +1004,7 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 		const float over_m1 = cur.m1[kOver][i], over_m2 = cur.m2[kOver][i];
 
 		Vec3 hist[kChannels];
-		float hm1[kChannels] = {}, hm2[kChannels] = {}, hlen = 0.0f, wsum = 0.0f;
+		float hm1[kChannels] = {}, hm2[kChannels] = {}, hlen = 0.0f, wsum = 0.0f, hflash = 0.0f;
 		bool have_spot = false;
 		int spot_x = 0, spot_y = 0;	// the pixel this point was nearest to last frame
 
@@ -1039,6 +1047,7 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 						hm1[c] += prev.m1[c][q] * w;
 						hm2[c] += prev.m2[c][q] * w;
 					}
+					hflash += prev.flash[q] * w;
 					hlen += prev.length[q] * w;
 					wsum += w;
 				}
@@ -1068,6 +1077,7 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 						hm1[c] += prev.m1[c][q];
 						hm2[c] += prev.m2[c][q];
 					}
+					hflash += prev.flash[q];
 					hlen += prev.length[q];
 					wsum += 1.0f;
 				}
@@ -1091,14 +1101,31 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 					hm1[c] = prev.m1[c][i];
 					hm2[c] = prev.m2[c][i];
 				}
+				hflash = prev.flash[i];
 				hlen = std::min(prev.length[i], 8.0f);
 				wsum = 1.0f;
 			}
 		}
+		float changed = 0.0f;
 		if (wsum > 0.01f)
 		{
 			const float inv = 1.0f / wsum;
 			len = std::min(hlen * inv + 1.0f, max_history);
+			// By how much of the pixel's whole light what the frame's lights
+			// put on it has changed: the rest of the light is what was
+			// gathered, as it will be seen. History is kept for the inverse
+			// of that many frames at most, taken four times over: a change of
+			// a quarter or more starts afresh, one of a tenth keeps two and a
+			// half frames, since what the rest of the light did was most
+			// likely the same, and what is kept of its old value is an error
+			// of that size.
+			float rest = 0.0f;
+			for (int c = 0; c < kChannels; c++)
+				rest += Luminance(cur.albedo[c][i] * hist[c]) * inv;
+			const float flash_was = hflash * inv;
+			changed = std::min(4.0f * std::fabs(cur.flash[i] - flash_was) / (std::max(cur.flash[i], flash_was) + rest + 1e-4f), 1.0f);
+			if (changed > 0.0f)
+				len = std::min(len, 1.0f / changed);
 			for (int c = 0; c < kChannels; c++)
 			{
 				// a mirror shows something else as soon as the eye moves, so
@@ -1167,7 +1194,9 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 			if (sw > 0.01f)
 			{
 				const float inv = 1.0f / sw;
-				const float n = std::min(std::max(cur.length[i], 2.0f), max_history);
+				float n = std::min(std::max(cur.length[i], 2.0f), max_history);
+				if (changed > 0.0f)
+					n = std::min(n, std::max(1.0f / changed, 1.0f));
 				const float a = 1.0f / n;
 				cur.light[kSpecular][i] = sh * inv + (spec_sample - sh * inv) * a;
 				cur.m1[kSpecular][i] = sh1 * inv + (spec_m1 - sh1 * inv) * a;
@@ -1226,6 +1255,8 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 			{
 				const float inv = 1.0f / ow;
 				n = std::min(olen * inv + 1.0f, max_history);
+				if (changed > 0.0f)
+					n = std::min(n, std::max(1.0f / changed, 1.0f));
 				const float a = 1.0f / n;
 				cur.light[kOver][i] = oh * inv + (over_sample - oh * inv) * a;
 				cur.m1[kOver][i] = oh1 * inv + (over_m1 - oh1 * inv) * a;
