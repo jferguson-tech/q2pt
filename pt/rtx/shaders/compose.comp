@@ -59,6 +59,8 @@ void main()
 	}
 	if (fr.bases.x == VIEW_BOUNCES)
 		c = BounceColour(diffuse.r);
+	else if (fr.bases.x == VIEW_COST)
+		c = CostColour(diffuse.r);
 	c *= exposure;
 
 	// readings for the exposure, from pixels spread over the picture

@@ -333,7 +333,9 @@ static void R_ViewMode (pt_view_t *view)
 		view->saturation = 1;
 		view->contrast = 1;
 		view->bloom = 0;
-		view->fog = 0;
+		// but the cost is of the picture as it is, the air's light included
+		if (mode != PT_VIEW_COST)
+			view->fog = 0;
 	}
 
 	// the light gathered so far is of the other view

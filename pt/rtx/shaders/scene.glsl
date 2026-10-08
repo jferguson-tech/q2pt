@@ -30,6 +30,8 @@ const int VIEW_ROUGHNESS = 9;
 const int VIEW_METAL = 10;
 const int VIEW_GLOW = 11;
 const int VIEW_BOUNCES = 12;
+const int VIEW_COST = 13;
+const float COST_BLUE = 4.0;
 const float FURNACE_LIGHT = 0.5;
 
 // Material.bits
@@ -183,14 +185,30 @@ vec3 ToLinear(vec3 c)
 	return pow(c, vec3(2.2));
 }
 
+// black, blue, green, yellow and red at 0 to 4, cyan between blue and green
+vec3 CountColour(float at)
+{
+	const vec3 ramp[6] = vec3[6](vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 1.0), vec3(0.0, 1.0, 0.0),
+		vec3(1.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0));
+	// cyan is a stop of its own, half way from 1 to 2
+	at = clamp(at, 0.0, 4.0);
+	const float stop = at < 1.0 ? at : at < 2.0 ? 1.0 + (at - 1.0) * 2.0 : at + 1.0;
+	const int below = min(int(stop), 4);
+	return mix(ramp[below], ramp[below + 1], stop - float(below));
+}
+
 // the colour that stands for a number of bounces, see PT_VIEW_BOUNCES
 vec3 BounceColour(float bounces)
 {
-	const vec3 ramp[8] = vec3[8](vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 1.0), vec3(0.0, 1.0, 0.0),
-		vec3(1.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 1.0), vec3(1.0, 1.0, 1.0));
-	const float at = clamp(bounces, 0.0, 7.0);
-	const int below = min(int(at), 6);
-	return mix(ramp[below], ramp[below + 1], at - float(below));
+	return CountColour(bounces);
+}
+
+// and for a number of rays, see PT_VIEW_COST
+vec3 CostColour(float rays)
+{
+	// a colour for each doubling from COST_BLUE up, and a fade to black below it
+	const float at = rays / COST_BLUE;
+	return CountColour(at < 1.0 ? at : 1.0 + log2(at));
 }
 
 #ifdef TRACING
@@ -315,6 +333,9 @@ const uint MASK_SCENE = 1u;
 const uint MASK_HELD = 2u;
 const uint MASK_ALL = 0xffu;
 
+// rays traced for this pixel so far, for VIEW_COST
+int rays_traced = 0;
+
 // the nearest thing along the ray among the instances the mask lets through,
 // taking every triangle as it comes; glass is only met from its front
 bool Nearest(vec3 origin, vec3 dir, float tmin, float tmax, uint mask, out Hit hit)
@@ -366,6 +387,7 @@ bool IsHole(Material mat, Tri tri, vec2 bary)
 // (cross), a see-through surface only as often as it is opaque.
 bool Closest(vec3 origin, vec3 dir, inout float tmin, bool camera, bool cross_through, uint mask, out Hit hit, out Material mat)
 {
+	rays_traced++;
 	for (int skips = 0; ; skips++)
 	{
 		if (!Nearest(origin, dir, tmin, 1.0e30, mask, hit))
@@ -405,6 +427,7 @@ float Caustic(Material mat, vec3 p)
 // it, which gathers the light in some places and thins it in others.
 float Visible(vec3 p, vec3 target)
 {
+	rays_traced++;
 	const vec3 d = target - p;
 	float tmin = 0.0;
 	float through = 1.0;
