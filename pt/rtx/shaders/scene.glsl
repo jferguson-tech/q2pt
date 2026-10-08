@@ -122,7 +122,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	vec4	open_forward;
 	vec4	open_right;
 	vec4	open_up;
-	ivec4	held;			// x: first triangle of the frame carried by the eye (the weapon in hand); y: how many
+	ivec4	held;			// x: first triangle of the frame carried by the eye (the weapon in hand); y: how many; z: reflections are followed where they appear to be
 } fr;
 
 // the map and what moves, each as three corners per triangle, what goes with
@@ -162,6 +162,11 @@ layout(set = 0, binding = 27, rgba16f) uniform image2D img_bloom[2];	// its glow
 // these two are the size of the view, which may be larger than what is traced
 layout(set = 0, binding = 28, rgba16f) uniform image2D img_steady[2];	// the finished picture gathered over frames; a: how much stands behind it
 layout(set = 0, binding = 29, rgba16f) uniform image2D img_graded;		// the picture graded for the screen, as traced
+// Where a reflection appears to be, which is where its history is looked
+// up: a mirror shows something else as soon as the eye moves, so what the
+// surface reflected last frame is not where the surface was.
+layout(set = 0, binding = 30, rgba32f) uniform image2D img_mirror[2];	// xyz: what a mirror-like solid surface reflects appears to sit here; w: the surface's roughness, plus 2 where there is no such reflection to follow
+layout(set = 0, binding = 31, rgba32f) uniform image2D img_over;		// xyz: the same for what the layers in front reflect; w: there are layers
 
 float Luminance(vec3 c)
 {

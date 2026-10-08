@@ -116,9 +116,8 @@ frames a second, where the CPU renderer manages 10. Offline rendering is
 about four times faster than on a 32 core, 64 thread CPU; the figures are
 under *Offline demo rendering*.
 
-Not yet on the GPU: the separate history the CPU renderer keeps for mirror
-reflections. Its denoiser decides how far to smooth from how long a pixel has
-been in view rather than from measured noise.
+Not yet on the GPU: its denoiser decides how far to smooth from how long a
+pixel has been in view rather than from measured noise.
 
 Like the CPU renderer it can trace a smaller picture than the window and
 build the full size one from it over a few frames (`pt_scale`). The same
@@ -237,6 +236,7 @@ Some console commands and variables:
 | `pt_water 0`-`2` | classic, realistic, simulated |
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
 | `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time |
+| `pt_reflection_history 0`-`1` | what mirrors and glass show is followed from frame to frame where it appears to be, behind the surface, rather than where the surface is; on unless set, for comparison |
 | `pt_filter 0`-`2`, `pt_filter_cycle` (**F7**) | the picture as the paths alone make it, noise and all: `0` every frame on its own, `1` the same but frames add up while you stand still, `2` (the default) blended over time and filtered |
 | `pt_view 0`-`12`, `pt_view_cycle` (number pad **+**, and **-** to step back) | the scene drawn some other way than as it is, for checking the renderer and for pictures; each means the same in both path tracers. Not kept in the config; offline rendering and screenshots honour it, and changing it starts the picture afresh |
 | `pt_view 1`, `2` | materials overridden: `1` clay, every surface matte mid grey whatever its textures say, `2` mirror, every surface as smooth as can be, keeping its colour and whether it is metal. Lights are unchanged and what glows keeps its glow; the sky, glass, and sparks and beams are left alone. In clay, liquids are solid to the eye. Mirror turns reflections on, and is best judged in the raw picture (**F7**): filtered, reflections smear while the view moves |

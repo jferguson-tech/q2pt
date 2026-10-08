@@ -51,13 +51,16 @@ void main()
 	}
 
 	const float roughness = imageLoad(img_seen, pixel).a;
-	const float frames = max(centre[0].a, 1.0);
 	// how far apart two pixels' light may be and still be averaged, as a
-	// share of the light itself
-	const float trust = 4.0 / sqrt(frames);
+	// share of the light itself. Each channel has a history of its own:
+	// reflections are followed where they appear to be, and the light of
+	// the layers in front, where there are any, is counted apart.
 	float tolerance[3];
 	for (int k = 0; k < 3; k++)
-		tolerance[k] = max(Luminance(centre[k].rgb), 0.02) * trust;
+	{
+		const float frames = max(centre[k].a > 0.0 ? centre[k].a : centre[0].a, 1.0);
+		tolerance[k] = max(Luminance(centre[k].rgb), 0.02) * 4.0 / sqrt(frames);
+	}
 	// a sharp reflection is a picture in itself and must not be smeared
 	tolerance[1] *= clamp(roughness * 4.0, 0.05, 1.0);
 

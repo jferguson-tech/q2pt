@@ -259,6 +259,8 @@ typedef struct pt_view_s
 	int		texture_filter;		/* smooth textures where seen directly */
 	int		denoise;			/* passes of the spatial filter, 0-4 */
 	int		history;			/* frames of lighting kept while things change */
+	int		reflection_history;	/* what mirrors show is followed where it appears to
+								   be, not where the surface is; 0 = where the surface is */
 	int		threads;			/* 0 = all */
 	int		auto_exposure;		/* adapt exposure to the scene; exposure then
 								   scales the result */

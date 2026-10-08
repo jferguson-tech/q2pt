@@ -41,6 +41,7 @@ static cvar_t	*pt_filter;				// 2 filtered, 1 raw but adding up at rest, 0 raw
 static cvar_t	*pt_show_filter;		// keep the panel of what depends on earlier frames on screen
 static cvar_t	*pt_denoise;			// passes of the spatial filter, 0-4
 static cvar_t	*pt_history;			// frames of lighting kept while things change
+static cvar_t	*pt_reflection_history;	// reflections are followed where they appear to be
 static cvar_t	*pt_exposure;
 static cvar_t	*pt_auto_exposure;		// adapt to how bright the scene is
 static cvar_t	*pt_tonemap;				// 0 filmic, 1 neutral, 2 clipped like the original
@@ -145,6 +146,7 @@ void R_InitSettings (void)
 	pt_show_filter = ri.Cvar_Get ("pt_show_filter", "0", 0);
 	pt_denoise = ri.Cvar_Get ("pt_denoise", "4", CVAR_ARCHIVE);
 	pt_history = ri.Cvar_Get ("pt_history", "32", CVAR_ARCHIVE);
+	pt_reflection_history = ri.Cvar_Get ("pt_reflection_history", "1", CVAR_ARCHIVE);
 	pt_exposure = ri.Cvar_Get ("pt_exposure", "2", CVAR_ARCHIVE);
 	pt_auto_exposure = ri.Cvar_Get ("pt_auto_exposure", "1", CVAR_ARCHIVE);
 	pt_tonemap = ri.Cvar_Get ("pt_tonemap", "0", CVAR_ARCHIVE);
@@ -367,6 +369,7 @@ void R_ViewSettings (pt_view_t *view)
 	view->texture_filter = pt_texture_filter->value != 0;
 	view->denoise = pt_denoise->value;
 	view->history = pt_history->value;
+	view->reflection_history = pt_reflection_history->value != 0;
 	view->threads = pt_threads->value;
 
 	view->auto_exposure = pt_auto_exposure->value != 0;
