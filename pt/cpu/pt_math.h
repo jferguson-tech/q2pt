@@ -66,6 +66,7 @@ inline void Basis(Vec3 n, Vec3 &t, Vec3 &b)
 struct Rng
 {
 	uint32_t state;
+	uint32_t rays = 0;		// traced by whoever holds this, for PT_VIEW_COST
 
 	explicit Rng(uint32_t seed) : state(seed) {}
 

@@ -239,6 +239,7 @@ struct CpuBackend
 	float					jitter_x = 0.0f, jitter_y = 0.0f;	// this frame's offset within the pixel
 	int						filtering = 2;		// what is done about noise this frame, see pt_view_t
 	float					moving_history = 32.0f;	// frames of lighting kept while anything changes
+	bool					reflection_history = true;	// reflections are followed where they appear to be
 	Camera					prev_camera;
 	uint32_t				prev_hash = 0;
 	uint32_t				frame_index = 0;
@@ -770,6 +771,8 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 			px.albedo[kOver][i] *= kept;
 			px.add[i] *= kept;
 		}
+		if (view_mode == PT_VIEW_COST)
+			px.light[kDiffuse][i] = Vec3((float)rng.rays);
 		return;
 	}
 
@@ -909,6 +912,16 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 		px.light[ch][i] = sum[ch] * inv;
 		px.m1[ch][i] = m1[ch] * inv;
 		px.m2[ch][i] = m2[ch] * inv;
+	}
+	if (view_mode == PT_VIEW_COST)
+	{
+		// the rays in place of the light, to be gathered and filtered as light is
+		const float rays = (float)rng.rays;
+		px.light[kDiffuse][i] = Vec3(rays);
+		px.m1[kDiffuse][i] = rays;
+		px.m2[kDiffuse][i] = rays * rays;
+		px.light[kSpecular][i] = Vec3();
+		px.m1[kSpecular][i] = px.m2[kSpecular][i] = 0.0f;
 	}
 }
 
@@ -1086,7 +1099,7 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 		}
 
 		// The same goes for what a mirror-like solid surface reflects.
-		if (cur.spec_ok[i] && s->have_history)
+		if (cur.spec_ok[i] && s->have_history && s->reflection_history)
 		{
 			const Vec3 v = cur.spec_pos[i] - prev_cam.origin;
 			const float z = Dot(v, prev_cam.forward);
@@ -1135,7 +1148,7 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 		// Reflections in glass and water do not move across the screen the
 		// way the surface behind them does, so their history is looked up
 		// where they appear to be instead.
-		if (has_over)
+		if (has_over && s->reflection_history)
 		{
 			Vec3 oh;
 			float oh1 = 0.0f, oh2 = 0.0f, olen = 0.0f, ow = 0.0f;
@@ -1841,6 +1854,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	if (bounces < 1)
 		sc.reflections = 0;		// no bounces at all means none off mirrors either
 	s->moving_history = (float)std::min(std::max(view->history, 1), 512);
+	s->reflection_history = view->reflection_history != 0;
 	const int passes = (view->debug || view->filter >= 2) ? std::min(std::max(view->denoise, 0), kMaxFilterPasses) : 0;
 	s->pool.SetLimit(view->threads);
 	s->frame_index++;
@@ -2009,6 +2023,8 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 			}
 			if (sc.view_mode == PT_VIEW_BOUNCES)
 				c = BounceColour(lit(x, y, kDiffuse).x);
+			else if (sc.view_mode == PT_VIEW_COST)
+				c = CostColour(lit(x, y, kDiffuse).x);
 			s->hdr[i] = c * exposure;
 		}
 	});

@@ -115,6 +115,8 @@ void main()
 	vec3 front_add = vec3(0.0);		// from the layers: what they emit
 	vec3 front_diffuse = vec3(0.0);	// what they scatter, which is noisy
 	vec3 front_mirror = vec3(0.0);	// and what they mirror, noisy too
+	float mirror_weight = 0.0;		// of the strongest reflection so far
+	vec3 over_pos = vec3(0.0);		// where what the layers show appears to be
 	bool have_layer = false;
 	vec3 layer_p = vec3(0.0), layer_n = vec3(0.0);
 	float layer_depth = 0.0, layer_roughness = 0.0;
@@ -173,6 +175,8 @@ void main()
 				// the first surface met is all there is to show
 				imageStore(img_surface[now], pixel, vec4(surf.n, hit.t));
 				imageStore(img_seen, pixel, vec4(surf.p, surf.roughness));
+				imageStore(img_mirror[now], pixel, vec4(0.0, 0.0, 0.0, 3.0));
+				imageStore(img_over, pixel, vec4(0.0));
 				imageStore(img_albedo[0], pixel, vec4(0.0));
 				imageStore(img_albedo[1], pixel, vec4(0.0));
 				imageStore(img_noisy[0], pixel, vec4(0.0));
@@ -196,6 +200,8 @@ void main()
 			layer_depth = travelled + hit.t;
 			layer_roughness = surf.roughness;
 		}
+		if (mirror_weight <= 0.0)
+			over_pos = surf.p;
 
 		// Glass and water are clear materials with a tint painted on. The
 		// boundary reflects some of the light, more at a glancing angle, and
@@ -231,8 +237,18 @@ void main()
 				if (dot(mirror, surf.ng) < 0.0)
 					mirror -= surf.ng * (2.0 * dot(mirror, surf.ng));
 				float reached;
+				const float weight = through * fresnel;
 				front_mirror += ClampSample(Radiance(surf.p + surf.ng * RAY_OFFSET, mirror, true, 1, fr.settings.w, reached),
-					max_sample) * (through * fresnel);
+					max_sample) * weight;
+
+				// A reflection appears to sit behind the glass, as far again
+				// as the thing reflected is in front. That is where to look
+				// for it in last frame's picture.
+				if (weight > mirror_weight)
+				{
+					mirror_weight = weight;
+					over_pos = eye + eye_dir * (travelled + hit.t + min(reached, 100000.0));
+				}
 			}
 			through *= 1.0 - fresnel;
 
@@ -290,9 +306,11 @@ void main()
 		imageStore(img_surface[now], pixel, vec4(have_layer ? layer_n : sky_n, stand_in ? stand_depth : -1.0));
 		imageStore(img_seen, pixel, vec4(have_layer ? layer_p : (sky_hit ? sky_p : eye + eye_dir * 100000.0),
 			have_layer ? layer_roughness : 1.0));
+		imageStore(img_mirror[now], pixel, vec4(0.0, 0.0, 0.0, (have_layer ? layer_roughness : 1.0) + 2.0));
+		imageStore(img_over, pixel, vec4(over_pos, have_layer ? 1.0 : 0.0));
 		imageStore(img_albedo[0], pixel, vec4(0.0));
 		imageStore(img_albedo[1], pixel, vec4(0.0));
-		imageStore(img_noisy[0], pixel, vec4(0.0));
+		imageStore(img_noisy[0], pixel, view_mode == VIEW_COST ? vec4(vec3(float(rays_traced)), 1.0) : vec4(0.0));
 		imageStore(img_noisy[1], pixel, vec4(0.0));
 		imageStore(img_noisy[2], pixel, vec4(over, 1.0));
 		imageStore(img_extra, pixel, vec4(beyond, 1.0));
@@ -310,7 +328,8 @@ void main()
 	// eye would see it without the water's bend, or where it was if it moved
 	// (not with motion blur, which looks nothing up and wants it where it is)
 	vec3 seen = travelled > 0.0 ? eye + eye_dir * depth : surf.p;
-	if (travelled <= 0.0 && hit.moving && fr.frame_has.y != 0 && !blur)
+	const bool moved = travelled <= 0.0 && hit.moving && fr.frame_has.y != 0 && !blur;
+	if (moved)
 	{
 		const int i = hit.tri * 9;
 		const vec3 q0 = vec3(frame_prev.v[i], frame_prev.v[i + 1], frame_prev.v[i + 2]);
@@ -350,6 +369,7 @@ void main()
 	const int bounces = fr.settings.x;
 	const int paths = max(1, fr.settings2.z);
 	vec3 sum_d = vec3(0.0), sum_s = vec3(0.0);
+	float spec_reach = -1.0;		// how far the last specular path went before its first hit
 	for (int k = 0; k < paths; k++)
 	{
 		const Lit direct = DirectWorld(surf, true);
@@ -376,6 +396,7 @@ void main()
 					sp += weight * Radiance(from, wi, !surf.light_sampled_spec, 1, fr.settings.w, reached)
 						/ spec_albedo * (1.0 / spec_chance);
 					followed_s = rays_followed;
+					spec_reach = reached;
 				}
 			}
 		}
@@ -391,10 +412,24 @@ void main()
 		sum_s += ClampSample(sp, max_sample);
 	}
 
+	// A reflection in something close to a mirror appears to sit behind the
+	// surface, as far again as the thing reflected is in front of it. That is
+	// where to look for it in last frame's picture.
+	const bool spec_ok = spec_reach >= 0.0 && surf.roughness < LIGHT_SAMPLED_ROUGHNESS && !moved && travelled <= 0.0;
+	const vec3 spec_pos = spec_ok ? eye + eye_dir * (hit.t + min(spec_reach, 100000.0)) : vec3(0.0);
+
 	imageStore(img_surface[now], pixel, vec4(surf.n, depth));
 	imageStore(img_seen, pixel, vec4(seen, surf.roughness));
+	imageStore(img_mirror[now], pixel, vec4(spec_pos, surf.roughness + (spec_ok ? 0.0 : 2.0)));
+	imageStore(img_over, pixel, vec4(over_pos, have_layer ? 1.0 : 0.0));
 	imageStore(img_albedo[0], pixel, vec4(kd, 1.0));
 	imageStore(img_albedo[1], pixel, vec4(ks, 1.0));
+	if (view_mode == VIEW_COST)
+	{
+		// the rays in place of the light, to be gathered and filtered as light is
+		sum_d = vec3(float(rays_traced * paths));
+		sum_s = vec3(0.0);
+	}
 	imageStore(img_noisy[0], pixel, vec4(sum_d / float(paths), 1.0));
 	imageStore(img_noisy[1], pixel, vec4(sum_s / float(paths), 1.0));
 	imageStore(img_noisy[2], pixel, vec4(over, 1.0));

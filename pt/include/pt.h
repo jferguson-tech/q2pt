@@ -195,10 +195,19 @@ pixel at that level; brighter is light made, darker is light lost.
 #define PT_VIEW_METAL		10
 #define PT_VIEW_GLOW		11	/* what it emits, held to 1 */
 /* How many times the paths from each pixel bounced, on average, after the
-   first surface: black none, then blue 1, cyan 2, green 3, yellow 4, red 5,
-   magenta 6, white 7 or more. */
+   first surface: black none, blue 1, green 2 (cyan between), yellow 3, red 4
+   or more, whatever the settings. Under 1, a blue darker than blue, is a
+   pixel some of whose paths did not bounce at all: what reflects nothing,
+   such as a light, mixed with what does. */
 #define PT_VIEW_BOUNCES		12
-#define PT_NUM_VIEWS		13
+/* What the pixel cost: every ray traced for it this frame, the eye's, the
+   bounces' and those sent to lights to see whether they are in shadow, all
+   its samples together. Each colour is twice the one before: black none,
+   blue PT_COST_BLUE, green twice that (cyan between), yellow four times,
+   red eight times or more, whatever the settings. */
+#define PT_VIEW_COST		13
+#define PT_COST_BLUE		4.0f
+#define PT_NUM_VIEWS		14
 /* The furnace, the single values and the bounce count are numbers to be
    read off the picture: send exposure 1, no auto exposure, the clipped tone
    curve, no bloom and no fog with them. */
@@ -274,6 +283,8 @@ typedef struct pt_view_s
 	int		texture_filter;		/* smooth textures where seen directly */
 	int		denoise;			/* passes of the spatial filter, 0-4 */
 	int		history;			/* frames of lighting kept while things change */
+	int		reflection_history;	/* what mirrors show is followed where it appears to
+								   be, not where the surface is; 0 = where the surface is */
 	int		threads;			/* 0 = all */
 	int		auto_exposure;		/* adapt exposure to the scene; exposure then
 								   scales the result */
