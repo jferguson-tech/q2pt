@@ -45,7 +45,7 @@ float Visible(const Scene &sc, const Surface &s, Vec3 target, Rng &rng)
 	float through = 1.0f;
 	const auto blocks = [&](const Tri &t, float u, float v)
 	{
-		if (IsHole(t, u, v) || BackOfGlass(t, shadow.d))
+		if (IsHole(t, u, v) || BackOfGlass(t, shadow.d) || (t.mat->flags & PT_MAT_LAMP))
 			return false;
 		if (t.mat->alpha >= 1.0f || rng.Float() < t.mat->alpha)
 			return true;
@@ -61,7 +61,7 @@ float Visible(const Scene &sc, const Surface &s, Vec3 target, Rng &rng)
 	// always were.
 	const auto kind = [&](const Tri &t, float u, float v)
 	{
-		if (IsHole(t, u, v) || BackOfGlass(t, shadow.d))
+		if (IsHole(t, u, v) || BackOfGlass(t, shadow.d) || (t.mat->flags & PT_MAT_LAMP))
 			return 0;
 		return t.mat->alpha >= 1.0f ? 1 : 2;
 	};

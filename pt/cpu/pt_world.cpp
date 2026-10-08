@@ -203,8 +203,8 @@ namespace {
 
 // What the tree with eight children to a node is told of each triangle, so
 // that it need not ask about the plain ones: which have holes in them, where
-// their texture says, and which a ray gets past by chance. Empty where there
-// is no such tree.
+// their texture says, which a ray gets past by chance, and which only the
+// light of a light gets past (PT_MAT_LAMP). Empty where there is no such tree.
 std::vector<uint8_t> Marks(const std::vector<Tri> &tris)
 {
 	std::vector<uint8_t> marks;
@@ -216,7 +216,7 @@ std::vector<uint8_t> Marks(const std::vector<Tri> &tris)
 		if (m.alpha < 1.0f)
 			marks[i] = Bvh::kAsk | Bvh::kChancy;
 		else
-			marks[i] = ((m.flags & PT_MAT_ALPHA_TEST) && m.texture) ? Bvh::kAsk : 0;
+			marks[i] = (((m.flags & PT_MAT_ALPHA_TEST) && m.texture) || (m.flags & PT_MAT_LAMP)) ? Bvh::kAsk : 0;
 	}
 #else
 	(void)tris;

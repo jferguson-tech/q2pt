@@ -42,6 +42,9 @@ vertices appear counter clockwise.
 #define PT_MAT_HELD				256u	/* carried by the eye, as a weapon in hand is: with
 									   motion blur it is seen from where the eye is when
 									   the shutter closes, however the eye moved */
+#define PT_MAT_LAMP				512u	/* the glass of a lamp: seen like anything else, but
+									   no shadow of it is cast by the scene's lights,
+									   so that one may be put inside it */
 
 typedef struct pt_texture_s
 {

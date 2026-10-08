@@ -15,6 +15,7 @@ const uint MAT_BLACK = 16u;
 const uint MAT_WAVES = 32u;
 const uint MAT_EMIT_BRIGHT = 64u;
 const uint MAT_WARP = 128u;
+const uint MAT_LAMP = 512u;
 
 // pt_view_t's view_mode, as in pt.h
 const int VIEW_NORMAL = 0;
@@ -410,7 +411,7 @@ float Visible(vec3 p, vec3 target)
 			return through;
 		const Tri tri = TriOf(hit);
 		const Material mat = MaterialOf(hit.moving, tri.material);
-		if (!IsHole(mat, tri, hit.bary))
+		if (!IsHole(mat, tri, hit.bary) && (mat.flags & MAT_LAMP) == 0u)
 		{
 			if (mat.alpha >= 1.0 || Rand() < mat.alpha)
 				return 0.0;
