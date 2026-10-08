@@ -9,8 +9,11 @@
 // of pixels around it that show the same surface and are lit alike. Run a
 // few times with the taps spread twice as far each time ("a trous"), it
 // reaches a long way for the cost of a small one. How readily neighbours are
-// let in depends on how many frames stand behind a pixel: little history
-// means noise, which wants smoothing; a lot means the value can be trusted.
+// let in depends on how noisy the pixel is measured to be: a brightness
+// difference within a few times the noise is taken for noise and smoothed,
+// a larger one for a real edge and kept. A pixel whose noise has settled is
+// left as it is. The noise is carried along through the passes, each one
+// working out what is left of it after its averaging.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -24,11 +27,18 @@ layout(push_constant) uniform Pass
 	int		unused;
 } pass;
 
-vec4 Load(int k, ivec2 q)
+// a channel's light at q, and the variance of it
+vec4 Load(int k, ivec2 q, out float variance)
 {
 	if (pass.source == 0)
-		return imageLoad(img_kept[fr.frame_has.z * 3 + k], q);
-	return imageLoad(img_filter[(pass.source - 1) * 3 + k], q);
+	{
+		const vec4 kept = imageLoad(img_kept[fr.frame_has.z * 3 + k], q);
+		variance = GatheredVariance(k, q, kept.a);
+		return kept;
+	}
+	const vec4 l = imageLoad(img_filter[(pass.source - 1) * 3 + k], q);
+	variance = l.a * l.a;
+	return l;
 }
 
 void main()
@@ -40,36 +50,38 @@ void main()
 	const int now = fr.frame_has.z;
 
 	const vec4 surface = imageLoad(img_surface[now], pixel);
-	vec4 centre[3];
+	vec3 centre[3];
+	float lum[3], variance[3];
+	// settled already: nothing to gain from blurring it
+	bool settled = surface.a >= 0.0;
 	for (int k = 0; k < 3; k++)
-		centre[k] = Load(k, pixel);
-	if (surface.a < 0.0)
+	{
+		centre[k] = Load(k, pixel, variance[k]).rgb;
+		lum[k] = Luminance(centre[k]);
+		settled = settled && sqrt(variance[k]) <= 0.01 * lum[k] + 1.0e-4;
+	}
+	if (surface.a < 0.0 || settled)
 	{
 		for (int k = 0; k < 3; k++)
-			imageStore(img_filter[pass.target * 3 + k], pixel, centre[k]);
+			imageStore(img_filter[pass.target * 3 + k], pixel, vec4(centre[k], sqrt(variance[k])));
 		return;
 	}
 
-	const float roughness = imageLoad(img_seen, pixel).a;
-	// how far apart two pixels' light may be and still be averaged, as a
-	// share of the light itself. Each channel has a history of its own:
-	// reflections are followed where they appear to be, and the light of
-	// the layers in front, where there are any, is counted apart.
-	float tolerance[3];
-	for (int k = 0; k < 3; k++)
-	{
-		float frames = max(centre[k].a > 0.0 ? centre[k].a : centre[0].a, 1.0);
-		// the air's light, where it has the channel to itself, is kept for fewer frames: see temporal.comp
-		if (k == 2 && centre[2].a <= 0.0 && fr.output_f.w == 0.0 && fr.settings_f.w > 0.0)
-			frames = min(frames, max(fr.painted.w, 1.0));
-		tolerance[k] = max(Luminance(centre[k].rgb), 0.02) * 4.0 / sqrt(frames);
-	}
-	// a sharp reflection is a picture in itself and must not be smeared
-	tolerance[1] *= clamp(roughness * 4.0, 0.05, 1.0);
+	// How big a brightness difference is still taken for noise, per channel:
+	// so many times the noise measured. A sharp reflection is a picture in
+	// itself and must not be smeared; so is what the layers in front
+	// reflect, where there are any, while the glow of the air alone, which
+	// is all the channel holds elsewhere, can take a lot of smoothing.
+	const float roughness = imageLoad(img_albedo[1], pixel).a;
+	const bool layers = imageLoad(img_over, pixel).w != 0.0;
+	float inv_tolerance[3];
+	inv_tolerance[0] = 1.0 / (4.0 * sqrt(variance[0]) + 1.0e-3);
+	inv_tolerance[1] = 1.0 / ((1.0 + 3.0 * roughness) * sqrt(variance[1]) + 1.0e-3);
+	inv_tolerance[2] = 1.0 / ((layers ? 0.75 : 6.0) * sqrt(variance[2]) + 1.0e-3);
 
 	const float kernel[3] = float[3](3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
 	vec3 sum[3] = vec3[3](vec3(0.0), vec3(0.0), vec3(0.0));
-	float wsum[3] = float[3](0.0, 0.0, 0.0);
+	float wsum[3] = float[3](0.0, 0.0, 0.0), vsum[3] = float[3](0.0, 0.0, 0.0);
 
 	for (int dy = -2; dy <= 2; dy++)
 	{
@@ -92,18 +104,26 @@ void main()
 			w *= exp(-abs(other.a - surface.a) / (0.03 * surface.a + 0.5));
 			if (w <= 1.0e-5)
 				continue;
+			// a reflection in a surface as smooth is a different picture
+			const float wr = abs(imageLoad(img_albedo[1], q).a - roughness) * 8.0;
 
 			for (int k = 0; k < 3; k++)
 			{
-				const vec3 c = Load(k, q).rgb;
-				const float wk = w * exp(-abs(Luminance(c) - Luminance(centre[k].rgb)) / tolerance[k]);
+				float v;
+				const vec3 c = Load(k, q, v).rgb;
+				const float wk = w * exp(-(abs(Luminance(c) - lum[k]) * inv_tolerance[k] + (k == 1 ? wr : 0.0)));
 				sum[k] += c * wk;
+				vsum[k] += v * wk * wk;
 				wsum[k] += wk;
 			}
 		}
 	}
 
 	for (int k = 0; k < 3; k++)
-		imageStore(img_filter[pass.target * 3 + k], pixel,
-			vec4(wsum[k] > 0.0 ? sum[k] / wsum[k] : centre[k].rgb, centre[k].a));
+	{
+		if (wsum[k] <= 0.0)
+			imageStore(img_filter[pass.target * 3 + k], pixel, vec4(centre[k], sqrt(variance[k])));
+		else
+			imageStore(img_filter[pass.target * 3 + k], pixel, vec4(sum[k] / wsum[k], sqrt(vsum[k]) / wsum[k]));
+	}
 }
