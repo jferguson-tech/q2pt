@@ -207,6 +207,7 @@ struct Frame
 	std::vector<Vec3>		prev;		// 3 per triangle: its corners last frame; may be empty
 	Bvh						bvh;
 	std::vector<Light>		lights;		// point lights only
+	bool					has_held = false;	// something in it is carried by the eye (PT_MAT_HELD)
 	uint32_t				hash = 0;	// changes when anything in it does
 };
 
@@ -236,6 +237,7 @@ struct Scene
 	float		wave_strength = 1.0f;
 	bool		filter_textures = true;
 	int			reflections = 2;
+	int			view_mode = 0;
 	int			reflection_bounces = 3;
 	float		reflection_rate = 1.0f;
 	bool		refraction = true;

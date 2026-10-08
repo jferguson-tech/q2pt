@@ -176,34 +176,59 @@ Vec3 ClampSample(Vec3 c, float max_luminance)
 	return lum > max_luminance ? c * (max_luminance / lum) : c;
 }
 
-bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &hit, const Tri *&tri)
+bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &hit, const Tri *&tri, HeldRays held)
 {
 	for (int skips = 0; ; skips++)
 	{
 		const auto in_world = [&](uint32_t t, float, float) { return !BackOfGlass(sc.world->tris[t], ray.d); };
-		const auto in_frame = [&](uint32_t t, float, float) { return !BackOfGlass(sc.frame->tris[t], ray.d); };
+		const auto in_frame = [&](uint32_t t, float, float)
+		{
+			const Tri &tri = sc.frame->tris[t];
+			if (held != kHeldToo && ((tri.mat->flags & PT_MAT_HELD) != 0) != (held == kHeldOnly))
+				return false;
+			return !BackOfGlass(tri, ray.d);
+		};
+		bool found = false;
 #ifdef PT_AVX2_KERNELS
-		// The trees with eight children find the same triangle sooner, or say
-		// that they cannot be sure of it: see Bvh::Intersect8. The trees below
-		// are then asked, as they always were.
-		bool unsure;
-		bool found = sc.world->bvh.Intersect8(ray, hit, in_world, unsure);
-		if (unsure)
-			found = sc.world->bvh.IntersectIf(ray, hit, in_world);
-#else
-		bool found = sc.world->bvh.IntersectIf(ray, hit, in_world);
+		bool unsure = false;
 #endif
+		if (held != kHeldOnly)
+		{
+#ifdef PT_AVX2_KERNELS
+			// The trees with eight children find the same triangle sooner, or
+			// say that they cannot be sure of it: see Bvh::Intersect8. The
+			// trees below are then asked, as they always were.
+			found = sc.world->bvh.Intersect8(ray, hit, in_world, unsure);
+			if (unsure)
+				found = sc.world->bvh.IntersectIf(ray, hit, in_world);
+#else
+			found = sc.world->bvh.IntersectIf(ray, hit, in_world);
+#endif
+		}
 		Ray r = ray;
 		if (found)
 			r.tmax = hit.t;
 		Hit h;
-#ifdef PT_AVX2_KERNELS
-		bool found_frame = sc.frame->bvh.Intersect8(r, h, in_frame, unsure);
-		if (unsure)
+		bool found_frame;
+		if (held != kHeldToo)
+		{
+			// The tree with eight children is not asked about plain
+			// triangles, and what the eye carries is not marked out to it
+			// (that would cost every ray while playing, when it is not
+			// kept apart): the frame's tree is small, so ask it about all
+			// of them.
 			found_frame = sc.frame->bvh.IntersectIf(r, h, in_frame);
+		}
+		else
+		{
+#ifdef PT_AVX2_KERNELS
+			found_frame = sc.frame->bvh.Intersect8(r, h, in_frame, unsure);
+			if (unsure)
+				found_frame = sc.frame->bvh.IntersectIf(r, h, in_frame);
 #else
-		const bool found_frame = sc.frame->bvh.IntersectIf(r, h, in_frame);
+			found_frame = sc.frame->bvh.IntersectIf(r, h, in_frame);
 #endif
+		}
 		if (found_frame)
 		{
 			hit = h;
@@ -237,6 +262,25 @@ Vec3 Surface::SpecularAlbedo() const
 	const float a004 = std::min(r0 * r0, std::exp2(-9.28f * nov)) * r0 + r1;
 	const float scale = -1.04f * a004 + r2, bias = 1.04f * a004 + r3;
 	return f0 * scale + Vec3(bias);
+}
+
+bool ClayCovers(const Material &mat)
+{
+	return mat.alpha >= 1.0f || (mat.flags & PT_MAT_WAVES);
+}
+
+// A view mode's say over what the surface is made of (pt_view_t's view_mode).
+// What the surface emits is worked out from its colour, which is left alone.
+static void ViewMode(int mode, const Material &mat, Surface &s)
+{
+	if (mode == PT_VIEW_CLAY && ClayCovers(mat))
+	{
+		s.kd = Vec3(0.5f);
+		s.f0 = Vec3(0.04f);
+		s.roughness = 1.0f;
+	}
+	else if (mode == PT_VIEW_MIRROR)
+		s.roughness = 0.0f;
 }
 
 void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth)
@@ -357,6 +401,8 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	{
 		s.kd = s.colour * (1.0f - mat.metallic);
 		s.f0 = Vec3(0.04f) * (1.0f - mat.metallic) + s.colour * mat.metallic;
+		if (sc.view_mode)
+			ViewMode(sc.view_mode, mat, s);
 	}
 	s.alpha = std::max(s.roughness * s.roughness, kMinAlpha);
 	s.light_sampled_spec = s.roughness >= kLightSampledRoughness;

@@ -57,12 +57,18 @@ bool BackOfGlass(const Tri &tri, Vec3 dir);
 // through, and so are surfaces the camera must not see when the ray comes
 // from it. With cross set, surfaces that let light through are crossed at
 // random in proportion to how much they pass. ray.tmin moves past what was
-// skipped.
-bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &hit, const Tri *&tri);
+// skipped. held says what is done with the frame's triangles that the eye
+// carries (PT_MAT_HELD): taken like any other, passed by, or the only ones
+// met, for a ray that is cast at them alone.
+enum HeldRays { kHeldToo, kNotHeld, kHeldOnly };
+bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &hit, const Tri *&tri,
+	HeldRays held = kHeldToo);
 
 // smooth: filter the textures, for surfaces the eye sees directly. Further
 // along a path the nearest texel is as good and cheaper.
 void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth = false);
+// in the clay view this material is clay: all that is solid, and liquids
+bool ClayCovers(const Material &mat);
 
 // what an emitter sends back along the ray that hit it
 Vec3 Emitted(const Surface &s, bool seen);

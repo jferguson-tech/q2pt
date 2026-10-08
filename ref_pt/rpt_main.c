@@ -316,6 +316,7 @@ void R_Shutdown (void)
 	R_ShutdownShots ();
 	R_ShutdownOffline ();
 	R_ShutdownExport ();
+	R_ShutdownMaterials ();
 	R_WaterReset ();		// while the backend that holds its pictures is still there
 	R_ShutdownImages ();
 	R_ShutdownModels ();
@@ -356,6 +357,7 @@ void R_EndRegistration (void)
 {
 	R_FreeUnusedModels ();
 	R_FreeUnusedImages ();
+	R_MakeSkinMaterials ();
 }
 
 /*
@@ -421,6 +423,7 @@ void R_RenderFrame (refdef_t *fd)
 	{
 		r_worlddirty = false;
 		R_LoadWorld (r_worldname, r_skyname);
+		R_MaterialsReport ();
 	}
 
 	R_WaterFrame (fd);		// before the scene is built, and where the player really is

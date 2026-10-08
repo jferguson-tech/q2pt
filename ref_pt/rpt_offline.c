@@ -27,14 +27,18 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // pt_offline_dir.
 //
 // With pt_render_blur the paths are spread over the time the frame covers,
-// the eye and everything that moves being put where they were at each
-// moment, which blurs what moves as a camera's open shutter does.
+// each path seeing from where the eye was at a moment of its own, which
+// blurs the picture as a camera's open shutter does when it is turned or
+// carried. What moves in the picture is where it is as the shutter closes:
+// its own motion is not blurred yet.
 
 #include "rpt_local.h"
 #include "../pt/png/pt_png.h"
 
 #define	PATHS_PER_PASS	4
-#define	MAX_MOMENTS		32		// how many points in time a blurred frame is made from
+#define	BLUR_PATHS_PER_PASS	2	// blurred: a pixel sees from as many moments as there are
+								// passes, 32 at 64 paths, in about the time the frame took
+								// before; 1 is finer grained and takes 1.4 to 1.7 times as long
 
 static cvar_t	*pt_offline;			// paths a pixel; 0 = playing as usual
 static cvar_t	*pt_offline_dir;
@@ -51,8 +55,8 @@ static qboolean	off_failed;
 
 static uint32_t	*off_pixels;			// the view just made, without the overlay
 static qboolean	off_have_pixels;
-static float	*off_sum;				// blurred: linear light summed over the moments
-static float	*off_positions;			// blurred: the scene at one moment
+static float	*off_sum;				// blurred: linear light summed over the passes
+static float	*off_positions;			// exporting blurred frames: the scene at one moment
 static int		off_num_positions;
 
 // where the eye was a frame ago, for blur
@@ -71,7 +75,7 @@ void R_InitOffline (void)
 
 	pt_offline = ri.Cvar_Get ("pt_offline", "0", 0);
 	pt_offline_dir = ri.Cvar_Get ("pt_offline_dir", "", 0);
-	pt_render_blur = ri.Cvar_Get ("pt_render_blur", "0", CVAR_ARCHIVE);
+	pt_render_blur = ri.Cvar_Get ("pt_render_blur", "0.5", CVAR_ARCHIVE);	// film's 180 degree shutter
 	pt_render_hud = ri.Cvar_Get ("pt_render_hud", "1", CVAR_ARCHIVE);
 	pt_render_bounces = ri.Cvar_Get ("pt_render_bounces", "6", CVAR_ARCHIVE);
 	pt_render_light_samples = ri.Cvar_Get ("pt_render_light_samples", "16", CVAR_ARCHIVE);
@@ -227,11 +231,10 @@ Makes the frame, in as many passes as its paths take
 */
 void R_OfflineRender (refdef_t *fd, pt_view_t *view)
 {
-	pt_scene_t	moment_scene;
 	pt_view_t	moment;
 	pt_camera_t	last;
 	float		blur, t, w, *sum;
-	int			paths, passes, moments, size, i, k, x, y;
+	int			paths, passes, size, i, k, x, y;
 	qboolean	blurred, follows;
 
 	size = rpt.width * rpt.height;
@@ -282,25 +285,42 @@ void R_OfflineRender (refdef_t *fd, pt_view_t *view)
 	}
 	else
 	{
-		// from several moments while the shutter was open, each a picture
-		// of its own, added up as the light they are
-		moments = paths / 2 < MAX_MOMENTS ? paths / 2 : MAX_MOMENTS;
+		// Every pass is a picture of its own, made from nothing, each pixel
+		// of it seen from where the eye was at a moment of that pixel's own
+		// while the shutter was open; the passes are added up as the light
+		// they are. The pixels of one pass are at different moments, so
+		// nothing of one pass can be looked up in the next.
+		passes = (paths + BLUR_PATHS_PER_PASS - 1) / BLUR_PATHS_PER_PASS;
+		if (passes < 1)
+			passes = 1;
 		if (!off_sum)
 			off_sum = malloc (size * 3 * sizeof(float));
 		if (!off_sum)
 			return;
 		memset (off_sum, 0, size * 3 * sizeof(float));
 
-		R_OfflineMomentsBegin (view);
-
-		for (k=0 ; k<moments ; k++)
+		moment = *view;
+		moment.restart = 1;
+		moment.samples = BLUR_PATHS_PER_PASS;
+		moment.blur = 1;
+		// 1 is now, when the shutter closes, 0 the frame before: it opened at
+		// 1 - blur, with the eye on its straight way from there to here
+		t = 1 - blur;
+		for (i=0 ; i<3 ; i++)
 		{
-			// 1 is now, 0 the frame before; the shutter closes now
-			t = 1 - blur * (1 - (k + 0.5f) / moments);
+			moment.open_origin[i] = off_last_origin[i] + (view->origin[i] - off_last_origin[i]) * t;
+			moment.open_forward[i] = off_last_axis[0][i] + (view->forward[i] - off_last_axis[0][i]) * t;
+			moment.open_right[i] = off_last_axis[1][i] + (view->right[i] - off_last_axis[1][i]) * t;
+		}
+		// square it up again
+		Off_Normalize (moment.open_forward);
+		w = DotProduct (moment.open_right, moment.open_forward);
+		VectorMA (moment.open_right, -w, moment.open_forward, moment.open_right);
+		Off_Normalize (moment.open_right);
+		CrossProduct (moment.open_right, moment.open_forward, moment.open_up);
 
-			R_OfflineMoment (view, t, &moment, &moment_scene);
-			moment.samples = paths / moments < 1 ? 1 : paths / moments;
-
+		for (k=0 ; k<passes ; k++)
+		{
 			rpt.backend->render_view (rpt.backend, &moment);
 			if (!rpt.backend->read_pixels (rpt.backend, off_pixels, 0))
 				return;
@@ -312,7 +332,7 @@ void R_OfflineRender (refdef_t *fd, pt_view_t *view)
 			}
 		}
 
-		w = 4096.0f / moments;
+		w = 4096.0f / passes;
 		for (i=0, sum=off_sum ; i<size ; i++, sum+=3)
 			off_pixels[i] = (uint32_t)off_to_display[(int)(sum[0] * w)]
 				| ((uint32_t)off_to_display[(int)(sum[1] * w)] << 8)
