@@ -40,11 +40,15 @@ TRAIN_JOBS += [('d', 0.0, 1, 4, 12, 30, 512, MORE), ('e', 0.5, 1, 2, 12, 30, 512
 DARK, DARK_MOST = 2.0, 6
 DARK_JOB = ('f', 0.0, 1, 12, 30, 512, dict(fire_chance=0.7, fire_kinds=(1, 2, 3, 4, 5, 6, 6)))
 TYPICAL_TARGET = 0.0054      # pt/cpu/pt_cpu.cpp
+# --dim renders every map with its own lights and sky turned down 4 to 8
+# times (a strength drawn for each map), so that every map gives dark clips.
+# What is fired is as bright as ever: a flash in a dim room is the hard case.
+DIM_JOBS = [('g', 0.0, 1, 2, 12, 30, 512, MORE)]
 
 TEST_JOBS = [('s', 0.0, 1, 1, 12, 30, 16384), ('m', 0.5, 1, 1, 12, 30, 4096)]
 
 
-def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed, more, keep=None, mode=None):
+def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed, more, keep=None, mode=None, dim=1.0):
     """keep: of the tour's clips, the ones to render (numbered from 1), in that order"""
     name = '%s_%s' % (m, tag)
     out = os.path.join(args.out, args.split, name)
@@ -78,6 +82,8 @@ def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed, 
         f.write('set in_ignore 1\n')            # a key pressed in the window must not stop the run
         f.write('set pt_render_export 1\nset pt_render_blur %g\nset pt_render_fog %d\n' % (blur, fog))
         f.write('set pt_render_bounces 6\nset pt_render_light_samples 16\n')
+        # the game keeps these from one run to the next: always said, so a dim job does not dim the one after
+        f.write('set pt_surface_light %g\nset pt_point_light %g\nset pt_sky %g\n' % (1.0 / dim, 1.0 / dim, 2.0 / dim))
         f.write('set tour_file "%s"\nset tour_notarget 0\n' % tour)
         f.write('set tour_clip_begin "set pt_offline_dir %s/c%%d; set pt_offline %d"\n' % (out, paths))
         f.write('set tour_clip_end "set pt_offline 0"\nset tour_end "quit"\n')
@@ -136,6 +142,7 @@ def main():
     ap.add_argument('--seed', type=int, default=1)
     ap.add_argument('--timeout', type=int, default=7200)
     ap.add_argument('--renderer', default='ptrtx', help='ptrtx or ptcpu')
+    ap.add_argument('--dim', action='store_true', help="instead of the usual jobs: every map with its lights turned down")
     ap.add_argument('--dark', type=int, default=0, help='instead of the usual jobs: try this many clips a map and render the dark ones')
     args = ap.parse_args()
     args.game = os.path.abspath(args.game)
@@ -169,11 +176,14 @@ def main():
                 if keep:
                     run_job(args, m, tag, blur, fog, args.dark, frames, fps, args.paths or paths, tag, args.seed, more, keep=keep)
             jobs = []
+        elif args.dim:
+            jobs = DIM_JOBS
         for tag, blur, fog, clips, frames, fps, paths, *more in jobs:
             for m in maps:
                 # a test tour is the same sharp and blurred, to compare them
                 tour_tag = 'test' if args.split != 'train' else tag
-                run_job(args, m, tag, blur, fog, clips, frames, fps, args.paths or paths, tour_tag, args.seed, more[0] if more else {})
+                dim = 2.0 ** random.Random('dim/%s/%s/%d' % (m, tag, args.seed)).uniform(2.0, 3.0) if args.dim else 1.0
+                run_job(args, m, tag, blur, fog, clips, frames, fps, args.paths or paths, tour_tag, args.seed, more[0] if more else {}, dim=dim)
     finally:
         if os.path.exists(backup):
             shutil.move(backup, config)
