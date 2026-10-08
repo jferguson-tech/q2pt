@@ -20,6 +20,8 @@ after. What is returned for each part is a blend of a fresh estimate and
 those neighbours' answers, so every frame draws on the paths of the frames
 on both sides of it, which is also what keeps a film steady.
 """
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -186,6 +188,25 @@ TYPICAL_TARGET = 0.0054      # pt/cpu/pt_cpu.cpp
 
 def exposure_for(typical, setting=2.0):
     return setting * min(16.0, max(0.125, TYPICAL_TARGET / max(typical, 1e-6)))
+
+
+ADAPT = 2.5                  # pt/cpu/pt_cpu.cpp: how fast the game's exposure follows the scene, a second
+
+
+def adapted(typicals, times):
+    """The game's exposure at setting 1 for each frame of a shot, from each
+    frame's typical brightness and time in seconds. As in the game it is
+    measured on one frame and used from the next, and follows over about a
+    second: a flash is shown at the exposure of the dark before it."""
+    out, e = [], None
+    for i, typical in enumerate(typicals):
+        want = exposure_for(typical, 1.0)
+        dt = times[i] - times[i - 1] if i else 0.0
+        if e is None or dt < 0.0 or dt > 1.0:
+            e = want
+        out.append(e)
+        e += (want - e) * (1.0 - math.exp(-dt * ADAPT)) if i else 0.0
+    return out
 
 
 def network_scale(typical):
