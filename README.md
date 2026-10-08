@@ -129,13 +129,15 @@ measurement on the RTX 4090 at other sizes, in frames a second:
 | 1920x1080 | 58 | 155 | 362 |
 | 5120x1440 | 23 | 63 | |
 
-**Known faults**
+The two renderers side by side at each of the four presets (`pt_quality`),
+on the same five seconds of `demo1`: the CPU renderer on the left on a 16 core
+Ryzen 9 7950X, the RTX renderer on the right on an RTX 4090, both at 1280x720
+with the filter on. Each picture changes as often as that renderer draws a
+frame; the figures are `pt_bench` averages over the first 24 seconds of the
+demo. The clip plays at 60 frames a second, so nothing in it can look
+smoother than that.
 
-* With the filter on, the fog can look as if it were painted on the walls
-  behind it while the view moves, and light that changes quickly trails a
-  little. The raw picture (**F7**) has neither, and has the noise instead.
-* Linux is built and checked by CI on every change but played far less than
-  Windows.
+![Eight pictures of the same five seconds of play, a row for each preset with the CPU renderer on the left and the RTX renderer on the right. Low: 45 against 431 frames a second. Medium: 20 against 275. High: 8.5 against 146. Ultra: 3.2 against 63](docs/images/cpu_vs_rtx.webp)
 
 ## Requirements
 
