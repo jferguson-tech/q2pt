@@ -116,9 +116,8 @@ frames a second, where the CPU renderer manages 10. Offline rendering is
 about four times faster than on a 32 core, 64 thread CPU; the figures are
 under *Offline demo rendering*.
 
-Not yet on the GPU: the separate history the CPU renderer keeps for mirror
-reflections. Its denoiser decides how far to smooth from how long a pixel has
-been in view rather than from measured noise.
+Not yet on the GPU: its denoiser decides how far to smooth from how long a
+pixel has been in view rather than from measured noise.
 
 Like the CPU renderer it can trace a smaller picture than the window and
 build the full size one from it over a few frames (`pt_scale`). The same
