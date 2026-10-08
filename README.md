@@ -52,7 +52,11 @@ a second.*
 * Glass and liquids reflect and refract with a Fresnel term.
 * Three ways to draw water: classic (the original swimming texture), realistic
   (rippled, reflecting and refracting) and simulated (a wave simulation per
-  pool, with wakes from the player and whatever moves at the surface).
+  pool, with wakes from the player and whatever moves at the surface). A
+  simulated surface is drawn where its waves stand, not as a level sheet
+  with a pattern of tilts on it: crests show in outline and hide what is
+  behind them, and the water rises and falls against walls and whatever
+  stands in it.
 * Fog and light shafts from single scattering along the view ray.
 * A ball of light to throw (**F**): a lamp behind six round steel plates. It
   bounces, rolls down slopes, knocks into the others and comes to rest, and

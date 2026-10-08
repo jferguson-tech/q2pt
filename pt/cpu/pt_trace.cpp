@@ -243,12 +243,146 @@ Vec3 ClampSample(Vec3 c, float max_luminance)
 	return lum > max_luminance ? c * (max_luminance / lum) : c;
 }
 
-bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &hit, const Tri *&tri, HeldRays held)
+// how far above its level a simulated liquid stands at x, y
+static float WaveHeight(const Scene &sc, const Texture &map, const Material &m, float x, float y)
 {
+	// between the middles of the cells, and level with the outermost beyond them
+	const float fx = std::min(std::max((x - m.wave_rect[0]) * m.wave_rect[2] * (float)map.width - 0.5f, 0.0f), (float)(map.width - 1));
+	const float fy = std::min(std::max((y - m.wave_rect[1]) * m.wave_rect[3] * (float)map.height - 0.5f, 0.0f), (float)(map.height - 1));
+	const int x0 = std::min((int)fx, map.width - 2), y0 = std::min((int)fy, map.height - 2);
+	const float ax = fx - (float)x0, ay = fy - (float)y0;
+	const uint32_t *row = &map.pixels[(size_t)y0 * map.width + x0];
+	const auto stored = [](uint32_t texel) { return (float)(((texel >> 8) & 0xff00) | (texel >> 24)); };
+	const float h = (stored(row[0]) * (1.0f - ax) + stored(row[1]) * ax) * (1.0f - ay)
+		+ (stored(row[map.width]) * (1.0f - ax) + stored(row[map.width + 1]) * ax) * ay;
+	return (h * (1.0f / 65535.0f) - 0.5f) * 16.0f * sc.wave_strength;
+}
+
+// Where the ray first crosses the surface of a simulated liquid before limit.
+// The surface is not the level triangles the map has for it but stands where
+// the waves do, above and below them: the ray is followed through the band
+// the waves keep to until it is on the other side of the surface. Gives how
+// far along that is, the side the ray came from (1 above, -1 below) and the
+// body.
+static bool WaveCross(const Scene &sc, const Ray &ray, float limit, float &where, float &side, const World::Water *&body)
+{
+	const float reach = sc.wave_reach * sc.wave_strength + 0.1f;
+	const float o[3] = {ray.o.x, ray.o.y, ray.o.z}, d[3] = {ray.d.x, ray.d.y, ray.d.z};
+	float inv[3];
+	for (int a = 0; a < 3; a++)
+		inv[a] = 1.0f / (std::fabs(d[a]) < 1.0e-8f ? 1.0e-8f : d[a]);
+	limit = std::min(limit, 1.0e7f);
+	bool found = false;
+
+	for (const World::Water &b : sc.world->waters)
+	{
+		// the part of the ray within the waves' reach of the level, over the body
+		const float lo[3] = {b.min_x, b.min_y, b.z - reach}, hi[3] = {b.max_x, b.max_y, b.z + reach};
+		float t0 = ray.tmin, t1 = limit;
+		for (int a = 2; a >= 0 && t0 < t1; a--)
+		{
+			const float ta = (lo[a] - o[a]) * inv[a], tb = (hi[a] - o[a]) * inv[a];
+			t0 = std::max(t0, std::min(ta, tb));
+			t1 = std::min(t1, std::max(ta, tb));
+		}
+		if (t0 >= t1)
+			continue;
+		const Texture *map = sc.Map(b.mat->wave_map), *wet = sc.Map(b.mat->caustic_map);
+		if (!map || map->width < 2 || map->height < 2)
+			continue;
+
+		const auto above = [&](float t)
+		{
+			return o[2] + d[2] * t - b.z - WaveHeight(sc, *map, *b.mat, o[0] + d[0] * t, o[1] + d[1] * t);
+		};
+		// Far from the surface the steps are as long as its slope allows,
+		// taken to be no steeper than one in one; near it half a cell. A ray
+		// that skims it for long gets longer steps as it goes, so as to end.
+		const float cell = 1.0f / (b.mat->wave_rect[2] * (float)map->width);
+		const float across = std::sqrt(d[0] * d[0] + d[1] * d[1]);
+		const float closing = 1.0f / (std::fabs(d[2]) + across);
+		float least = 0.5f * cell / std::max(across, 1.0e-6f);
+
+		float ta = t0, fa = above(t0);
+		// a ray that leaves the surface starts on it, and a little further
+		// along shows which side it left on
+		if (std::fabs(fa) < 0.05f)
+			fa = above(std::min(t0 + 0.1f, t1));
+		for (int i = 0; ta < t1; i++)
+		{
+			if (i >= 64)
+				least *= 1.06f;
+			const float tb = std::min(ta + std::max(std::fabs(fa) * closing, least), t1);
+			const float fb = above(tb);
+			if ((fa < 0.0f) != (fb < 0.0f))
+			{
+				// the caustic picture also says where there is liquid at all
+				const float tm = 0.5f * (ta + tb);
+				const int cx = std::min(std::max((int)std::floor((o[0] + d[0] * tm - b.mat->wave_rect[0]) * b.mat->wave_rect[2] * (float)map->width), 0), map->width - 1);
+				const int cy = std::min(std::max((int)std::floor((o[1] + d[1] * tm - b.mat->wave_rect[1]) * b.mat->wave_rect[3] * (float)map->height), 0), map->height - 1);
+				if (!wet || wet->width != map->width || wet->height != map->height || (wet->pixels[(size_t)cy * wet->width + cx] >> 24) >= 128)
+				{
+					float on = ta, past = tb;
+					for (int k = 0; k < 10; k++)
+					{
+						const float mid = 0.5f * (on + past);
+						if ((above(mid) < 0.0f) == (fa < 0.0f))
+							on = mid;
+						else
+							past = mid;
+					}
+					where = on;
+					side = fa < 0.0f ? -1.0f : 1.0f;
+					body = &b;
+					limit = on;
+					found = true;
+					break;
+				}
+			}
+			ta = tb;
+			fa = fb;
+		}
+	}
+	return found;
+}
+
+// A ray that crosses the surface of a simulated liquid before limit meets
+// the triangle that says there is liquid at the crossing and what it is made
+// of: the one straight down from it, or up, from the side the ray came.
+static bool WaveHit(const Scene &sc, const Ray &ray, float limit, Hit &hit)
+{
+	float where, side;
+	const World::Water *body;
+	if (!WaveCross(sc, ray, limit, where, side, body))
+		return false;
+
+	Ray probe;
+	probe.o = Vec3(ray.o.x + ray.d.x * where, ray.o.y + ray.d.y * where, body->z + side * 1.25f);
+	probe.d = Vec3(0.0f, 0.0f, -side);
+	probe.tmin = 0.0f;
+	probe.tmax = 2.5f;
+	Hit at;
+	if (!sc.world->bvh.IntersectIf(probe, at, [&](uint32_t t, float, float)
+	{
+		const Tri &tri = sc.world->tris[t];
+		return tri.mat->wave_map == body->mat->wave_map && tri.n.z * side > 0.99f;
+	}))
+		return false;
+	hit = at;
+	hit.t = where;
+	return true;
+}
+
+bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &hit, const Tri *&tri, HeldRays held, bool waves)
+{
+	waves = waves && sc.swell && held != kHeldOnly;
 	rng.rays++;
 	for (int skips = 0; ; skips++)
 	{
-		const auto in_world = [&](uint32_t t, float, float) { return !BackOfGlass(sc.world->tris[t], ray.d); };
+		const auto in_world = [&](uint32_t t, float, float)
+		{
+			return !BackOfGlass(sc.world->tris[t], ray.d) && !(waves && sc.Swells(sc.world->tris[t]));
+		};
 		const auto in_frame = [&](uint32_t t, float, float)
 		{
 			const Tri &tri = sc.frame->tris[t];
@@ -303,6 +437,9 @@ bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &
 			hit.tri |= kDynamic;
 			found = true;
 		}
+		// a simulated liquid's surface, if that comes first
+		if (waves && WaveHit(sc, ray, found ? hit.t : ray.tmax, hit))
+			found = true;
 		if (!found)
 			return false;
 
@@ -312,7 +449,10 @@ bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &
 			(camera && (m.flags & PT_MAT_CAMERA_INVISIBLE)) ||
 			IsHole(*tri, hit.u, hit.v) ||
 			(cross && m.alpha < 1.0f && rng.Float() >= m.alpha) ||
-			(sc.view_mode == PT_VIEW_FURNACE && (m.flags & PT_MAT_BLACK)));
+			(sc.view_mode == PT_VIEW_FURNACE && (m.flags & PT_MAT_BLACK)) ||
+			// a ray that leaves the liquid where it stands below its level is
+			// behind the level sheet, and must not meet that from the back
+			(!waves && sc.Swells(*tri) && Dot(tri->n, ray.d) > 0.0f));
 		if (!skip)
 			return true;
 		ray.tmin = hit.t + 0.01f;
@@ -466,11 +606,11 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 		{
 			wave_x += (float)(texel[k] & 0xff) * w[k];
 			wave_y += (float)((texel[k] >> 8) & 0xff) * w[k];
-			wave_height += (float)((texel[k] >> 16) & 0xff) * w[k];
+			wave_height += (float)(((texel[k] >> 8) & 0xff00) | (texel[k] >> 24)) * w[k];
 		}
 		wave_x = (wave_x * (1.0f / 255.0f) - 0.5f) * sc.wave_strength;
 		wave_y = (wave_y * (1.0f / 255.0f) - 0.5f) * sc.wave_strength;
-		wave_height = (wave_height * (1.0f / 255.0f) - 0.5f) * 8.0f * sc.wave_strength;
+		wave_height = (wave_height * (1.0f / 65535.0f) - 0.5f) * 16.0f * sc.wave_strength;
 		// what the texture stands for lies below the surface, so a tilted
 		// surface shows it shifted, as through a lens
 		u += wave_x * 0.5f;
@@ -525,6 +665,14 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	{
 		// the surface is level, facing up or (seen from below) down
 		n = Normalize(Vec3(-wave_x, -wave_y, 1.0f)) * (n.z < 0.0f ? -1.0f : 1.0f);
+		if (sc.Swells(tri))
+		{
+			// met where the waves stand (see WaveCross), on the side this
+			// triangle faces: it really is tilted as they are
+			n = Normalize(Vec3(-wave_x, -wave_y, 1.0f)) * (tri.n.z < 0.0f ? -1.0f : 1.0f);
+			s.front = true;
+			s.ng = n;
+		}
 		// crests gather the light in the liquid and troughs spread it
 		s.colour *= std::min(std::max(1.0f + wave_height * 0.35f, 0.6f), 1.8f);
 	}

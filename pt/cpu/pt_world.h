@@ -236,6 +236,10 @@ struct Scene
 	int			light_samples = 8;
 	float		max_sample = 40.0f;
 	float		wave_strength = 1.0f;
+	float		wave_reach = 0.0f;
+	// simulated liquids are met where their waves stand, not at their triangles
+	bool		swell = false;
+	bool Swells(const Tri &t) const { return swell && t.mat->wave_map && std::fabs(t.n.z) > 0.99f; }
 	bool		filter_textures = true;
 	int			reflections = 2;
 	int			view_mode = 0;

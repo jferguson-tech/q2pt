@@ -104,7 +104,7 @@ void main()
 	if (held_apart)
 	{
 		float held_tmin = 0.0;
-		have_held = Closest(fr.origin.xyz, frame_dir, held_tmin, true, false, MASK_HELD, held_hit, held_mat);
+		have_held = Closest(fr.origin.xyz, frame_dir, held_tmin, true, false, MASK_HELD, false, held_hit, held_mat);
 	}
 
 	const float max_sample = fr.settings_f.x;
@@ -147,7 +147,7 @@ void main()
 
 	for (int layer = 0; through > 0.001; layer++)
 	{
-		bool found = Closest(origin, dir, tmin, true, false, held_apart ? MASK_SCENE : MASK_ALL, hit, base);
+		bool found = Closest(origin, dir, tmin, true, false, held_apart ? MASK_SCENE : MASK_ALL, true, hit, base);
 		if (have_held && travelled <= 0.0 && (!found || held_hit.t < hit.t))
 		{
 			// the weapon is the nearest thing: from here on this is the

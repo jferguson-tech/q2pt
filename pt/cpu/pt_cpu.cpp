@@ -581,7 +581,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 
 	for (int layer = 0; through > 0.001f; layer++)
 	{
-		bool found = Closest(sc, ray, rng, true, false, hit, tri, held_apart ? kNotHeld : kHeldToo);
+		bool found = Closest(sc, ray, rng, true, false, hit, tri, held_apart ? kNotHeld : kHeldToo, true);
 		if (held_tri && travelled <= 0.0f && (!found || held_hit.t < hit.t))
 		{
 			// the weapon is the nearest thing: from here on this is the
@@ -1886,6 +1886,8 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	sc.light_samples = view->light_samples > 0 ? std::min(view->light_samples, 64) : 8;
 	sc.max_sample = view->firefly_clamp > 0.0f ? view->firefly_clamp : 40.0f;
 	sc.wave_strength = std::max(0.0f, view->wave_strength);
+	sc.wave_reach = std::min(std::max(view->wave_reach, 0.0f), 8.0f);
+	sc.swell = sc.wave_strength > 0.0f && s->world && !s->world->waters.empty();
 	sc.filter_textures = view->texture_filter != 0;
 	sc.reflections = view->reflections;
 	sc.view_mode = view->view_mode;

@@ -188,6 +188,7 @@ extern	float	r_surfacelight, r_pointlight, r_liquidglow;
 extern	float	r_detailglow;
 extern	int		r_normalflip;
 extern	int		r_watermode;		// 0 classic, 1 realistic, 2 simulated
+extern	float	r_waterreach;
 extern	float	r_watercell, r_waterwaves, r_watercaustics, r_waterdamping;
 extern	float	r_bumpscale, r_roughscale, r_metalscale;
 extern	int		r_materialmaps;		// detail maps are read from the pictures' painted light
@@ -234,6 +235,7 @@ int		R_WaterBody (image_t *image, const char *name, float z, float points[][3], 
 void	R_WaterSetMaterial (int body, int material);
 void	R_WaterFinish (void);
 void	R_WaterFrame (refdef_t *fd);
+qboolean	R_WaterEyeUnder (const float *eye, float strength, qboolean under);
 void	R_WaterAround (const float *eye, float *absorb);
 pt_material_t *R_WorldMaterialPtr (int index);
 float	R_EntityMoved (int index, entity_t *e);

@@ -215,8 +215,8 @@ std::vector<uint8_t> Marks(const std::vector<Tri> &tris)
 		const Material &m = *tris[i].mat;
 		if (m.alpha < 1.0f)
 			marks[i] = Bvh::kAsk | Bvh::kChancy;
-		else
-			marks[i] = ((m.flags & PT_MAT_ALPHA_TEST) && m.texture) ? Bvh::kAsk : 0;
+		else	// a simulated liquid is not met at its triangles: see Scene::Swells
+			marks[i] = (((m.flags & PT_MAT_ALPHA_TEST) && m.texture) || m.wave_map) ? Bvh::kAsk : 0;
 	}
 #else
 	(void)tris;

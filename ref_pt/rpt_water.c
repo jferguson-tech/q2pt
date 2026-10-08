@@ -368,6 +368,7 @@ void R_WaterFrame (refdef_t *fd)
 		dt = 0;		// a new map, a load or a long pause: nothing sensible to do
 	VectorCopy (fd->vieworg, eye);
 	feet = eye[2] - 46;
+	r_waterreach = 0;
 
 	for (i=0, b=w_bodies ; i<w_numbodies ; i++, b++)
 	{
@@ -431,12 +432,43 @@ void R_WaterFrame (refdef_t *fd)
 		}
 
 		rpt.backend->texture_update (rpt.backend, b->wave_texture, pt_water_waves (b->sim, r_waterwaves));
+		if (pt_water_reach (b->sim) > r_waterreach)
+			r_waterreach = pt_water_reach (b->sim);
 		rpt.backend->texture_update (rpt.backend, b->caustic_texture,
 			pt_water_caustics (b->sim, b->lava ? 0 : r_watercaustics));
 	}
 
 	w_lasttime = fd->time;
 	VectorCopy (eye, w_lasteye);
+}
+
+/*
+===============
+R_WaterEyeUnder
+
+The game says the eye is under water when it is below the level the map
+gives the water. A simulated surface stands above that in places and below
+it in others, and what is drawn must agree with it: near the surface the
+waves have the say. strength is what the heights are drawn times (pt_waves).
+===============
+*/
+qboolean R_WaterEyeUnder (const float *eye, float strength, qboolean under)
+{
+	waterbody_t	*b;
+	float		height;
+	int			i, covered;
+
+	if (strength <= 0)
+		return under;
+	for (i=0, b=w_bodies ; i<w_numbodies ; i++, b++)
+	{
+		if (!b->sim || !W_Over (b, eye) || fabs (eye[2] - b->z) > PT_WATER_HEIGHT_MAX * strength + 1)
+			continue;
+		height = pt_water_height_at (b->sim, eye[0], eye[1], r_waterwaves, &covered) * strength;
+		if (covered && fabs (eye[2] - b->z) <= fabs (height) + 1)
+			return eye[2] < b->z + height;
+	}
+	return under;
 }
 
 /*
