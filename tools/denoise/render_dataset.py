@@ -24,10 +24,19 @@ MORE = dict(fire_chance=0.85, fire_kinds=(1, 2, 3, 4, 5, 6, 6, 6))
 TRAIN_JOBS += [('d', 0.0, 1, 4, 12, 30, 512, MORE), ('e', 0.5, 1, 2, 12, 30, 512, MORE)]
 # The test references have to be far cleaner than anything being compared
 # with them: at 2048 paths they were the limit of what could be measured.
+# Dark places are rare on a tour picked blindly, and are where a few paths
+# a pixel leave the most noise. --dark N tries N clips a map small and
+# cheaply, and renders in full those the game's exposure would have to
+# brighten at least DARK times: at most DARK_MOST a map, the darkest first.
+DARK, DARK_MOST = 2.0, 6
+DARK_JOB = ('f', 0.0, 1, 12, 30, 512, dict(fire_chance=0.7, fire_kinds=(1, 2, 3, 4, 5, 6, 6)))
+TYPICAL_TARGET = 0.0054      # pt/cpu/pt_cpu.cpp
+
 TEST_JOBS = [('s', 0.0, 1, 1, 12, 30, 16384), ('m', 0.5, 1, 1, 12, 30, 4096)]
 
 
-def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed, more):
+def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed, more, keep=None, mode=None):
+    """keep: of the tour's clips, the ones to render (numbered from 1), in that order"""
     name = '%s_%s' % (m, tag)
     out = os.path.join(args.out, args.split, name)
     if os.path.exists(os.path.join(out, 'done')):
@@ -41,6 +50,14 @@ def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed, 
     if not lines:
         print('%s: nowhere to go' % name, flush=True)
         return False
+    if keep is not None:
+        each = len(lines) // clips               # a clip's lines: those to arrive in, then its own
+        chosen = []
+        for new, old in enumerate(keep, 1):
+            for line in lines[(old - 1) * each:old * each]:
+                head, mark = line.rsplit(' ', 1)
+                chosen.append('%s %d' % (head, new if int(mark) else 0))
+        lines, clips = chosen, len(keep)
     for c in range(1, clips + 1):
         os.makedirs(os.path.join(out, 'c%d' % c))
     tour = os.path.join(out, 'tour.txt')
@@ -60,7 +77,7 @@ def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed, 
     log = open(os.path.join(out, 'log.txt'), 'w')
     try:
         code = subprocess.call(['./quake2', '+set', 'vid_ref', args.renderer, '+set', 'vid_fullscreen', '0',
-                                '+set', 'gl_mode', str(args.mode), '+set', 's_initsound', '0',
+                                '+set', 'gl_mode', str(args.mode if mode is None else mode), '+set', 's_initsound', '0',
                                 '+exec', 'q2dn_job.cfg', '+map', m],
                                cwd=args.game, stdout=log, stderr=subprocess.STDOUT, timeout=args.timeout)
     except subprocess.TimeoutExpired:
@@ -74,6 +91,31 @@ def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed, 
     return False
 
 
+def dark_clips(args, m, tries):
+    """the clips of a map's tour that are dark enough, found by rendering all of them small"""
+    import numpy as np
+    import ptx
+    tag, blur, fog, frames, fps, paths, more = DARK_JOB
+    found = os.path.join(args.out, args.split, '%s_%s.dark' % (m, tag))
+    if os.path.exists(found):
+        return [int(x) for x in open(found).read().split()]
+    probe = os.path.join(args.out, args.split, '%s_probe' % m)
+    keep = []
+    if run_job(args, m, 'probe', blur, fog, tries, frames, fps, 16, tag, args.seed, more, mode=0):
+        dark = []
+        for c in range(1, tries + 1):
+            typical = [ptx.typical(ptx.clean(ptx.Frame(os.path.join(probe, 'c%d' % c, x)).data[ptx.ALL_PICTURE:ptx.ALL_PICTURE + 3, ::2, ::2]))
+                       for x in sorted(os.listdir(os.path.join(probe, 'c%d' % c))) if x.endswith('.ptx')]
+            # the middle one: a shot's flash in a dark room leaves it a dark room
+            if typical and TYPICAL_TARGET / float(np.median(typical)) >= DARK:
+                dark.append((float(np.median(typical)), c))
+        keep = [c for _, c in sorted(dark)[:DARK_MOST]]
+        with open(found, 'w') as f:
+            f.write(' '.join(str(c) for c in keep) + '\n')
+    shutil.rmtree(probe, ignore_errors=True)
+    return keep
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--game', required=True, help='the folder quake2 runs from')
@@ -85,6 +127,7 @@ def main():
     ap.add_argument('--seed', type=int, default=1)
     ap.add_argument('--timeout', type=int, default=7200)
     ap.add_argument('--renderer', default='ptrtx', help='ptrtx or ptcpu')
+    ap.add_argument('--dark', type=int, default=0, help='instead of the usual jobs: try this many clips a map and render the dark ones')
     args = ap.parse_args()
     args.game = os.path.abspath(args.game)
     args.out = os.path.abspath(args.out)
@@ -106,6 +149,14 @@ def main():
     if os.path.exists(config) and not os.path.exists(backup):
         shutil.copy(config, backup)
     try:
+        if args.dark:
+            tag, blur, fog, frames, fps, paths, more = DARK_JOB
+            for m in maps:
+                keep = dark_clips(args, m, args.dark)
+                print('%s: %d dark of %d' % (m, len(keep), args.dark), flush=True)
+                if keep:
+                    run_job(args, m, tag, blur, fog, args.dark, frames, fps, args.paths or paths, tag, args.seed, more, keep=keep)
+            jobs = []
         for tag, blur, fog, clips, frames, fps, paths, *more in jobs:
             for m in maps:
                 # a test tour is the same sharp and blurred, to compare them
