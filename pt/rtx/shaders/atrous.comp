@@ -58,7 +58,10 @@ void main()
 	float tolerance[3];
 	for (int k = 0; k < 3; k++)
 	{
-		const float frames = max(centre[k].a > 0.0 ? centre[k].a : centre[0].a, 1.0);
+		float frames = max(centre[k].a > 0.0 ? centre[k].a : centre[0].a, 1.0);
+		// the air's light, where it has the channel to itself, is kept for fewer frames: see temporal.comp
+		if (k == 2 && centre[2].a <= 0.0 && fr.output_f.w == 0.0 && fr.settings_f.w > 0.0)
+			frames = min(frames, max(fr.painted.w, 1.0));
 		tolerance[k] = max(Luminance(centre[k].rgb), 0.02) * 4.0 / sqrt(frames);
 	}
 	// a sharp reflection is a picture in itself and must not be smeared

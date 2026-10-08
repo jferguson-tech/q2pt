@@ -128,7 +128,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	vec4	open_right;
 	vec4	open_up;
 	ivec4	held;			// x: first triangle of the frame carried by the eye (the weapon in hand); y: how many; z: reflections are followed where they appear to be
-	vec4	painted;		// x: what a metal painted dark reflects, see pt_view_t's metal_colour; y: the most over white that adds to the glow, 0 = no limit
+	vec4	painted;		// x: what a metal painted dark reflects, see pt_view_t's metal_colour; y: the most over white that adds to the glow, 0 = no limit; z: points along a view ray where the air's light is looked for; w: frames of it kept while things change
 } fr;
 
 // the map and what moves, each as three corners per triangle, what goes with
