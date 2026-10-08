@@ -39,6 +39,9 @@ vertices appear counter clockwise.
 #define PT_MAT_WARP				128u	/* the texture swims, as old engines drew liquids */
 #define PT_MAT_EMIT_BRIGHT		64u	/* only the texture's bright texels emit: screens,
 									   buttons, indicator lights */
+#define PT_MAT_HELD				256u	/* carried by the eye, as a weapon in hand is: with
+									   motion blur it is seen from where the eye is when
+									   the shutter closes, however the eye moved */
 
 typedef struct pt_texture_s
 {
@@ -143,6 +146,18 @@ typedef struct pt_scene_s
 	int						num_lights;
 } pt_scene_t;
 
+/*
+Ways of drawing the scene with its materials overridden, for checking a
+renderer and for pictures. Lights are as they are, and what glows keeps its
+glow. The sky, glass, and what only emits (PT_MAT_BLACK) are left alone.
+*/
+#define PT_VIEW_NORMAL	0
+#define PT_VIEW_CLAY	1	/* every surface matte mid grey, fully rough, not metal,
+						   whatever its textures say. Liquids too: to the eye
+						   they are solid, though light still passes them. */
+#define PT_VIEW_MIRROR	2	/* every surface as smooth as the backend can make
+						   one; its colour and whether it is metal are kept */
+
 /* one 3D view */
 typedef struct pt_view_s
 {
@@ -153,6 +168,14 @@ typedef struct pt_view_s
 	float	origin[3];
 	float	forward[3], right[3], up[3];	/* orthonormal */
 	float	fov_x, fov_y;					/* degrees */
+
+	/* Motion blur. With blur set, each path starts from where the eye was at
+	   a moment of its own, chosen at random between the shutter opening,
+	   when the eye was at the open_ pose, and its closing, when it is at the
+	   pose above. Nothing of an earlier frame is looked up: send restart. */
+	int		blur;
+	float	open_origin[3];
+	float	open_forward[3], open_right[3], open_up[3];
 
 	const pt_scene_t	*scene;				/* may be NULL */
 
@@ -177,6 +200,9 @@ typedef struct pt_view_s
 						   picture filtered. 1: neither; a frame stands alone, except
 						   that while the eye is at rest frames add up. 0: neither, ever */
 	int		debug;			/* 0 = the picture; otherwise one part of it, see pt_debug */
+	int		view_mode;		/* PT_VIEW_: the scene drawn with its materials overridden.
+						   Send restart when it changes, or the old picture
+						   bleeds into the new one. */
 
 	/* reflections */
 	int		reflections;		/* 0 none, 1 glass and liquids, 2 every shiny surface */

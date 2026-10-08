@@ -27,7 +27,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 cvar_t	*pt_stats;				// 1: frame rate and timings on screen, 2: and in the console
 cvar_t	*pt_debug;				// one component of the picture, see below
+cvar_t	*pt_view;				// the scene with its materials overridden, see below
 cvar_t	*pt_simd;				// CPU path tracer: 1 = the build for SSE even where there is AVX2
+cvar_t	*pt_material_cache;		// keep the detail maps read from the pictures in pt_cache in the game directory
 
 static cvar_t	*pt_quality;			// 0 low, 1 medium, 2 high, 3 ultra, -1 custom
 static cvar_t	*pt_quality_applied;	// the preset the variables were last set from
@@ -79,6 +81,7 @@ static cvar_t	*pt_waves;				// ripple strength on liquids
 static cvar_t	*pt_bump;
 static cvar_t	*pt_roughness;
 static cvar_t	*pt_metallic;
+static cvar_t	*pt_material_maps;		// 1: relief and roughness read from each picture's painted light, 0: brightness as height
 
 float	r_skyscale = 2;
 float	r_lampglow = 1.5f;
@@ -88,6 +91,7 @@ int		r_watermode = 2;
 int		r_normalflip;
 float	r_watercell = 8, r_waterwaves = 1, r_watercaustics = 0, r_waterdamping = 1;
 float	r_bumpscale = 1, r_roughscale = 1, r_metalscale = 1;
+int		r_materialmaps = 1;
 
 #define	NUM_PRESETS	4
 
@@ -122,6 +126,9 @@ void R_InitSettings (void)
 	// 5 unfiltered extras, 6 normals, 7 history length, 8 layer history length,
 	// 9 seen through water, 10 depth
 	pt_debug = ri.Cvar_Get ("pt_debug", "0", 0);
+	// 1 clay: every surface matte grey, 2 mirror: every surface smooth.
+	// Not kept in the config: the game does not start in one of these.
+	pt_view = ri.Cvar_Get ("pt_view", "0", 0);
 	// which build of the CPU path tracer runs is settled when it starts, so
 	// changing this starts the renderer again: see R_BeginFrame
 	pt_simd = ri.Cvar_Get ("pt_simd", "0", 0);
@@ -175,6 +182,8 @@ void R_InitSettings (void)
 	pt_bump = ri.Cvar_Get ("pt_bump", "1", CVAR_ARCHIVE);
 	pt_roughness = ri.Cvar_Get ("pt_roughness", "1", CVAR_ARCHIVE);
 	pt_metallic = ri.Cvar_Get ("pt_metallic", "1", CVAR_ARCHIVE);
+	pt_material_maps = ri.Cvar_Get ("pt_material_maps", "1", CVAR_ARCHIVE);
+	pt_material_cache = ri.Cvar_Get ("pt_material_cache", "1", CVAR_ARCHIVE);
 
 	r_skyscale = pt_sky->value;
 	r_lampglow = pt_lamp_glow->value;
@@ -187,6 +196,7 @@ void R_InitSettings (void)
 	r_bumpscale = pt_bump->value;
 	r_roughscale = pt_roughness->value;
 	r_metalscale = pt_metallic->value;
+	r_materialmaps = pt_material_maps->value != 0;
 }
 
 /*
@@ -277,16 +287,45 @@ qboolean R_UpdateSettings (void)
 	}
 
 	if (pt_bump->value != r_bumpscale || pt_roughness->value != r_roughscale
-		|| pt_metallic->value != r_metalscale)
+		|| pt_metallic->value != r_metalscale || (pt_material_maps->value != 0) != r_materialmaps)
 	{
 		r_bumpscale = pt_bump->value;
 		r_roughscale = pt_roughness->value;
 		r_metalscale = pt_metallic->value;
+		r_materialmaps = pt_material_maps->value != 0;
 		R_MaterialsChanged ();		// the generated maps hold the old values
 		reload = true;
 	}
 
 	return reload;
+}
+
+/*
+===============
+R_ViewMode
+
+pt_view, which offline rendering and screenshots honour as the game does
+===============
+*/
+static void R_ViewMode (pt_view_t *view)
+{
+	static int	was;
+	int			mode;
+
+	mode = (int)pt_view->value;
+	if (mode < PT_VIEW_NORMAL || mode > PT_VIEW_MIRROR)
+		mode = PT_VIEW_NORMAL;
+	view->view_mode = mode;
+
+	// nothing is followed off a surface with reflections off, and a mirror
+	// would show nothing
+	if (mode == PT_VIEW_MIRROR)
+		view->reflections = 2;
+
+	// the light gathered so far is of the other view
+	if (mode != was)
+		view->restart = 1;
+	was = mode;
 }
 
 /*
@@ -328,6 +367,8 @@ void R_ViewSettings (pt_view_t *view)
 
 	if (R_Offline ())
 		R_OfflineSettings (view);
+
+	R_ViewMode (view);
 }
 
 /*

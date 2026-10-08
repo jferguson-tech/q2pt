@@ -22,10 +22,20 @@ a second.*
   lights and spotlights from the map's entities, the sky, and dynamic lights.
   Lights are importance sampled; indirect light comes from further bounces.
 * Physically based materials: GGX specular with roughness and metallic, normal
-  maps and smooth shading on models. Surface properties are guessed from the
-  texture names and can be set per texture in `pt_materials.txt`, or given as
-  hand-made maps beside a texture: `<name>_n.tga` (normals), `<name>_r.tga`
-  (roughness) and `<name>_e.tga` (emission).
+  maps and smooth shading on models. What kind of thing a surface is is guessed
+  from its texture's name and can be set per texture in `pt_materials.txt`.
+* Normal and roughness maps made from the game's own textures, on your machine,
+  the first time a level shows them. The artists painted a highlight on the
+  edges that face the top left of a texture and a shadow on the others; that
+  painted light is read back as shape, so panels, seams, rivets and vents
+  catch real light the way they were drawn to. Where nothing was painted, dark
+  is taken to be deep, and rust and grooves are made rougher than bare metal.
+  The maps are twice as fine as the textures. They are kept in
+  `baseq2\pt_cache`, about 100 KB a texture, which can be deleted at any time;
+  nothing made from the game's art is part of this repository. **F11** switches
+  between these maps and the plain ones made before them. Hand-made maps
+  beside a texture are used instead where there are any: `<name>_n.tga`
+  (normals), `<name>_r.tga` (roughness) and `<name>_e.tga` (emission).
 * Glass and liquids reflect and refract with a Fresnel term.
 * Three ways to draw water: classic (the original swimming texture), realistic
   (rippled, reflecting and refracting) and simulated (a wave simulation per
@@ -34,8 +44,13 @@ a second.*
 * A denoiser (reprojected history and an edge-stopping spatial filter),
   temporal anti-aliasing that also upscales from a lower internal resolution,
   auto exposure, bloom and a choice of tone mapping.
-* Quality presets and a menu page for the main settings; everything else is a
-  console variable (`pt_*`).
+* The picture as the paths alone make it, noise and all, at a key press
+  (**F7**): every frame on its own, or frames added up while the view is at
+  rest. Each thing in the filtered picture that depends on earlier frames can
+  be switched off by itself from the number pad, with a panel that lists
+  what is on, to find which of them a fault comes from.
+* Quality presets and a menu page for the main settings, the number of paths
+  per pixel among them; everything else is a console variable (`pt_*`).
 * On-screen performance info: frame rate, frame times and where the time
   goes, on either path tracer.
 * The 64-bit renderer holds two builds of the tracer and picks one when it
@@ -48,8 +63,29 @@ a second.*
 Play and record a demo with any renderer, then render it frame by frame at
 settings far too slow to play with: `pt_render <demo> [fps] [paths per pixel]`.
 Each frame is built from nothing at full resolution and saved as a PNG, with
-optional motion blur. The sound is mixed in step into a WAV, and a script is
+motion blur from the eye's movement (`pt_render_blur`, half the frame's time
+unless set otherwise). The sound is mixed in step into a WAV, and a script is
 written that turns both into a video with ffmpeg.
+
+How long a frame takes: `demo1` at 1920x1080, 64 paths per pixel, 6 bounces,
+motion blur at half the frame's time, 150 frames at 30 a second.
+
+```
+CPU   ████████████████████████████████████████  11.56 s a frame   32 cores, 64 threads
+RTX   █████████                                   2.65 s a frame   4.4x faster
+```
+
+| | seconds a frame | one second of film | the 150 frames |
+| --- | --- | --- | --- |
+| CPU path tracer: Threadripper PRO 5975WX, **32 cores, 64 threads** | 11.56 | 5 min 47 s | 29 min |
+| RTX path tracer: RTX 4090 | 2.65 | 1 min 20 s | 6 min 45 s |
+
+Measured on Linux (Ubuntu 24.04), two runs each, which agreed to within 1
+percent. The CPU here is a workstation one: on a processor with fewer cores
+the CPU path tracer falls further behind. The time for the 150 frames
+includes starting the game and loading the map. The quality presets make no
+difference here: offline rendering sets its own bounces and light samples
+(`pt_render_bounces`, `pt_render_light_samples`).
 
 For a denoiser that works outside the game, `pt_render_export 1` makes
 `pt_render` save each frame's buffers instead of a picture: the noisy light
@@ -84,19 +120,32 @@ light a map the same way. It has the lighting, materials, glass and liquids,
 fog, the three water modes, the denoiser, anti-aliasing, auto exposure, bloom,
 tone mapping, screenshots and offline rendering.
 
-Measured on an RTX 4090 beside a 16 core Ryzen 7950X, on the first map at
-800x600 with one path per pixel and three bounces: about 190 frames a second,
-where the CPU renderer manages 9. Offline frames at 64 paths per pixel take
-about a quarter of a second each, some twenty times faster than on the CPU.
+Measured with `pt_bench demo1` on an RTX 4090 beside a 16 core Ryzen 7950X,
+at 800x600 with one path per pixel, three bounces and the filter on: 176
+frames a second, where the CPU renderer manages 10. Offline rendering is
+about four times faster than on a 32 core, 64 thread CPU; the figures are
+under *Offline demo rendering*.
 
 Not yet on the GPU: the separate history the CPU renderer keeps for mirror
-reflections. Its denoiser decides how far to smooth
-from how long a pixel has been in view rather than from measured noise.
+reflections. Its denoiser decides how far to smooth from how long a pixel has
+been in view rather than from measured noise.
 
 Like the CPU renderer it can trace a smaller picture than the window and
-build the full size one from it over a few frames (`pt_scale`). At 5120x1440
-on the RTX 4090, medium preset: 20 frames a second traced at full size, 49 at
-half the width and height, 100 at a quarter.
+build the full size one from it over a few frames (`pt_scale`). The same
+measurement on the RTX 4090 at other sizes, in frames a second:
+
+| | traced at full size | half the width and height | a quarter |
+| --- | --- | --- | --- |
+| 1920x1080 | 58 | 155 | 362 |
+| 5120x1440 | 23 | 63 | |
+
+**Known faults**
+
+* With the filter on, the fog can look as if it were painted on the walls
+  behind it while the view moves, and light that changes quickly trails a
+  little. The raw picture (**F7**) has neither, and has the noise instead.
+* Linux is built and checked by CI on every change but played far less than
+  Windows.
 
 ## Requirements
 
@@ -197,18 +246,49 @@ Some console commands and variables:
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
 | `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time |
 | `pt_filter 0`-`2`, `pt_filter_cycle` (**F7**) | the picture as the paths alone make it, noise and all: `0` every frame on its own, `1` the same but frames add up while you stand still, `2` (the default) blended over time and filtered |
+| `pt_view 0`-`2`, `pt_view_cycle` (number pad **+**, and **-** to step back) | the scene drawn with its materials overridden, for checking the renderer and for pictures: `0` normal, `1` clay, every surface matte mid grey whatever its textures say, `2` mirror, every surface as smooth as can be, keeping its colour and whether it is metal. Lights are unchanged and what glows keeps its glow; the sky, glass, and sparks and beams are left alone. In clay, liquids are solid to the eye. Mirror turns reflections on, and is best judged in the raw picture (**F7**): filtered, reflections smear while the view moves. Not kept in the config; offline rendering and screenshots honour it |
 | `pt_switch 1`-`6` (number pad **1**-**6**) | switch off, or back on, one of the things in the picture that depend on earlier frames, to find which one a fault comes from: anti-aliasing and the upscaler, light history, the noise filter, auto exposure, upscaling, the history view. A list of them all comes up for a few seconds with what is on and off. Number pad **0** puts them all back; **.** keeps the list up (`pt_show_filter`) |
+| `cl_maxfps` | the most frames a second the game runs at: 200 unless set (the game's own setting, which was 90 and in effect 83) |
 | `pt_stats 0` | hide the performance info, which is on by default (never shown in offline renders) |
 | `pt_simd 0`-`1` | CPU renderer: the build for AVX2 where the processor has it, or the one for any processor, to compare the two |
 | `pt_debug 1`-`11` | one part of the picture on its own |
+| `pt_bump`, `pt_roughness`, `pt_metallic` | scale how deep, how rough and how metallic every surface is taken to be; 1 unless set |
+| `pt_material_maps 0`-`1`, `pt_material_toggle` (**F11**) | normal and roughness maps read from each texture's painted light (`1`, the default), or the plain ones of before, which take brightness for height. The key switches between the two while playing; the level's surfaces are made again, which takes a moment |
+| `pt_material_cache 0`-`1` | keep the maps that were made in `baseq2\pt_cache`, so that a texture is read once only; on by default |
+| `pt_material_show <image>` | write a texture beside the height, normals and roughness read from it, as a PNG in `baseq2\scrnshot`: for example `pt_material_show textures/e1u1/metal1_1` |
 | `screenshot`, `pt_screenshot [paths]` | the frame as shown, or rendered again at high quality |
 | `record <name>`, `stop` | record a demo (the game's own commands) |
 | `pt_render <demo> [fps] [paths] [start] [length]` | render a demo offline into `baseq2\render\<demo>\`; start and length, in seconds, pick a part of it |
-| `pt_render_blur 0`-`1` | motion blur for offline rendering |
+| `pt_render_blur 0`-`1` | motion blur for offline rendering: the share of each frame's time the shutter is open; 0.5 unless set, film's 180 degree shutter |
 | `pt_render_export 1` | `pt_render` saves each frame's buffers (`frameNNNNN.ptx`) in place of a picture, for a denoiser outside the game: see `ref_pt/rpt_export.c` for what is in the file |
 | `pt_bench [demo] [seconds] [quit]` | time a demo: `demo1` and 20 seconds unless given, 0 for all of it; `quit` leaves the game afterwards, for scripts (`quake2 +pt_bench demo1 20 quit`) |
 
 ## How it is put together
+
+```mermaid
+flowchart TD
+    subgraph gpl["GPL v2"]
+        engine["Quake 2 engine<br/>client, server, game, qcommon"]
+        old["ref_gl, ref_soft<br/>the original renderers"]
+        refpt["ref_pt<br/>maps, models, materials, settings,<br/>the scene of each frame"]
+    end
+    subgraph mit["MIT: knows nothing about Quake 2"]
+        api(["pt/include/pt.h<br/>the C interface"])
+        cpu["pt/cpu<br/>BVH, path tracer, denoiser<br/>SSE and AVX2"]
+        rtx["pt/rtx<br/>Vulkan compute shaders,<br/>ray queries"]
+        water["pt/water<br/>wave simulation"]
+        material["pt/material<br/>normal and roughness maps<br/>from a texture's colours"]
+        png["pt/png<br/>PNG writer"]
+    end
+    engine -- "renderer interface" --> old
+    engine -- "renderer interface" --> refpt
+    refpt --> api
+    api -- "ref_ptcpu" --> cpu
+    api -- "ref_ptrtx" --> rtx
+    refpt --> water
+    refpt --> material
+    refpt --> png
+```
 
 ```
 pt/         the path tracing core (MIT): knows nothing about Quake 2
@@ -216,6 +296,7 @@ pt/         the path tracing core (MIT): knows nothing about Quake 2
   cpu/            CPU backend: BVH, path tracer, denoiser, output
   rtx/            Vulkan backend: the same tracer as compute shaders
   water/          height field wave simulation
+  material/       normal and roughness maps from a texture's colours
   png/            PNG writer
 ref_pt/     the renderer DLLs (GPL): turns Quake 2's maps, models and
             per-frame scene into what pt.h asks for
@@ -228,6 +309,30 @@ linux/      the Linux build: the program's entry, video, input and sound
 Both path traced renderers are built from the same `ref_pt` sources and differ
 only in the backend they link, so a setting or feature added to the interface
 is available to both.
+
+A frame on the RTX renderer, pass by pass. Each box is a compute shader in
+`pt/rtx/shaders`; "pad" is the number pad key that switches that step off to
+see what it does. With the raw picture (**F7**) the light history and the
+noise filter are left out.
+
+```mermaid
+flowchart TD
+    scene[("scene: triangles, lights, textures")]
+    subgraph small["at the size traced (pt_scale)"]
+        trace["<b>trace</b><br/>paths through each pixel, by ray queries"]
+        temporal["<b>light history</b> · pad 2<br/>each pixel's light gathered over frames"]
+        atrous["<b>noise filter</b> · pad 3<br/>a few passes, each reaching twice as far"]
+        compose["<b>compose</b> · pad 4<br/>light times surface colour, auto exposure"]
+        bloom["<b>glow</b><br/>the brightest parts, blurred at half size"]
+        grade["<b>grade</b><br/>tone mapping"]
+    end
+    subgraph full["at the size of the window"]
+        resolve["<b>resolve</b> · pad 1, pad 5<br/>anti-aliasing and upscaling over frames"]
+        screen(["screen"])
+    end
+    scene --> trace --> temporal --> atrous --> compose --> grade --> resolve --> screen
+    compose --> bloom --> grade
+```
 
 ## Licensing
 
@@ -257,8 +362,8 @@ were changed in 2026:
 | `win32/vid_dll.c`, `win32/vid_menu.c` | loading the path traced renderers, switching between them, more video modes, closing the window |
 | `client/cl_scrn.c` | 64-bit port |
 | `client/console.c` | the console on a picture more than 2048 pixels wide |
-| `client/cl_main.c`, `client/client.h`, `client/keys.c`, `client/keys.h`, `client/vid.h` | mouse look by default; W, A, S and D do what the arrow keys do; hooks for offline demo rendering |
-| `client/menu.c` | menu pages for the path tracing options and for rendering a demo; "reset defaults" keeps the WASD keys |
+| `client/cl_main.c`, `client/client.h`, `client/keys.c`, `client/keys.h`, `client/vid.h` | mouse look by default; W, A, S and D do what the arrow keys do; hooks for offline demo rendering; `cl_maxfps` is 200 unless set, and is kept in the config |
+| `client/menu.c` | menu pages for the path tracing options and for rendering a demo; "reset defaults" keeps the WASD keys; the commands behind **F7**, **F11** and the number pad |
 | `client/snd_dma.c`, `snd_loc.h`, `snd_mem.c`, `snd_mix.c`, `sound.h` | 64-bit port; mixing the sound to a file in step with offline rendering |
 | `game/m_*.c`, `game/g_save.c` | braces round each row of the monster animation tables, the flash offsets and the save tables |
 | `game/g_ai.c`, `g_chase.c`, `g_combat.c`, `g_monster.c`, `g_spawn.c`, `g_target.c`, `p_hud.c`; `qcommon/cmd.c`, `cmodel.c`, `files.c`; `server/sv_ccmds.c`, `sv_ents.c`, `sv_main.c`, `sv_world.c`; `client/cl_cin.c`, `cl_ents.c`, `cl_fx.c`, `cl_parse.c`, `cl_tent.c`, `qmenu.c`; `ref_gl/gl_image.c`, `gl_light.c`, `gl_local.h`, `gl_mesh.c`, `gl_model.h`, `gl_rsurf.c`; `linux/glob.c`, `net_udp.c`, `q_shlinux.c`, `qgl_linux.c` | what gcc's `-Wall -Wextra` points out, so that the Linux build can treat every warning as an error: casts between signednesses, dead variables, missing returns, defaults and braces, checked reads of save and pak files |

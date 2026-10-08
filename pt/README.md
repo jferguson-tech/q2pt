@@ -11,4 +11,6 @@ Quake 2's renderer interface to that header lives in `../ref_pt`.
 - `rtx/` - Vulkan backend (Nvidia only for now): the same tracer as compute
   shaders using ray queries; it builds its light lists with `cpu/pt_world.cpp`
 - `water/` - height field wave simulation for bodies of liquid
+- `material/` - makes a normal and roughness map from the colours of a hand
+  painted texture, reading its painted highlights and shadows as shape
 - `png/` - PNG writer

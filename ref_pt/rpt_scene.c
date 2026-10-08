@@ -431,6 +431,8 @@ static void S_AddAlias (entity_t *e, model_t *mod, int index)
 	emit[0] = emit[1] = emit[2] = 0;
 	if (e->flags & RF_VIEWERMODEL)
 		flags |= PT_MAT_CAMERA_INVISIBLE;	// the player's own body: shadows, but not in the way
+	if (e->flags & RF_WEAPONMODEL)
+		flags |= PT_MAT_HELD;				// the weapon in hand turns with the eye: no motion blur of its own
 	shell = (e->flags & (RF_SHELL_RED|RF_SHELL_GREEN|RF_SHELL_BLUE|RF_SHELL_DOUBLE|RF_SHELL_HALF_DAM)) != 0;
 	if (shell)
 	{
