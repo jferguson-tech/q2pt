@@ -462,6 +462,7 @@ static uint32_t Mat_Key (image_t *image, const pt_material_from_t *from)
 	hash = Mat_Hash (&from->roughness, sizeof(from->roughness), hash);
 	hash = Mat_Hash (&from->metallic, sizeof(from->metallic), hash);
 	hash = Mat_Hash (&from->delight, sizeof(from->delight), hash);
+	hash = Mat_Hash (&from->metal_edge, sizeof(from->metal_edge), hash);
 	return Mat_Hash (image->pixels, (size_t)image->width * image->height * sizeof(uint32_t), hash);
 }
 
@@ -577,6 +578,7 @@ static void Mat_From (image_t *image, const matinfo_t *info, pt_material_from_t 
 	from->bump = info->bump;
 	from->metallic = info->metallic;
 	from->metal_known = info->metal_known;
+	from->metal_edge = info->metallic > 0 ? r_metaledge : 0;		// what has no metal has no edge to make again
 	// a screen or a lamp was painted bright for its own sake: that light stays
 	from->delight = (from->painted_light && info->glow <= 0) ? r_materialdelight : 0;
 

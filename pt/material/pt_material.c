@@ -76,9 +76,7 @@ its red, green and blue.
 #define TOO_DARK		0.05f	/* shown darker than this is a gap or black rubber, whatever its colour */
 #define DARK_COUNTS		0.1f	/* and below this a texel counts for less in the picture's average */
 #define METAL_PATCH		1.0f	/* metal and what covers it come in patches at least about this far across */
-#define METAL_EDGE		1.0f	/* texels of the map the edge of a patch is spread over */
-#define METAL_SOME		0.05f	/* a picture this much metal or more has the rest of it for a covering */
-#define COVER_ROUGHER	0.25f	/* what covers metal is this much rougher than the metal */
+#define EDGE_WIDEST		16.0f	/* texels of the picture: the most the edge of a patch is dithered over */
 
 /* the painted light the colours are relieved of */
 #define LIT_MOST		1.2f	/* a difference well past this is a lamp or a marking, not a highlight */
@@ -361,11 +359,11 @@ int pt_material_detail_scale(int width, int height, int repeats)
 What is read from the picture. slopes: gw * scale by gh * scale pairs, the
 height's slope to the right and down the picture, or with want_height its
 height and nothing. The rest is on the grid itself. rough: how much rougher
-or smoother than the picture's average each texel is. metal: how much of
-what lies about each texel is metal, 0 - 1, so that 0.5 is the edge of a
-patch; metal_share is how much of the picture is. lit: the painted light
-found there, in log units, above 0 for a highlight and below for a shadow.
-All NULL if there is no memory.
+or smoother than the picture's average each texel is. metal: 1 where the
+texel is metal and 0 where it is not or, where the edge of a patch is to be
+dithered, how much of what lies about the texel is metal. lit: the painted
+light found there, in log units, above 0 for a highlight and below for a
+shadow. All NULL if there is no memory.
 */
 typedef struct
 {
@@ -374,7 +372,6 @@ typedef struct
 	float	*rough;
 	float	*metal;
 	float	*lit;
-	float	metal_share;
 } reading_t;
 
 static void release(reading_t *r)
@@ -492,7 +489,6 @@ static int read_picture(reading_t *r, const uint32_t *pixels, int width, int hei
 		r->rough[i] -= mean;
 
 	/* metal */
-	r->metal_share = 0.0f;
 	if (from->metallic > 0.0f)
 	{
 		const float limit = from->metal_known ? METAL_LINE_SURE : METAL_LINE;
@@ -500,7 +496,6 @@ static int read_picture(reading_t *r, const uint32_t *pixels, int width, int hei
 		double	seen = 0.0, sum = 0.0, squares = 0.0;
 		float	*vivid = r->metal;
 		float	spread, own;
-		size_t	metal = 0;
 
 		blur(ar, ar, tmp, g, COLOUR_SPREAD);
 		blur(ag, ag, tmp, g, COLOUR_SPREAD);
@@ -543,10 +538,11 @@ static int read_picture(reading_t *r, const uint32_t *pixels, int width, int hei
 		}
 		/* a texel alone among the other kind is noise: each goes with what lies about it */
 		blur(r->metal, r->metal, tmp, g, METAL_PATCH);
-		for (y = 0; y < height; y++)
-			for (x = 0; x < width; x++)
-				metal += r->metal[(size_t)(y + g->oy) * g->gw + x + g->ox] > 0.5f;
-		r->metal_share = (float)metal / (float)((size_t)width * height);
+		for (i = 0; i < g->count; i++)
+			r->metal[i] = r->metal[i] > 0.5f ? 1.0f : 0.0f;
+		/* for the dither: all but none of the change from 0 to 1 lies within twice this either side of an edge */
+		if (from->metal_edge > 0.0f)
+			blur(r->metal, r->metal, tmp, g, (from->metal_edge < EDGE_WIDEST ? from->metal_edge : EDGE_WIDEST) * 0.25f);
 	}
 	else
 		memset(r->metal, 0, g->count * sizeof(float));
@@ -688,21 +684,55 @@ static uint32_t to_byte(float v)
 	return (uint32_t)(clamp01(v) * 255.0f + 0.5f);
 }
 
+/* a number that looks random for each pair of whole numbers, and is the same for the same pair */
+static uint32_t scramble(uint32_t x, uint32_t y)
+{
+	uint32_t	h = (x * 0x6c8e9cf5u) ^ ((y + 0x4f1bbcddu) * 0x2c9277b5u);
+
+	h ^= h >> 15;
+	h *= 0x5a7d3ac3u;
+	h ^= h >> 13;
+	h *= 0x3b9f52e7u;
+	h ^= h >> 16;
+	return h;
+}
+
+/*
+Dithering. Near the edge of a patch of metal a texel of the map is metal if
+more of what lies about it is metal than this, a number from 0 to 1 that
+differs from texel to texel. So the patch thins out into flecks where a
+soft edge would fade, and every texel is still metal or not.
+
+Each block of 2 by 2 texels holds one number from each quarter of 0 - 1, in
+an order of its own: the flecks are spread evenly, with no clumps and no
+pattern. On a wall such a block is one texel of the picture.
+*/
+static float metal_threshold(uint32_t x, uint32_t y)
+{
+	const uint32_t block = scramble(x >> 1, y >> 1);
+	uint32_t	quarter[4] = {0, 1, 2, 3}, j, t;
+
+	j = block % 4;
+	t = quarter[3]; quarter[3] = quarter[j]; quarter[j] = t;
+	j = (block >> 8) % 3;
+	t = quarter[2]; quarter[2] = quarter[j]; quarter[j] = t;
+	j = (block >> 16) % 2;
+	t = quarter[1]; quarter[1] = quarter[j]; quarter[j] = t;
+	return ((float)quarter[(x & 1) | ((y & 1) << 1)] + (float)(scramble(x, ~y) >> 16) * (1.0f / 65536.0f)) * 0.25f;
+}
+
 int pt_material_read(const uint32_t *pixels, int width, int height, const pt_material_from_t *from, pt_material_maps_t *maps)
 {
 	reading_t	r;
 	uint32_t	*map;
 	const grid_t *g = &r.g;
-	float		amount, spread, cover, edge;
-	int			x, y, bw, mw, mh;
+	float		amount, spread;
+	int			x, y, bw, mw, mh, dither;
 
 	memset(maps, 0, sizeof(*maps));
 	if (!read_picture(&r, pixels, width, height, from, 0))
 		return 0;
-	/* beside metal, what is not metal lies over it: rust, paint, dirt. In a picture with no metal it is the thing itself */
-	cover = from->metallic <= 0.0f ? 0.0f : COVER_ROUGHER * (from->metal_known ? 1.0f : clamp01(r.metal_share / METAL_SOME));
-	/* across the straight edge of a patch r.metal rises by 1 / (sqrt(2 pi) METAL_PATCH) a texel of the picture */
-	edge = 2.5066283f * METAL_PATCH * (float)g->scale / METAL_EDGE;
+	dither = from->metallic > 0.0f && from->metal_edge > 0.0f;
 	mw = width * g->scale;
 	mh = height * g->scale;
 	map = (uint32_t *)malloc((size_t)mw * mh * sizeof(uint32_t));
@@ -739,17 +769,16 @@ int pt_material_read(const uint32_t *pixels, int width, int height, const pt_mat
 			sy *= level;
 			len = 1.0f / sqrtf(sx * sx + sy * sy + 1.0f);
 
-			/* all or nothing, but for the edge of a patch */
-			metal = r.metal[row0 + xa] * w00 + r.metal[row0 + xb] * w01
-				+ r.metal[row1 + xa] * w10 + r.metal[row1 + xb] * w11;
-			metal = clamp01(0.5f + (metal - 0.5f) * edge);
-
 			rough = spread * (r.rough[row0 + xa] * w00 + r.rough[row0 + xb] * w01
 				+ r.rough[row1 + xa] * w10 + r.rough[row1 + xb] * w11);
-			rough = from->roughness + (rough < -ROUGH_LESS ? -ROUGH_LESS : (rough > ROUGH_MORE ? ROUGH_MORE : rough))
-				+ cover * (1.0f - metal);
+			rough = from->roughness + (rough < -ROUGH_LESS ? -ROUGH_LESS : (rough > ROUGH_MORE ? ROUGH_MORE : rough));
 			if (rough < 0.04f)
 				rough = 0.04f;
+
+			/* all or nothing */
+			metal = r.metal[row0 + xa] * w00 + r.metal[row0 + xb] * w01
+				+ r.metal[row1 + xa] * w10 + r.metal[row1 + xb] * w11;
+			metal = metal > (dither ? metal_threshold((uint32_t)x, (uint32_t)y) : 0.5f) ? 1.0f : 0.0f;
 
 			map[(size_t)y * mw + x] = to_byte(-sx * len * 0.5f + 0.5f) | (to_byte(-sy * len * 0.5f + 0.5f) << 8)
 				| (to_byte(metal * from->metallic) << 16) | (to_byte(rough) << 24);

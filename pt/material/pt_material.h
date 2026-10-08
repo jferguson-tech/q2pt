@@ -37,7 +37,7 @@ Raised whenever the map made from a given picture changes, so that whoever
 keeps maps from one run to the next can tell which were made by an older
 reading.
 */
-#define PT_MATERIAL_VERSION		3
+#define PT_MATERIAL_VERSION		4
 
 typedef struct pt_material_from_s
 {
@@ -60,6 +60,11 @@ typedef struct pt_material_from_s
 							   the metal is looked for. 0 where nothing is
 							   known: then grey that could as well be stone
 							   or cloth is held to more strictly */
+	float	metal_edge;		/* texels of the picture that the edge of a patch
+							   of metal is dithered over: within that much of
+							   the edge, texels are metal the more often the
+							   further into the patch they lie. 0 = the edge
+							   is a line */
 	float	delight;		/* how much of the painted light is taken out of
 							   the colours: 0 none, 1 all that was read. Only
 							   with painted_light */
@@ -73,10 +78,8 @@ typedef struct pt_material_maps_s
 							   y down the picture, each stored as (n + 1) / 2;
 							   its z, out of the picture, is what is left of
 							   its length. B is how metallic the surface is
-							   there: metallic or nothing, and in between
-							   only at the edge of a patch of metal, about
-							   one pixel of the map wide. A is how rough,
-							   and what covers metal is rougher than it */
+							   there: metallic or nothing, never between.
+							   A is how rough */
 	int			detail_width, detail_height;
 	uint32_t	*colour;	/* the picture with its painted light taken out, or
 							   NULL where there was none to take: then the

@@ -35,7 +35,9 @@ a second.*
   of models alike: bare steel was painted grey, and rust, paint, wood, cloth
   and skin vivid, so a rusted plate shines only where its steel shows through
   and a soldier's armour where his arms do not. Dull metal is rough metal,
-  never half metal. The art shows steel as dark as it looks in a dim room, a
+  never half metal, and where metal meets what covers it the edge is
+  dithered: the patch thins out into flecks, each of them still metal or
+  not. The art shows steel as dark as it looks in a dim room, a
   small part of what steel reflects, so metal reflects more than it was
   painted, in its own hue; `pt_metal_colour` says how much. The painted
   light, once read, is taken out of the texture's colours, where it would
@@ -265,6 +267,7 @@ Some console commands and variables:
 | `pt_debug 1`-`11` | one part of the picture on its own |
 | `pt_bump`, `pt_roughness`, `pt_metallic` | scale how deep, how rough and how metallic every surface is taken to be; 1 unless set. Below 1, `pt_metallic` makes what is metal less than metal |
 | `pt_material_maps 0`-`1`, `pt_material_toggle` (**F11**) | normal, roughness and metal maps read from each texture's painted light and colours (`1`, the default), or the plain ones of before, which take brightness for height and give the whole of a texture one number for metal: half for what its name says is metal, less for what the name says nothing of. The key switches between the two while playing; the level's surfaces are made again, which takes a moment |
+| `pt_metal_edge` | how many texels of a texture the edge between its metal and the rest is dithered over: `3` unless set, `0` for a hard edge. Every texel is metal or not whatever this is; a wider edge only scatters them further. The maps are made again when it changes |
 | `pt_metal_colour` | how much of the light metal reflects where it was read from a picture: what a metal painted as dark as the game's steel reflects, `0.05` unless set. Brighter painted metal reflects more, none less than it was painted, and the hue is kept. Steel reflects ten times that, but the game's art is that much darker than the things it shows all over, and at `0.5` metal is white beside everything else. `0` leaves metal the colour it was painted, which is next to black. Takes effect at once |
 | `pt_material_delight 0`-`1` | how much of the light painted into a wall texture is taken out of its colours once it has been read as shape: `1` (the default) is all that was read, `0` leaves the colours as they are. Screens and lamps keep theirs |
 | `pt_material_cache 0`-`1` | keep the maps that were made in `baseq2\pt_cache`, so that a texture is read once only; on by default |

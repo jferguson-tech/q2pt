@@ -191,7 +191,8 @@ extern	int		r_watermode;		// 0 classic, 1 realistic, 2 simulated
 extern	float	r_watercell, r_waterwaves, r_watercaustics, r_waterdamping;
 extern	float	r_bumpscale, r_roughscale, r_metalscale;
 extern	int		r_materialmaps;		// detail maps are read from the pictures' painted light
-extern	float	r_materialdelight;	// and this much of that light is taken out of their colours, 0 - 1
+extern	float	r_materialdelight;
+extern	float	r_metaledge;	// and this much of that light is taken out of their colours, 0 - 1
 
 void	R_InitSettings (void);
 qboolean R_UpdateSettings (void);
