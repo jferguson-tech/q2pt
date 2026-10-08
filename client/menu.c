@@ -1610,7 +1610,7 @@ void M_PtSwitch_f (void)
 	} switches[] = {
 		{ NULL, NULL, 0, 0, 0 },
 		{ "pt_taa",				"1",	CVAR_ARCHIVE,	0, 1 },
-		{ "pt_history",			"32",	CVAR_ARCHIVE,	1, 32 },
+		{ "pt_history",			"8",	CVAR_ARCHIVE,	1, 8 },
 		{ "pt_denoise",			"4",	CVAR_ARCHIVE,	0, 4 },
 		{ "pt_auto_exposure",	"1",	CVAR_ARCHIVE,	0, 1 },
 		{ "pt_scale",			"0.5",	CVAR_ARCHIVE,	1, 0.5f },

@@ -244,6 +244,7 @@ struct Scene
 	float		reflection_rate = 1.0f;
 	bool		refraction = true;
 	float		fog_density = 0.0f;		// 0 = clear air
+	int			fog_samples = 1;		// points along a view ray where the air's light is looked for
 
 	const Tri &TriAt(uint32_t index) const
 	{

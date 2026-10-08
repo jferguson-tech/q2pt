@@ -166,6 +166,12 @@ void main()
 			float keep = kept_frames;
 			if (k == 1 && !still)
 				keep = min(kept_frames, max(2.0, moving_history * seen.a * 2.0));
+			// And the air's light is followed by the surface behind it,
+			// which is not where it is: it keeps less too. Where there
+			// is a layer in front, its light is in with the air's and
+			// is followed in its own way below.
+			if (k == 2 && !still && fr.settings_f.w > 0.0 && imageLoad(img_over, pixel).w == 0.0)
+				keep = min(kept_frames, max(fr.painted.w, 1.0));
 			light[k] = mix(hist[k] * inv, light[k], 1.0 / keep);
 			moments[k] = mix(hist_moments[k] * inv, moments[k], 1.0 / keep);
 		}

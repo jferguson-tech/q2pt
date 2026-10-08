@@ -59,6 +59,8 @@ static cvar_t	*pt_light_samples;		// lights weighed per shading point
 static cvar_t	*pt_firefly_clamp;		// brightest a single path may be
 static cvar_t	*pt_fog;					// haze and light shafts
 static cvar_t	*pt_fog_density;
+static cvar_t	*pt_fog_samples;		// points along each view ray where the air's light is looked for
+static cvar_t	*pt_fog_history;		// frames of the air's light kept while things change
 static cvar_t	*pt_sky;				// sky brightness
 static cvar_t	*pt_lamp_glow;			// how bright lamp fixtures look to the eye
 static cvar_t	*pt_surface_light;		// scales the light from glowing surfaces
@@ -163,7 +165,7 @@ void R_InitSettings (void)
 	pt_filter = ri.Cvar_Get ("pt_filter", "2", CVAR_ARCHIVE);
 	pt_show_filter = ri.Cvar_Get ("pt_show_filter", "0", 0);
 	pt_denoise = ri.Cvar_Get ("pt_denoise", "4", CVAR_ARCHIVE);
-	pt_history = ri.Cvar_Get ("pt_history", "32", CVAR_ARCHIVE);
+	pt_history = ri.Cvar_Get ("pt_history", "8", CVAR_ARCHIVE);
 	pt_reflection_history = ri.Cvar_Get ("pt_reflection_history", "1", CVAR_ARCHIVE);
 	pt_exposure = ri.Cvar_Get ("pt_exposure", "2", CVAR_ARCHIVE);
 	pt_auto_exposure = ri.Cvar_Get ("pt_auto_exposure", "1", CVAR_ARCHIVE);
@@ -181,6 +183,8 @@ void R_InitSettings (void)
 	pt_firefly_clamp = ri.Cvar_Get ("pt_firefly_clamp", "40", CVAR_ARCHIVE);
 	pt_fog = ri.Cvar_Get ("pt_fog", "1", CVAR_ARCHIVE);
 	pt_fog_density = ri.Cvar_Get ("pt_fog_density", "0.0004", CVAR_ARCHIVE);
+	pt_fog_samples = ri.Cvar_Get ("pt_fog_samples", "2", CVAR_ARCHIVE);
+	pt_fog_history = ri.Cvar_Get ("pt_fog_history", "6", CVAR_ARCHIVE);
 	pt_sky = ri.Cvar_Get ("pt_sky", "2", CVAR_ARCHIVE);
 	pt_lamp_glow = ri.Cvar_Get ("pt_lamp_glow", "1.5", CVAR_ARCHIVE);
 	pt_surface_light = ri.Cvar_Get ("pt_surface_light", "1", CVAR_ARCHIVE);
@@ -423,6 +427,8 @@ void R_ViewSettings (pt_view_t *view)
 	view->bloom_max = pt_bloom_max->value;
 	view->fog = pt_fog->value != 0;
 	view->fog_density = pt_fog_density->value;
+	view->fog_samples = pt_fog_samples->value;
+	view->fog_history = pt_fog_history->value;
 
 	if (R_Offline ())
 		R_OfflineSettings (view);

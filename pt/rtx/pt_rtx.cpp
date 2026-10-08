@@ -118,7 +118,7 @@ struct FrameBlock
 	int32_t	out_size[4];
 	float	open_origin[4], open_forward[4], open_right[4], open_up[4];	// motion blur: the eye as the shutter opened; open_origin[3]: there is blur
 	int32_t	held[4];		// first triangle of the frame that the eye carries, how many; [2]: reflections are followed where they appear to be
-	float	painted[4];		// [0]: what a metal painted dark reflects, see pt_view_t's metal_colour; [1]: bloom_max
+	float	painted[4];		// [0]: what a metal painted dark reflects, see pt_view_t's metal_colour; [1]: bloom_max; [2]: fog_samples; [3]: fog_history
 };
 
 // one triangle, one material and one light as the shaders read them (std430)
@@ -2385,6 +2385,11 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.settings2[3] = view->debug;
 	f.painted[0] = std::max(0.0f, view->metal_colour);
 	f.painted[1] = std::max(0.0f, view->bloom_max);
+	f.painted[2] = (float)std::min(std::max(view->fog_samples, 1), 16);
+	{
+		const float history = (float)std::min(std::max(view->history, 1), 512);
+		f.painted[3] = view->fog_history >= 1 ? std::min((float)view->fog_history, history) : history;
+	}
 
 	s->exposure_used = view->debug ? 1.0f : view->exposure * (view->auto_exposure ? s->auto_exposure : 1.0f);
 	f.medium[3] = s->exposure_used;

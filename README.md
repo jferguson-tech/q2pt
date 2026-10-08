@@ -255,8 +255,9 @@ Some console commands and variables:
 | `pt_reflections 0`-`2` | none, glass and water, every shiny surface |
 | `pt_water 0`-`2` | classic, realistic, simulated |
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
+| `pt_fog_history`, `pt_fog_samples` | the light in the air: how many frames of it are kept while things change (6; the rest of the lighting keeps `pt_history`, 8), and at how many points along each view ray it is looked for every frame (2). The air has no surface to be followed by, so its light trails what moves: fewer frames trail less and are noisier, more points are less noisy and cost a shadow ray each |
 | `pt_bloom_max` | the most that anything adds to the glow, in times white over white (4): up to half of it a bright thing adds all it has, then less and less, so that a lamp hundreds of times white glows like a strong lamp and does not drown the picture. `0` = no limit |
-| `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time |
+| `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time. `pt_history` is how many frames of lighting are blended while things change (8): more is smoother, and leaves light behind what moves for longer |
 | `pt_reflection_history 0`-`1` | what mirrors and glass show is followed from frame to frame where it appears to be, behind the surface, rather than where the surface is; on unless set, for comparison |
 | `pt_filter 0`-`2`, `pt_filter_cycle` (**F7**) | the picture as the paths alone make it, noise and all: `0` every frame on its own, `1` the same but frames add up while you stand still, `2` (the default) blended over time and filtered |
 | `pt_view 0`-`13`, `pt_view_cycle` (number pad **+**, and **-** to step back) | the scene drawn some other way than as it is, for checking the renderer and for pictures; each means the same in both path tracers. The keys and the menu's row step through all of them but `3`, which is typed in the console. Not kept in the config; offline rendering and screenshots honour it, and changing it starts the picture afresh |
