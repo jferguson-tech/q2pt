@@ -48,6 +48,7 @@ static cvar_t	*pt_tonemap;				// 0 filmic, 1 neutral, 2 clipped like the origina
 static cvar_t	*pt_saturation;
 static cvar_t	*pt_contrast;
 static cvar_t	*pt_bloom;				// glow around bright things, 0 = none
+static cvar_t	*pt_bloom_max;			// the most over white that anything adds to it, 0 = no limit
 static cvar_t	*pt_texture_filter;		// 0: the original's blocky texels
 static cvar_t	*pt_threads;			// 0 = all
 
@@ -170,6 +171,7 @@ void R_InitSettings (void)
 	pt_saturation = ri.Cvar_Get ("pt_saturation", "1", CVAR_ARCHIVE);
 	pt_contrast = ri.Cvar_Get ("pt_contrast", "1", CVAR_ARCHIVE);
 	pt_bloom = ri.Cvar_Get ("pt_bloom", "0.3", CVAR_ARCHIVE);
+	pt_bloom_max = ri.Cvar_Get ("pt_bloom_max", "4", CVAR_ARCHIVE);
 	pt_texture_filter = ri.Cvar_Get ("pt_texture_filter", "1", CVAR_ARCHIVE);
 	pt_threads = ri.Cvar_Get ("pt_threads", "0", CVAR_ARCHIVE);
 
@@ -418,6 +420,7 @@ void R_ViewSettings (pt_view_t *view)
 	view->saturation = pt_saturation->value;
 	view->contrast = pt_contrast->value;
 	view->bloom = pt_bloom->value;
+	view->bloom_max = pt_bloom_max->value;
 	view->fog = pt_fog->value != 0;
 	view->fog_density = pt_fog_density->value;
 

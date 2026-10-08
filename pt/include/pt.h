@@ -305,6 +305,11 @@ typedef struct pt_view_s
 	int		fog;				/* light scattering in the air: haze and light shafts */
 	float	fog_density;		/* share of light scattered per unit of distance */
 	float	bloom;				/* glow around what is brighter than white; 0 = none */
+	float	bloom_max;			/* the most over white that anything adds to the
+								   glow, in whites: up to half of this it adds
+								   all it has, then less and less. Keeps a lamp
+								   hundreds of times white from drowning the
+								   picture. 0 = no limit */
 } pt_view_t;
 
 /* one part of the work on a view, and how long it took */
