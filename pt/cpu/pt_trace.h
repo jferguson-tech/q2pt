@@ -83,9 +83,12 @@ Vec3 Emitted(const Surface &s, bool seen);
 
 // one of the world's lights, chosen by resampling
 Lit DirectWorld(const Scene &sc, const Surface &s, Rng &rng, bool first_hit);
-// the frame's point lights: one chosen, or all of them
+// The frame's lights. One chosen from them all; or all of its point lights,
+// which is exact, and with it one of its balls of light, which is not: a
+// point is drawn on the ball, and what comes of it is as noisy as the rest.
 Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng);
 Lit DirectFrameAll(const Scene &sc, const Surface &s, Rng &rng);
+Lit DirectFrameBall(const Scene &sc, const Surface &s, Rng &rng);
 
 // light arriving at a point in the air from one sampled light and the sky,
 // as irradiance on a surface facing it

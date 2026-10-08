@@ -15,7 +15,6 @@ const uint MAT_BLACK = 16u;
 const uint MAT_WAVES = 32u;
 const uint MAT_EMIT_BRIGHT = 64u;
 const uint MAT_WARP = 128u;
-const uint MAT_LAMP = 512u;
 
 // pt_view_t's view_mode, as in pt.h
 const int VIEW_NORMAL = 0;
@@ -83,7 +82,8 @@ struct Light
 	vec3	dir;		// spotlights: where it points
 	float	cone_cos;	// and how wide; 0 = all round
 	int		style;
-	int		pad0, pad1, pad2;
+	float	radius;		// the frame's: above 0 a ball of light, not a point
+	int		pad0, pad1;
 };
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
@@ -411,7 +411,7 @@ float Visible(vec3 p, vec3 target)
 			return through;
 		const Tri tri = TriOf(hit);
 		const Material mat = MaterialOf(hit.moving, tri.material);
-		if (!IsHole(mat, tri, hit.bary) && (mat.flags & MAT_LAMP) == 0u)
+		if (!IsHole(mat, tri, hit.bary))
 		{
 			if (mat.alpha >= 1.0 || Rand() < mat.alpha)
 				return 0.0;
@@ -984,9 +984,77 @@ Lit PointLight(Surface s, Light l)
 	return Reflect(s, d * inversesqrt(dist2), l.emission / dist2);
 }
 
-// The frame's lights (muzzle flashes, explosions): one of them, picked
-// exactly in proportion to what it would give with nothing in the way.
-Lit DirectFrameOne(Surface s)
+// A point on a ball of light, drawn evenly over as much of the ball as shows
+// from p: y is the point and wi the way to it. Returns what it sends to p
+// over the chance of its being drawn, which comes to the same wherever on
+// the ball it is: the ball's radiance times the solid angle the ball fills.
+// From inside it, nothing.
+vec3 SampleBall(Light l, vec3 p, out vec3 y, out vec3 wi)
+{
+	const vec3 d = l.origin - p;
+	const float dist2 = dot(d, d), r2 = l.radius * l.radius;
+	y = l.origin;
+	wi = vec3(0.0, 0.0, 1.0);
+	if (dist2 <= r2)
+		return vec3(0.0);
+	const float dist = sqrt(dist2);
+	const float sin2_max = r2 / dist2;
+	// 1 - cos of the angle from its middle to its edge, which far off is too small to take from 1
+	const float cap = sin2_max / (1.0 + sqrt(1.0 - sin2_max));
+
+	const float cos_t = 1.0 - Rand() * cap, phi = 2.0 * PI * Rand();
+	const float sin2_t = max(0.0, 1.0 - cos_t * cos_t), sin_t = sqrt(sin2_t);
+	vec3 t, b;
+	const vec3 w = d / dist;
+	Basis(w, t, b);
+	wi = t * (sin_t * cos(phi)) + b * (sin_t * sin(phi)) + w * cos_t;
+	// where going that way meets the ball
+	y = p + wi * (dist * cos_t - sqrt(max(0.0, r2 - dist2 * sin2_t)));
+	return l.emission * (2.0 * cap / r2);		// intensity / (pi r^2) * 2 pi cap
+}
+
+// One of the frame's lights on a surface, with nothing in the way; at is
+// where to look to see whether anything is. A point gives its all, a ball
+// what one point drawn on it stands for.
+Lit FrameLight(Surface s, Light l, out vec3 at)
+{
+	if (l.radius <= 0.0)
+	{
+		at = l.origin;
+		return PointLight(s, l);
+	}
+	vec3 wi;
+	const vec3 e = SampleBall(l, s.p, at, wi);
+	return Reflect(s, wi, e);
+}
+
+// How much one of the frame's lights is worth to a surface beside the
+// others. For a point that is what it gives; a ball is weighed as if it were
+// all at its middle, but for where the middle is under the surface's horizon
+// and some of the ball over it: there it is not to be left out.
+float FrameLightWeight(Surface s, Light l)
+{
+	if (l.radius <= 0.0 || s.medium)
+		return Importance(s, PointLight(s, l));
+	const vec3 d = l.origin - s.p;
+	const float dist2 = dot(d, d);
+	if (dist2 <= l.radius * l.radius)
+		return 0.0;
+	const float dist = sqrt(dist2);
+	const vec3 wi = d / dist, e = l.emission / dist2;
+	const float rise = l.radius / dist, nol = dot(s.n, wi);
+	if (nol <= -rise)
+		return 0.0;
+	float weight = Luminance((s.kd * INV_PI + s.f0 * 0.05) * e) * max(nol, 0.25 * (nol + rise));
+	if (s.light_sampled_spec)
+		weight += Luminance(e * SpecularTimesCos(s, wi));
+	return weight;
+}
+
+// The frame's lights (muzzle flashes, explosions), or of them only its balls
+// of light: one, picked in proportion to what it would give with nothing in
+// the way, which for a point is known exactly.
+Lit FrameOne(Surface s, bool balls)
 {
 	Lit none = Lit(vec3(0.0), vec3(0.0));
 	const int count = fr.counts.y;
@@ -995,29 +1063,48 @@ Lit DirectFrameOne(Surface s)
 
 	float total = 0.0;
 	for (int i = 0; i < count; i++)
-		total += Importance(s, PointLight(s, frame_lights.l[i]));
+		if (!balls || frame_lights.l[i].radius > 0.0)
+			total += FrameLightWeight(s, frame_lights.l[i]);
 	if (total <= 0.0)
 		return none;
 
 	float pick = Rand() * total;
 	for (int i = 0; i < count; i++)
 	{
-		Lit f = PointLight(s, frame_lights.l[i]);
-		const float imp = Importance(s, f);
+		if (balls && frame_lights.l[i].radius <= 0.0)
+			continue;
+		const float imp = FrameLightWeight(s, frame_lights.l[i]);
 		pick -= imp;
 		if (pick <= 0.0 && imp > 0.0)
 		{
-			if (Visible(Leave(s), frame_lights.l[i].origin) <= 0.0)
+			vec3 at;
+			Lit f = FrameLight(s, frame_lights.l[i], at);
+			if (Importance(s, f) <= 0.0)
 				return none;
-			f.diffuse *= total / imp;
-			f.specular *= total / imp;
+			const float clear = Visible(Leave(s), at);
+			if (clear <= 0.0)
+				return none;
+			f.diffuse *= clear * total / imp;
+			f.specular *= clear * total / imp;
 			return f;
 		}
 	}
 	return none;
 }
 
-// all of them, exactly: for what the eye sees directly
+Lit DirectFrameOne(Surface s)
+{
+	return FrameOne(s, false);
+}
+
+// one of its balls of light: a point is drawn on the ball, so what comes of
+// it is as noisy as the map's lights are and belongs with them
+Lit DirectFrameBall(Surface s)
+{
+	return FrameOne(s, true);
+}
+
+// all of its point lights, exactly: for what the eye sees directly
 Lit DirectFrameAll(Surface s)
 {
 	Lit sum = Lit(vec3(0.0), vec3(0.0));
@@ -1025,6 +1112,8 @@ Lit DirectFrameAll(Surface s)
 		return sum;
 	for (int i = 0; i < fr.counts.y; i++)
 	{
+		if (frame_lights.l[i].radius > 0.0)
+			continue;
 		const Lit f = PointLight(s, frame_lights.l[i]);
 		if (Importance(s, f) > 0.0 && Visible(Leave(s), frame_lights.l[i].origin) > 0.0)
 		{

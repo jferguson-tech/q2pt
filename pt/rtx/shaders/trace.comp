@@ -319,7 +319,7 @@ void main()
 		seen = q0 * (1.0 - hit.bary.x - hit.bary.y) + q1 * hit.bary.x + q2 * hit.bary.y;
 	}
 
-	// exact, so it skips the filters
+	// exact, so it skips the filters; the balls of light come with the map's lights below
 	const Lit flash = DirectFrameAll(surf);
 	vec3 extra = front_add + (surf.kd * flash.diffuse * INV_PI + flash.specular) * tint * through;
 	if ((surf.mat.bits & BIT_EMISSIVE) != 0u && surf.front)
@@ -352,9 +352,9 @@ void main()
 	vec3 sum_d = vec3(0.0), sum_s = vec3(0.0);
 	for (int k = 0; k < paths; k++)
 	{
-		const Lit direct = DirectWorld(surf, true);
-		vec3 d = direct.diffuse * (INV_PI * direct_on);
-		vec3 sp = direct.specular / spec_albedo * direct_on;
+		const Lit direct = DirectWorld(surf, true), ball = DirectFrameBall(surf);
+		vec3 d = (direct.diffuse + ball.diffuse) * (INV_PI * direct_on);
+		vec3 sp = (direct.specular + ball.specular) / spec_albedo * direct_on;
 		int followed_d = 0, followed_s = 0;		// rays the diffuse and the specular path were made of
 
 		if (bounces > 0 && indirect_on > 0.0)

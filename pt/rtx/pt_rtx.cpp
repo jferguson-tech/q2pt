@@ -154,7 +154,8 @@ struct GpuLight
 	float		dir[3];
 	float		cone_cos;
 	int32_t		style;
-	int32_t		pad[3];
+	float		radius;
+	int32_t		pad[2];
 };
 
 const uint32_t kBitEmissive = 1, kBitSampled = 2;	// GpuMaterial::bits
@@ -2204,6 +2205,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 			lights[i].origin[a] = scene->lights[i].origin[a];
 			lights[i].emission[a] = scene->lights[i].intensity[a];
 		}
+		lights[i].radius = std::max(scene->lights[i].radius, 0.0f);
 	}
 	if (num_lights)
 		hash = HashBytes(scene->lights, num_lights * sizeof(pt_point_light_t), hash);

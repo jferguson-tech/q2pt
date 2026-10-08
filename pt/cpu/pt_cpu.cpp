@@ -802,7 +802,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 	px.albedo[kDiffuse][i] = kd * tint;
 	px.albedo[kSpecular][i] = ks * tint;
 
-	// exact, so it skips the filters
+	// exact, so it skips the filters; the balls of light come with the map's lights below
 	const Lit flash = DirectFrameAll(sc, surf, rng);
 	px.add[i] = front_add + (surf.kd * flash.diffuse * kInvPi + flash.specular) * tint * through;
 	if (mat.emissive && surf.front)
@@ -844,9 +844,9 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 	{
 		Vec3 c[2];
 
-		const Lit direct = DirectWorld(sc, surf, rng, true);
-		c[kDiffuse] = direct.diffuse * (kInvPi * direct_on);
-		c[kSpecular] = Demodulate(direct.specular, spec_albedo) * direct_on;
+		const Lit direct = DirectWorld(sc, surf, rng, true), ball = DirectFrameBall(sc, surf, rng);
+		c[kDiffuse] = (direct.diffuse + ball.diffuse) * (kInvPi * direct_on);
+		c[kSpecular] = Demodulate(direct.specular + ball.specular, spec_albedo) * direct_on;
 		int followed[2] = {};		// rays the diffuse and the specular path were made of
 
 		if (bounces > 0 && indirect_on > 0.0f)

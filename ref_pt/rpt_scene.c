@@ -46,7 +46,10 @@ static int				s_numtris, s_maxtris;
 static pt_material_t	*s_materials;
 static int				s_nummaterials, s_maxmaterials;
 
-static pt_point_light_t	s_lights[MAX_DLIGHTS];
+// the balls of light's own lights come first, then the client's
+#define	MAX_BALL_LIGHTS	32
+static pt_point_light_t	s_lights[MAX_BALL_LIGHTS + MAX_DLIGHTS];
+static int				s_numballlights;
 
 // world material index -> this frame's material index
 static int				s_worldremap[MAX_MAP_TEXINFO];
@@ -587,17 +590,21 @@ static void S_AddBeam (entity_t *e)
 /*
 =============
 A ball of light (RF_LIGHTBALL): a lamp in a cage. The lamp is a glowing ball
-that lets the light of the scene's lights through (PT_MAT_LAMP), the client
-having put one at its middle. On it sit six round steel plates, one where
-each of its axes comes out, which do cast shadows. So the light comes out
-between the plates and their shadows turn as the ball rolls. However it
-lies, the plates never shut off a whole ring of directions, so that the
-floor it rests on is always lit some way round.
+and is itself the light: the scene is given a light of its size and as
+bright as it is, and its triangles are what is seen of it. The light the
+client puts at its middle, for the renderers that know no better, is left
+out. On the lamp sit six round steel plates, one where each of its axes
+comes out, and the light comes out between them. A lamp that size gets
+round plates that close to it, so their shadows are soft and soon gone; what
+the plates do is keep in the third of its light that falls on them. However
+it lies, they never shut off a whole ring of directions, so that the floor
+it rests on is always lit some way round.
 =============
 */
 #define	BALL_LAMP_DIV	6			// the lamp: squares along the edge of each face of the cube it is blown up from
 #define	BALL_LAMP_SIZE	0.9f		// its radius, of the whole ball's
-#define	BALL_GLOW		1.6f		// how bright it looks; its light is the client's
+#define	BALL_LAMP_SLACK	1.02f		// the light is this much larger than the triangles drawn of it, which
+									// must not get in the way of a ray that ends on it
 #define	BALL_PLATE_ANGLE	27.0f	// a plate reaches this many degrees from its axis
 #define	BALL_PLATE_RINGS	3
 #define	BALL_PLATE_SIDES	20
@@ -725,9 +732,12 @@ static void S_BallTriangles (float tris[][3][3], int count, float radius, int ma
 static void S_AddBall (entity_t *e, int index)
 {
 	pt_material_t	mat;
+	pt_point_light_t	*light;
 	entstate_t		*before;
 	vec3_t			axis[3];
 	unsigned		colour = (unsigned)e->lightstyle;
+	float			radius, intensity, radiance[3];
+	int				i;
 
 	if (!s_numballlamp)
 	{
@@ -738,9 +748,26 @@ static void S_AddBall (entity_t *e, int index)
 	S_EntityAxis (e, false, axis);
 	before = S_Before (index, e, e->origin, axis);
 
+	// as bright as the client's light of the same strength: see V_AddLight in CL_LightBall
+	radius = LIGHTBALL_RADIUS * BALL_LAMP_SIZE * BALL_LAMP_SLACK;
+	intensity = POINT_LIGHT_INTENSITY ((float)((colour >> 24) * 2));
+	if (s_numballlights == MAX_BALL_LIGHTS)
+		intensity = 0;		// no room for its light, so it had better not look lit
+	for (i=0 ; i<3 ; i++)
+		radiance[i] = ((colour >> (i * 8)) & 255) * (1.0f / 255) * intensity / (M_PI * radius * radius);
+
+	if (intensity > 0)
+	{
+		light = &s_lights[s_numballlights++];
+		memset (light, 0, sizeof(*light));
+		VectorCopy (e->origin, light->origin);
+		for (i=0 ; i<3 ; i++)
+			light->intensity[i] = radiance[i] * (M_PI * radius * radius);
+		light->radius = radius;
+	}
+
 	S_BallTriangles (s_balllamp, s_numballlamp, LIGHTBALL_RADIUS * BALL_LAMP_SIZE,
-		S_Material (-1, (colour & 255) * (BALL_GLOW / 255), ((colour >> 8) & 255) * (BALL_GLOW / 255),
-			((colour >> 16) & 255) * (BALL_GLOW / 255), 1, PT_MAT_BLACK|PT_MAT_LAMP),
+		S_Material (-1, radiance[0], radiance[1], radiance[2], 1, PT_MAT_BLACK|PT_MAT_SAMPLED),
 		e->origin, axis, before);
 
 	// polished steel
@@ -868,6 +895,7 @@ void R_BuildScene (refdef_t *fd, pt_scene_t *scene)
 	s_framecount++;
 	s_numtris = 0;
 	s_nummaterials = 0;
+	s_numballlights = 0;
 
 	AngleVectors (fd->viewangles, forward, right, up);
 
@@ -912,11 +940,18 @@ void R_BuildScene (refdef_t *fd, pt_scene_t *scene)
 
 	S_AddParticles (fd, forward, right, up);
 
-	numlights = 0;
-	for (i=0 ; i<fd->num_dlights && numlights<MAX_DLIGHTS ; i++)
+	numlights = s_numballlights;
+	for (i=0 ; i<fd->num_dlights && numlights<MAX_BALL_LIGHTS+MAX_DLIGHTS ; i++)
 	{
 		if (fd->dlights[i].intensity <= 0)
 			continue;
+		// a ball of light is its own light: not the client's as well
+		for (j=0 ; j<s_numballlights ; j++)
+			if (VectorCompare (fd->dlights[i].origin, s_lights[j].origin))
+				break;
+		if (j < s_numballlights)
+			continue;
+		memset (&s_lights[numlights], 0, sizeof(s_lights[0]));
 		for (j=0 ; j<3 ; j++)
 		{
 			s_lights[numlights].origin[j] = fd->dlights[i].origin[j];

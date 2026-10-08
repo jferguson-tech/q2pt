@@ -45,7 +45,7 @@ float Visible(const Scene &sc, const Surface &s, Vec3 target, Rng &rng)
 	float through = 1.0f;
 	const auto blocks = [&](const Tri &t, float u, float v)
 	{
-		if (IsHole(t, u, v) || BackOfGlass(t, shadow.d) || (t.mat->flags & PT_MAT_LAMP))
+		if (IsHole(t, u, v) || BackOfGlass(t, shadow.d))
 			return false;
 		if (t.mat->alpha >= 1.0f || rng.Float() < t.mat->alpha)
 			return true;
@@ -61,7 +61,7 @@ float Visible(const Scene &sc, const Surface &s, Vec3 target, Rng &rng)
 	// always were.
 	const auto kind = [&](const Tri &t, float u, float v)
 	{
-		if (IsHole(t, u, v) || BackOfGlass(t, shadow.d) || (t.mat->flags & PT_MAT_LAMP))
+		if (IsHole(t, u, v) || BackOfGlass(t, shadow.d))
 			return 0;
 		return t.mat->alpha >= 1.0f ? 1 : 2;
 	};
@@ -150,6 +150,71 @@ Lit PointLight(const Surface &s, const Light &l, float scale)
 	if (dist2 <= 1e-6f || scale <= 0.0f)
 		return Lit();
 	return Reflect(s, d / std::sqrt(dist2), l.emission * (scale / dist2));
+}
+
+// A point on a ball of light, drawn evenly over as much of the ball as shows
+// from p: y is the point and wi the way to it. Returns what it sends to p
+// over the chance of its being drawn, which comes to the same wherever on
+// the ball it is: the ball's radiance times the solid angle the ball fills.
+// From inside it, nothing.
+Vec3 SampleBall(const Light &l, Vec3 p, Rng &rng, Vec3 &y, Vec3 &wi)
+{
+	const Vec3 d = l.origin - p;
+	const float dist2 = Dot(d, d), r2 = l.radius * l.radius;
+	if (dist2 <= r2)
+		return Vec3();
+	const float dist = std::sqrt(dist2);
+	const float sin2_max = r2 / dist2;
+	// 1 - cos of the angle from its middle to its edge, which far off is too small to take from 1
+	const float cap = sin2_max / (1.0f + std::sqrt(1.0f - sin2_max));
+
+	const float cos_t = 1.0f - rng.Float() * cap, phi = 2.0f * kPi * rng.Float();
+	const float sin2_t = std::max(0.0f, 1.0f - cos_t * cos_t), sin_t = std::sqrt(sin2_t);
+	Vec3 t, b;
+	const Vec3 w = d / dist;
+	Basis(w, t, b);
+	wi = t * (sin_t * std::cos(phi)) + b * (sin_t * std::sin(phi)) + w * cos_t;
+	// where going that way meets the ball
+	y = p + wi * (dist * cos_t - std::sqrt(std::max(0.0f, r2 - dist2 * sin2_t)));
+	return l.emission * (2.0f * cap / r2);		// intensity / (pi r^2) * 2 pi cap
+}
+
+// One of the frame's lights on a surface, with nothing in the way; at is
+// where to look to see whether anything is. A point gives its all, a ball
+// what one point drawn on it stands for.
+Lit FrameLight(const Surface &s, const Light &l, Rng &rng, Vec3 &at)
+{
+	if (l.radius <= 0.0f)
+	{
+		at = l.origin;
+		return PointLight(s, l, 1.0f);
+	}
+	Vec3 wi;
+	const Vec3 e = SampleBall(l, s.p, rng, at, wi);
+	return Reflect(s, wi, e);
+}
+
+// How much one of the frame's lights is worth to a surface beside the
+// others. For a point that is what it gives; a ball is weighed as if it were
+// all at its middle, but for where the middle is under the surface's horizon
+// and some of the ball over it: there it is not to be left out.
+float FrameLightWeight(const Surface &s, const Light &l)
+{
+	if (l.radius <= 0.0f || s.medium)
+		return Importance(s, PointLight(s, l, 1.0f));
+	const Vec3 d = l.origin - s.p;
+	const float dist2 = Dot(d, d);
+	if (dist2 <= l.radius * l.radius)
+		return 0.0f;
+	const float dist = std::sqrt(dist2);
+	const Vec3 wi = d / dist, e = l.emission * (1.0f / dist2);
+	const float rise = l.radius / dist, nol = Dot(s.n, wi);
+	if (nol <= -rise)
+		return 0.0f;
+	float weight = Luminance((s.kd * kInvPi + s.f0 * 0.05f) * e) * std::max(nol, 0.25f * (nol + rise));
+	if (s.light_sampled_spec)
+		weight += Luminance(e * SpecularTimesCos(s, wi));
+	return weight;
 }
 
 } // namespace
@@ -766,7 +831,8 @@ Vec3 DirectMedium(const Scene &sc, Vec3 p, Rng &rng)
 	return world.diffuse + frame.diffuse;
 }
 
-Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng)
+// one of the frame's lights, or of its balls of light only
+static Lit FrameOne(const Scene &sc, const Surface &s, Rng &rng, bool balls)
 {
 
 	const std::vector<Light> &lights = sc.frame->lights;
@@ -774,22 +840,28 @@ Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng)
 	if (lights.empty() || sc.view_mode == PT_VIEW_FURNACE)
 		return none;
 
-	// picked exactly in proportion to its unoccluded contribution
+	// picked in proportion to its unoccluded contribution: exactly, if a point
 	float total = 0.0f;
 	for (const Light &l : lights)
-		total += Importance(s, PointLight(s, l, 1.0f));
+		if (!balls || l.radius > 0.0f)
+			total += FrameLightWeight(s, l);
 	if (total <= 0.0f)
 		return none;
 
 	float pick = rng.Float() * total;
 	for (const Light &l : lights)
 	{
-		Lit f = PointLight(s, l, 1.0f);
-		const float imp = Importance(s, f);
+		if (balls && l.radius <= 0.0f)
+			continue;
+		const float imp = FrameLightWeight(s, l);
 		pick -= imp;
 		if (pick <= 0.0f && imp > 0.0f)
 		{
-			const float clear = Visible(sc, s, l.origin, rng);
+			Vec3 at;
+			Lit f = FrameLight(s, l, rng, at);
+			if (Importance(s, f) <= 0.0f)
+				return none;
+			const float clear = Visible(sc, s, at, rng);
 			if (clear <= 0.0f)
 				return none;
 			f.diffuse *= clear * total / imp;
@@ -800,6 +872,16 @@ Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng)
 	return none;
 }
 
+Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng)
+{
+	return FrameOne(sc, s, rng, false);
+}
+
+Lit DirectFrameBall(const Scene &sc, const Surface &s, Rng &rng)
+{
+	return FrameOne(sc, s, rng, true);
+}
+
 Lit DirectFrameAll(const Scene &sc, const Surface &s, Rng &rng)
 {
 	Lit sum;
@@ -807,6 +889,8 @@ Lit DirectFrameAll(const Scene &sc, const Surface &s, Rng &rng)
 		return sum;
 	for (const Light &l : sc.frame->lights)
 	{
+		if (l.radius > 0.0f)
+			continue;
 		const Lit f = PointLight(s, l, 1.0f);
 		const float clear = Importance(s, f) > 0.0f ? Visible(sc, s, l.origin, rng) : 0.0f;
 		if (clear > 0.0f)

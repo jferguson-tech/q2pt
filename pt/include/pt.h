@@ -42,9 +42,10 @@ vertices appear counter clockwise.
 #define PT_MAT_HELD				256u	/* carried by the eye, as a weapon in hand is: with
 									   motion blur it is seen from where the eye is when
 									   the shutter closes, however the eye moved */
-#define PT_MAT_LAMP				512u	/* the glass of a lamp: seen like anything else, but
-									   no shadow of it is cast by the scene's lights,
-									   so that one may be put inside it */
+#define PT_MAT_SAMPLED			512u	/* scene only: what this emits is also given as a
+									   light in lights, so a path that comes upon it
+									   counts its glow only where lights are not looked
+									   for: from the eye and in a sharp reflection */
 
 typedef struct pt_texture_s
 {
@@ -97,6 +98,13 @@ typedef struct pt_point_light_s
 	float		direction[3];	/* world only: a spotlight shines along this (unit) ... */
 	float		cone_cos;		/* ... within the cone with this cosine of its half
 								   angle; 0 = shines all round */
+	float		radius;			/* scene only: above 0 the light is a ball of this
+								   size, as bright all over, which gives off the
+								   same light in all as the point would: its
+								   radiance is intensity / (pi * radius^2). Its
+								   shadows are soft. Nothing is drawn of it: for
+								   that, triangles that emit the same
+								   (PT_MAT_SAMPLED), no larger than it is. */
 } pt_point_light_t;
 
 typedef struct pt_world_s
@@ -130,7 +138,7 @@ typedef struct pt_world_s
 /*
 What moves: rebuilt by the host every frame, in world space. Its emitting
 triangles light the scene but are found by chance, so anything that should
-light well also belongs in lights.
+light well also belongs in lights (see PT_MAT_SAMPLED).
 */
 typedef struct pt_scene_s
 {

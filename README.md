@@ -43,8 +43,9 @@ a second.*
 * Fog and light shafts from single scattering along the view ray.
 * A ball of light to throw (**F**): a lamp behind six round steel plates. It
   bounces, rolls down slopes, knocks into the others and comes to rest, and
-  lights wherever it is, the plates' shadows turning as it rolls. Walk into
-  one to kick it along.
+  lights wherever it is. The lamp itself is the light, as large and as bright
+  as it looks, so the shadows it casts are soft. Walk into one to kick it
+  along.
 * A denoiser (reprojected history and an edge-stopping spatial filter),
   temporal anti-aliasing that also upscales from a lower internal resolution,
   auto exposure, bloom and a choice of tone mapping.
