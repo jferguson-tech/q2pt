@@ -122,7 +122,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	vec4	open_forward;
 	vec4	open_right;
 	vec4	open_up;
-	ivec4	held;			// x: first triangle of the frame carried by the eye (the weapon in hand); y: how many
+	ivec4	held;			// x: first triangle of the frame carried by the eye (the weapon in hand); y: how many; z: reflections are followed where they appear to be
 } fr;
 
 // the map and what moves, each as three corners per triangle, what goes with

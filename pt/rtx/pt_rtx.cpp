@@ -117,7 +117,7 @@ struct FrameBlock
 	float	water_rect[8][4], water_at[8][4];
 	int32_t	out_size[4];
 	float	open_origin[4], open_forward[4], open_right[4], open_up[4];	// motion blur: the eye as the shutter opened; open_origin[3]: there is blur
-	int32_t	held[4];		// first triangle of the frame that the eye carries, how many
+	int32_t	held[4];		// first triangle of the frame that the eye carries, how many; [2]: reflections are followed where they appear to be
 };
 
 // one triangle, one material and one light as the shaders read them (std430)
@@ -2271,6 +2271,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	}
 	f.held[0] = (int32_t)(num_solid + s->frame.num_glass);
 	f.held[1] = (int32_t)num_held;
+	f.held[2] = view->reflection_history ? 1 : 0;
 	const bool same_camera = s->has_history && !memcmp(f.origin, s->camera, sizeof(s->camera));
 	// What is done about noise: 2, all there is; 1, nothing, but frames add up
 	// while the eye is at rest; 0, nothing. Without the first there is nothing

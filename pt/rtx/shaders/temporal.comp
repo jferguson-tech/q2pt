@@ -154,9 +154,10 @@ void main()
 	// looked up where the reflection appears to be: behind the surface, as
 	// far again as the thing reflected is in front of it. Any surface there
 	// about as smooth and facing much the same way will do.
+	const bool follow = fr.held.z != 0;
 	const vec4 mirror = imageLoad(img_mirror[now], pixel);
 	float spec_frames = kept_frames;
-	if (mirror.w < 2.0 && history && WasAt(mirror.xyz, f))
+	if (follow && mirror.w < 2.0 && history && WasAt(mirror.xyz, f))
 	{
 		const ivec2 corner = ivec2(floor(f + 0.001));
 		vec3 sh = vec3(0.0);
@@ -191,7 +192,7 @@ void main()
 	// they appear to be instead, and counted on its own.
 	const vec4 over = imageLoad(img_over, pixel);
 	float over_frames = 0.0;
-	if (over.w != 0.0)
+	if (follow && over.w != 0.0)
 	{
 		vec3 oh = vec3(0.0);
 		float olen = 0.0, ow = 0.0;
