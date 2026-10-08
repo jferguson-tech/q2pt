@@ -36,6 +36,7 @@ bool IsHole(const Tri &t, float u, float v)
 // it, which gathers the light in some places and thins it in others.
 float Visible(const Scene &sc, const Surface &s, Vec3 target, Rng &rng)
 {
+	rng.rays++;
 	Ray shadow;
 	shadow.o = s.p + s.ng * kRayOffset;
 	shadow.d = target - shadow.o;
@@ -178,6 +179,7 @@ Vec3 ClampSample(Vec3 c, float max_luminance)
 
 bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &hit, const Tri *&tri, HeldRays held)
 {
+	rng.rays++;
 	for (int skips = 0; ; skips++)
 	{
 		const auto in_world = [&](uint32_t t, float, float) { return !BackOfGlass(sc.world->tris[t], ray.d); };
@@ -329,20 +331,27 @@ Vec3 SurfaceChannel(int mode, const Surface &s)
 	}
 }
 
-Vec3 BounceColour(float bounces, int most)
+// black, blue, green, yellow and red at 0 to 4, cyan between blue and green
+static Vec3 CountColour(float at)
 {
-	static const Vec3 ramp[] = {Vec3(0, 0, 1), Vec3(0, 1, 1), Vec3(0, 1, 0), Vec3(1, 1, 0), Vec3(1, 0, 0)};
-	if (most <= 1)
-		return ramp[4] * std::min(std::max(bounces, 0.0f), 1.0f);
-	if (bounces < 1.0f)
-		return ramp[0] * std::max(bounces, 0.0f);
-	// blue at 1 and red at the most there can be; where there is room, green
-	// is at 2, so that the first two, which most paths end at, stand apart
-	const float b = std::min(bounces, (float)most);
-	const float at = most == 2 ? (b - 1.0f) * 4.0f
-		: b < 2.0f ? (b - 1.0f) * 2.0f : 2.0f + (b - 2.0f) / (float)(most - 2) * 2.0f;
-	const int below = std::min((int)at, 3);
-	return ramp[below] + (ramp[below + 1] - ramp[below]) * (at - (float)below);
+	static const Vec3 ramp[] = {Vec3(0, 0, 0), Vec3(0, 0, 1), Vec3(0, 1, 1), Vec3(0, 1, 0), Vec3(1, 1, 0), Vec3(1, 0, 0)};
+	// cyan is a stop of its own, half way from 1 to 2
+	at = std::min(std::max(at, 0.0f), 4.0f);
+	const float stop = at < 1.0f ? at : at < 2.0f ? 1.0f + (at - 1.0f) * 2.0f : at + 1.0f;
+	const int below = std::min((int)stop, 4);
+	return ramp[below] + (ramp[below + 1] - ramp[below]) * (stop - (float)below);
+}
+
+Vec3 BounceColour(float bounces)
+{
+	return CountColour(bounces);
+}
+
+Vec3 CostColour(float rays)
+{
+	// a colour for each doubling from PT_COST_BLUE up, and a fade to black below it
+	const float at = rays / PT_COST_BLUE;
+	return CountColour(at < 1.0f ? at : 1.0f + std::log2(at));
 }
 
 void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth)

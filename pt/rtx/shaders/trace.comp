@@ -292,7 +292,7 @@ void main()
 			have_layer ? layer_roughness : 1.0));
 		imageStore(img_albedo[0], pixel, vec4(0.0));
 		imageStore(img_albedo[1], pixel, vec4(0.0));
-		imageStore(img_noisy[0], pixel, vec4(0.0));
+		imageStore(img_noisy[0], pixel, view_mode == VIEW_COST ? vec4(vec3(float(rays_traced)), 1.0) : vec4(0.0));
 		imageStore(img_noisy[1], pixel, vec4(0.0));
 		imageStore(img_noisy[2], pixel, vec4(over, 1.0));
 		imageStore(img_extra, pixel, vec4(beyond, 1.0));
@@ -395,6 +395,12 @@ void main()
 	imageStore(img_seen, pixel, vec4(seen, surf.roughness));
 	imageStore(img_albedo[0], pixel, vec4(kd, 1.0));
 	imageStore(img_albedo[1], pixel, vec4(ks, 1.0));
+	if (view_mode == VIEW_COST)
+	{
+		// the rays in place of the light, to be gathered and filtered as light is
+		sum_d = vec3(float(rays_traced * paths));
+		sum_s = vec3(0.0);
+	}
 	imageStore(img_noisy[0], pixel, vec4(sum_d / float(paths), 1.0));
 	imageStore(img_noisy[1], pixel, vec4(sum_s / float(paths), 1.0));
 	imageStore(img_noisy[2], pixel, vec4(over, 1.0));

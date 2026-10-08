@@ -770,6 +770,8 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 			px.albedo[kOver][i] *= kept;
 			px.add[i] *= kept;
 		}
+		if (view_mode == PT_VIEW_COST)
+			px.light[kDiffuse][i] = Vec3((float)rng.rays);
 		return;
 	}
 
@@ -909,6 +911,16 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 		px.light[ch][i] = sum[ch] * inv;
 		px.m1[ch][i] = m1[ch] * inv;
 		px.m2[ch][i] = m2[ch] * inv;
+	}
+	if (view_mode == PT_VIEW_COST)
+	{
+		// the rays in place of the light, to be gathered and filtered as light is
+		const float rays = (float)rng.rays;
+		px.light[kDiffuse][i] = Vec3(rays);
+		px.m1[kDiffuse][i] = rays;
+		px.m2[kDiffuse][i] = rays * rays;
+		px.light[kSpecular][i] = Vec3();
+		px.m1[kSpecular][i] = px.m2[kSpecular][i] = 0.0f;
 	}
 }
 
@@ -2007,7 +2019,9 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 			default: break;
 			}
 			if (sc.view_mode == PT_VIEW_BOUNCES)
-				c = BounceColour(lit(x, y, kDiffuse).x, bounces);
+				c = BounceColour(lit(x, y, kDiffuse).x);
+			else if (sc.view_mode == PT_VIEW_COST)
+				c = CostColour(lit(x, y, kDiffuse).x);
 			s->hdr[i] = c * exposure;
 		}
 	});

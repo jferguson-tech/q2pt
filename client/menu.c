@@ -1439,9 +1439,10 @@ static const char *pt_view_names[] =
 	"metal",
 	"glow",
 	"bounce count",
+	"cost",
 	0
 };
-static const int pt_view_values[] = { 0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12 };
+static const int pt_view_values[] = { 0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
 #define	PT_NUM_VIEWS	( (int)( sizeof(pt_view_values) / sizeof(pt_view_values[0]) ) )
 
 // where pt_view stands in the list: the last view offered that is not past it
