@@ -1422,15 +1422,40 @@ void M_Menu_RenderDemo_f (void);
 
 #define	PT_QUALITY_CUSTOM	4
 
-// pt_view's values, in order; the renderers know them as PT_VIEW_
+// The views the menu and the keys offer, in order, and pt_view's value for
+// each; the renderers know them as PT_VIEW_. The white furnace, 3, is a test
+// and not a picture: it is left to the console.
 static const char *pt_view_names[] =
 {
 	"normal",
 	"clay",
 	"mirror",
+	"lighting only",
+	"direct only",
+	"indirect only",
+	"base colour",
+	"normals",
+	"roughness",
+	"metal",
+	"glow",
+	"bounce count",
+	"cost",
 	0
 };
-#define	PT_NUM_VIEWS	( (int)( sizeof(pt_view_names) / sizeof(pt_view_names[0]) ) - 1 )
+static const int pt_view_values[] = { 0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
+#define	PT_NUM_VIEWS	( (int)( sizeof(pt_view_values) / sizeof(pt_view_values[0]) ) )
+
+// where pt_view stands in the list: the last view offered that is not past it
+static int PT_ViewIndex( void )
+{
+	int		i, view;
+
+	view = (int)Cvar_VariableValue( "pt_view" );
+	for ( i = PT_NUM_VIEWS - 1; i > 0; i-- )
+		if ( pt_view_values[i] <= view )
+			break;
+	return i;
+}
 
 static void PT_QualityFunc( void *unused )
 {
@@ -1523,17 +1548,24 @@ void M_PtFilterCycle_f (void)
 M_PtViewCycle_f
 
 pt_view_cycle [-1]: steps the path tracers to the next way of drawing the
-scene with its materials overridden (pt_view), or back to the one before
+scene (pt_view), or back to the one before
 =================
 */
 void M_PtViewCycle_f (void)
 {
-	int		step, next;
+	int		at, next;
 
-	step = ( Cmd_Argc() > 1 && atoi( Cmd_Argv( 1 ) ) < 0 ) ? PT_NUM_VIEWS - 1 : 1;
 	Cvar_Get( "pt_view", "0", 0 );
-	next = ( (int)ClampCvar( 0, PT_NUM_VIEWS - 1, Cvar_VariableValue( "pt_view" ) ) + step ) % PT_NUM_VIEWS;
-	Cvar_SetValue( "pt_view", next );
+	at = PT_ViewIndex();
+	if ( Cmd_Argc() > 1 && atoi( Cmd_Argv( 1 ) ) < 0 )
+	{
+		// from a view that is not offered, the one before it is where it stands
+		next = ( pt_view_values[at] == (int)Cvar_VariableValue( "pt_view" ) ) ? at + PT_NUM_VIEWS - 1 : at;
+	}
+	else
+		next = at + 1;
+	next %= PT_NUM_VIEWS;
+	Cvar_SetValue( "pt_view", pt_view_values[next] );
 	Com_Printf( "Path traced view: %s\n", pt_view_names[next] );
 }
 
@@ -1639,7 +1671,7 @@ void M_PtSwitch_f (void)
 
 static void PT_ViewFunc( void *unused )
 {
-	Cvar_SetValue( "pt_view", s_pt_view_list.curvalue );
+	Cvar_SetValue( "pt_view", pt_view_values[s_pt_view_list.curvalue] );
 }
 
 static void PT_StatsFunc( void *unused )
@@ -1676,7 +1708,7 @@ static void PT_SetMenuValues( void )
 	s_pt_fog_box.curvalue = Cvar_VariableValue( "pt_fog" ) != 0;
 	s_pt_water_list.curvalue = (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_water" ) );
 	s_pt_filter_list.curvalue = (int)ClampCvar( 0, 2, Cvar_VariableValue( "pt_filter" ) );
-	s_pt_view_list.curvalue = (int)ClampCvar( 0, PT_NUM_VIEWS - 1, Cvar_VariableValue( "pt_view" ) );
+	s_pt_view_list.curvalue = PT_ViewIndex();
 	s_pt_stats_box.curvalue = Cvar_VariableValue( "pt_stats" ) != 0;
 }
 

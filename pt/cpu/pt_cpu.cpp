@@ -239,6 +239,7 @@ struct CpuBackend
 	float					jitter_x = 0.0f, jitter_y = 0.0f;	// this frame's offset within the pixel
 	int						filtering = 2;		// what is done about noise this frame, see pt_view_t
 	float					moving_history = 32.0f;	// frames of lighting kept while anything changes
+	bool					reflection_history = true;	// reflections are followed where they appear to be
 	Camera					prev_camera;
 	uint32_t				prev_hash = 0;
 	uint32_t				frame_index = 0;
@@ -536,6 +537,13 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 	float through = 1.0f;		// how much of what is behind still shows
 	Vec3 tint(1, 1, 1);			// what liquid on the way has left of each colour
 	Vec3 absorb(s->view.medium_absorb);	// of the liquid the path is in now; none in air
+	// the view modes that leave part of the light out, or measure something
+	const int view_mode = sc.view_mode;
+	const bool furnace = view_mode == PT_VIEW_FURNACE;
+	const float direct_on = view_mode == PT_VIEW_INDIRECT ? 0.0f : 1.0f;
+	const float indirect_on = view_mode == PT_VIEW_DIRECT ? 0.0f : 1.0f;
+	if (furnace)
+		absorb = Vec3();
 	float entered = 0.0f;		// where along the current ray that began
 	float travelled = 0.0f;		// along the path so far, which water may have bent
 	Vec3 front_add;				// from the layers: what they emit
@@ -570,10 +578,17 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 			found = true;
 		}
 		if (!found)
+		{
+			if (furnace)
+				sky = Vec3(PT_FURNACE_LIGHT * through);
 			break;
+		}
 		if (tri->mat->flags & PT_MAT_SKY)
 		{
 			sky = sc.Sky(ray.d) * through;
+			if (view_mode)
+				sky = furnace ? Vec3(PT_FURNACE_LIGHT * through)
+					: (view_mode >= PT_VIEW_BASE_COLOUR ? Vec3() : sky * direct_on);
 			sky_hit = true;
 			sky_p = ray.o + ray.d * hit.t;
 			sky_n = Dot(tri->n, ray.d) < 0.0f ? tri->n : -tri->n;
@@ -584,7 +599,24 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 		const Material &mat = *surf.mat;
 		tint *= Fade(absorb, hit.t - entered);
 		entered = hit.t;
-		if (mat.alpha >= 1.0f || layer >= 8 || (sc.view_mode == PT_VIEW_CLAY && ClayCovers(mat)))
+		if (view_mode >= PT_VIEW_LIGHTING)
+		{
+			if (view_mode == PT_VIEW_LIGHTING)
+				WhiteSurface(surf);
+			else if (view_mode >= PT_VIEW_BASE_COLOUR && view_mode <= PT_VIEW_GLOW)
+			{
+				// the first surface met is all there is to show
+				px.add[i] = SurfaceChannel(view_mode, surf);
+				px.pos[i] = surf.p;
+				px.seen[i] = surf.p;
+				px.plane[i] = surf.ng;
+				px.normal[i] = surf.n;
+				px.depth[i] = hit.t;
+				px.roughness[i] = surf.roughness;
+				return;
+			}
+		}
+		if (mat.alpha >= 1.0f || layer >= 8 || (view_mode && ViewSolid(view_mode, mat)))
 		{
 			solid = true;
 			break;
@@ -683,7 +715,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 	}
 
 	// the layers' light is noisy and gets a channel of its own
-	const Vec3 over = ClampSample(front_diffuse + front_mirror, sc.max_sample);
+	const Vec3 over = ClampSample(front_diffuse * direct_on + front_mirror * indirect_on, sc.max_sample);
 	const float over_lum = Luminance(over);
 	// whether there is a layer must not depend on what this frame's sample
 	// happened to find, or its history would start over at random
@@ -700,7 +732,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 		// Nothing solid behind: sky, or nothing at all. If a layer was
 		// crossed it stands in as the surface, so that its light is still
 		// averaged over time; failing that, the place where the sky begins.
-		px.add[i] = front_add + sky * tint;
+		px.add[i] = front_add * direct_on + sky * tint;
 		if (have_layer)
 		{
 			px.pos[i] = first_layer.p;
@@ -728,7 +760,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 			const float at = rng.Float() * reach;
 			const Vec3 lit = DirectMedium(sc, cam.origin + eye_dir * at, rng);
 			const Vec3 glow = ClampSample(lit * (sc.fog_density * (0.25f * kInvPi) * std::exp(-sc.fog_density * at) * reach),
-				sc.max_sample);
+				sc.max_sample) * direct_on;
 			const float glow_lum = Luminance(glow);
 			px.albedo[kFog][i] = Vec3(1, 1, 1);
 			px.light[kFog][i] = glow;
@@ -739,6 +771,8 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 			px.albedo[kOver][i] *= kept;
 			px.add[i] *= kept;
 		}
+		if (view_mode == PT_VIEW_COST)
+			px.light[kDiffuse][i] = Vec3((float)rng.rays);
 		return;
 	}
 
@@ -776,6 +810,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 	px.add[i] = front_add + (surf.kd * flash.diffuse * kInvPi + flash.specular) * tint * through;
 	if (mat.emissive && surf.front)
 		px.add[i] += Emitted(surf, true) * tint * through;
+	px.add[i] *= direct_on;
 
 	// Air that scatters light: some of what the surface sends is lost on the
 	// way, and the air itself glows where light falls through it, which is
@@ -786,7 +821,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 		const float at = rng.Float() * reach;
 		const Vec3 lit = DirectMedium(sc, cam.origin + eye_dir * at, rng);
 		const Vec3 glow = ClampSample(lit * (sc.fog_density * (0.25f * kInvPi) * std::exp(-sc.fog_density * at) * reach),
-			sc.max_sample);
+			sc.max_sample) * direct_on;
 		const float glow_lum = Luminance(glow);
 		px.albedo[kFog][i] = Vec3(1, 1, 1);
 		px.light[kFog][i] = glow;
@@ -813,10 +848,11 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 		Vec3 c[2];
 
 		const Lit direct = DirectWorld(sc, surf, rng, true);
-		c[kDiffuse] = direct.diffuse * kInvPi;
-		c[kSpecular] = Demodulate(direct.specular, spec_albedo);
+		c[kDiffuse] = direct.diffuse * (kInvPi * direct_on);
+		c[kSpecular] = Demodulate(direct.specular, spec_albedo) * direct_on;
+		int followed[2] = {};		// rays the diffuse and the specular path were made of
 
-		if (bounces > 0)
+		if (bounces > 0 && indirect_on > 0.0f)
 		{
 			Ray bounce;
 			bounce.o = surf.p + surf.ng * kRayOffset;
@@ -826,7 +862,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 			if (has_diffuse)
 			{
 				bounce.d = SampleDiffuse(surf, rng);
-				c[kDiffuse] += Radiance(sc, bounce, rng, false, false, 1, bounces);
+				c[kDiffuse] += Radiance(sc, bounce, rng, false, false, 1, bounces, nullptr, &followed[0]);
 			}
 			if (spec_chance > 0.0f && rng.Float() < spec_chance)
 			{
@@ -835,11 +871,20 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 				if (SampleSpecular(surf, rng, bounce.d, weight))
 				{
 					c[kSpecular] += Demodulate(
-						weight * Radiance(sc, bounce, rng, false, !surf.light_sampled_spec, 1, sc.reflection_bounces, &reached),
+						weight * Radiance(sc, bounce, rng, false, !surf.light_sampled_spec, 1, sc.reflection_bounces, &reached,
+							&followed[1]),
 						spec_albedo) * (1.0f / spec_chance);
 					spec_reach = reached;
 				}
 			}
+		}
+		else if (furnace)
+			c[kDiffuse] += Vec3(PT_FURNACE_LIGHT);		// a path with no bounces to run out of
+		if (view_mode == PT_VIEW_BOUNCES)
+		{
+			// the count in place of the light, to be gathered and filtered as light is
+			c[kDiffuse] = Vec3((float)std::max(followed[0], followed[1]));
+			c[kSpecular] = Vec3();
 		}
 
 		for (int ch = 0; ch < 2; ch++)
@@ -867,6 +912,16 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 		px.light[ch][i] = sum[ch] * inv;
 		px.m1[ch][i] = m1[ch] * inv;
 		px.m2[ch][i] = m2[ch] * inv;
+	}
+	if (view_mode == PT_VIEW_COST)
+	{
+		// the rays in place of the light, to be gathered and filtered as light is
+		const float rays = (float)rng.rays;
+		px.light[kDiffuse][i] = Vec3(rays);
+		px.m1[kDiffuse][i] = rays;
+		px.m2[kDiffuse][i] = rays * rays;
+		px.light[kSpecular][i] = Vec3();
+		px.m1[kSpecular][i] = px.m2[kSpecular][i] = 0.0f;
 	}
 }
 
@@ -1044,7 +1099,7 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 		}
 
 		// The same goes for what a mirror-like solid surface reflects.
-		if (cur.spec_ok[i] && s->have_history)
+		if (cur.spec_ok[i] && s->have_history && s->reflection_history)
 		{
 			const Vec3 v = cur.spec_pos[i] - prev_cam.origin;
 			const float z = Dot(v, prev_cam.forward);
@@ -1093,7 +1148,7 @@ void Accumulate(CpuBackend *s, const Camera &prev_cam, float max_history, int y)
 		// Reflections in glass and water do not move across the screen the
 		// way the surface behind them does, so their history is looked up
 		// where they appear to be instead.
-		if (has_over)
+		if (has_over && s->reflection_history)
 		{
 			Vec3 oh;
 			float oh1 = 0.0f, oh2 = 0.0f, olen = 0.0f, ow = 0.0f;
@@ -1798,6 +1853,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	if (bounces < 1)
 		sc.reflections = 0;		// no bounces at all means none off mirrors either
 	s->moving_history = (float)std::min(std::max(view->history, 1), 512);
+	s->reflection_history = view->reflection_history != 0;
 	const int passes = (view->debug || view->filter >= 2) ? std::min(std::max(view->denoise, 0), kMaxFilterPasses) : 0;
 	s->pool.SetLimit(view->threads);
 	s->frame_index++;
@@ -1964,6 +2020,10 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 			case 11: c = lit(x, y, kFog); break;
 			default: break;
 			}
+			if (sc.view_mode == PT_VIEW_BOUNCES)
+				c = BounceColour(lit(x, y, kDiffuse).x);
+			else if (sc.view_mode == PT_VIEW_COST)
+				c = CostColour(lit(x, y, kDiffuse).x);
 			s->hdr[i] = c * exposure;
 		}
 	});

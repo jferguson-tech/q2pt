@@ -7,7 +7,9 @@
 
 // Blends this frame's samples into what earlier frames saw of the same
 // surface: each point is looked up where it was on screen last frame, and
-// what is found there counts if it was the same surface.
+// what is found there counts if it was the same surface. What a mirror-like
+// surface reflects is looked up where the reflection appears to be instead,
+// since a mirror shows something else as soon as the eye moves.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -27,6 +29,29 @@ bool SameSurface(ivec2 q, int prev, vec3 normal, float expected, out float frame
 	return frames > 0.0;
 }
 
+// Where was point p on screen last frame, less this frame's offset within
+// the pixel: history belongs to pixels, and with the eye at rest must come
+// from the very same one, or it would be resampled and crawl about every
+// frame. False if it was behind the eye.
+bool WasAt(vec3 p, out vec2 at)
+{
+	at = vec2(0.0);
+	const vec3 v = p - fr.prev_origin.xyz;
+	const float z = dot(v, fr.prev_forward.xyz);
+	if (z <= 0.01)
+		return false;
+	at = vec2((dot(v, fr.prev_right.xyz) / (z * fr.prev_origin.w) * 0.5 + 0.5) * fr.size.x - 0.5 - fr.right.w,
+		(0.5 - dot(v, fr.prev_up.xyz) / (z * fr.prev_forward.w) * 0.5) * fr.size.y - 0.5 - fr.up.w);
+	return true;
+}
+
+// the weight of tap t of the four around a point at f
+float TapWeight(vec2 f, ivec2 corner, int t)
+{
+	const vec2 a = f - vec2(corner);
+	return ((t & 1) != 0 ? a.x : 1.0 - a.x) * ((t >> 1) != 0 ? a.y : 1.0 - a.y);
+}
+
 void main()
 {
 	const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -34,6 +59,7 @@ void main()
 	if (pixel.x >= size.x || pixel.y >= size.y)
 		return;
 	const int now = fr.frame_has.z, prev = 1 - now;
+	const bool history = fr.output_i.w != 0;
 
 	const vec4 surface = imageLoad(img_surface[now], pixel);
 	vec3 light[3];
@@ -49,65 +75,55 @@ void main()
 	}
 
 	const vec4 seen = imageLoad(img_seen, pixel);
+	const vec3 spec_sample = light[1], over_sample = light[2];
 	vec3 hist[3] = vec3[3](vec3(0.0), vec3(0.0), vec3(0.0));
 	float frames = 0.0, wsum = 0.0;
+	vec2 f;
 
-	if (fr.output_i.w != 0)
+	if (history && WasAt(seen.xyz, f))
 	{
-		// where was this point on screen last frame?
-		const vec3 v = seen.xyz - fr.prev_origin.xyz;
-		const float z = dot(v, fr.prev_forward.xyz);
-		if (z > 0.01)
+		const ivec2 corner = ivec2(floor(f + 0.001));
+		const float expected = length(seen.xyz - fr.prev_origin.xyz);
+		// Where frames are only added up with the eye at rest, a point
+		// that was somewhere else on screen is something that moves: it
+		// starts afresh, so that nothing of where it was shows.
+		const bool elsewhere = fr.bases.z == 1 && (abs(f.x - float(pixel.x)) > 0.01 || abs(f.y - float(pixel.y)) > 0.01);
+
+		for (int t = 0; t < 4 && !elsewhere; t++)
 		{
-			// Less this frame's offset within the pixel: history belongs to
-			// pixels, and with the eye at rest must come from the very same
-			// one, or it would be resampled and crawl about every frame.
-			const float fx = (dot(v, fr.prev_right.xyz) / (z * fr.prev_origin.w) * 0.5 + 0.5) * size.x - 0.5 - fr.right.w;
-			const float fy = (0.5 - dot(v, fr.prev_up.xyz) / (z * fr.prev_forward.w) * 0.5) * size.y - 0.5 - fr.up.w;
-			const ivec2 corner = ivec2(floor(vec2(fx, fy) + 0.001));
-			const vec2 a = vec2(fx, fy) - vec2(corner);
-			const float expected = length(v);
-			// Where frames are only added up with the eye at rest, a point
-			// that was somewhere else on screen is something that moves: it
-			// starts afresh, so that nothing of where it was shows.
-			const bool elsewhere = fr.bases.z == 1 && (abs(fx - float(pixel.x)) > 0.01 || abs(fy - float(pixel.y)) > 0.01);
+			const ivec2 q = corner + ivec2(t & 1, t >> 1);
+			float n;
+			if (!SameSurface(q, prev, surface.xyz, expected, n))
+				continue;
+			const float w = TapWeight(f, corner, t);
+			if (w <= 0.0)
+				continue;
+			for (int k = 0; k < 3; k++)
+				hist[k] += imageLoad(img_kept[prev * 3 + k], q).rgb * w;
+			frames += n * w;
+			wsum += w;
+		}
 
-			for (int t = 0; t < 4 && !elsewhere; t++)
+		if (wsum <= 0.01 && !elsewhere)
+		{
+			// Nothing usable right where this point was. Along an edge a
+			// pixel shows one surface on some frames and its neighbour
+			// on others: look a little wider for more of this one.
+			wsum = 0.0;
+			frames = 0.0;
+			const ivec2 spot = ivec2(floor(f + 0.5));
+			for (int dy = -1; dy <= 1; dy++)
 			{
-				const ivec2 q = corner + ivec2(t & 1, t >> 1);
-				float f;
-				if (!SameSurface(q, prev, surface.xyz, expected, f))
-					continue;
-				const float w = ((t & 1) != 0 ? a.x : 1.0 - a.x) * ((t >> 1) != 0 ? a.y : 1.0 - a.y);
-				if (w <= 0.0)
-					continue;
-				for (int k = 0; k < 3; k++)
-					hist[k] += imageLoad(img_kept[prev * 3 + k], q).rgb * w;
-				frames += f * w;
-				wsum += w;
-			}
-
-			if (wsum <= 0.01 && !elsewhere)
-			{
-				// Nothing usable right where this point was. Along an edge a
-				// pixel shows one surface on some frames and its neighbour
-				// on others: look a little wider for more of this one.
-				wsum = 0.0;
-				frames = 0.0;
-				const ivec2 spot = ivec2(floor(vec2(fx, fy) + 0.5));
-				for (int dy = -1; dy <= 1; dy++)
+				for (int dx = -1; dx <= 1; dx++)
 				{
-					for (int dx = -1; dx <= 1; dx++)
-					{
-						const ivec2 q = spot + ivec2(dx, dy);
-						float f;
-						if (!SameSurface(q, prev, surface.xyz, expected, f))
-							continue;
-						for (int k = 0; k < 3; k++)
-							hist[k] += imageLoad(img_kept[prev * 3 + k], q).rgb;
-						frames += f;
-						wsum += 1.0;
-					}
+					const ivec2 q = spot + ivec2(dx, dy);
+					float n;
+					if (!SameSurface(q, prev, surface.xyz, expected, n))
+						continue;
+					for (int k = 0; k < 3; k++)
+						hist[k] += imageLoad(img_kept[prev * 3 + k], q).rgb;
+					frames += n;
+					wsum += 1.0;
 				}
 			}
 		}
@@ -133,6 +149,85 @@ void main()
 			light[k] = mix(hist[k] * inv, light[k], 1.0 / keep);
 		}
 	}
-	for (int k = 0; k < 3; k++)
-		imageStore(img_kept[now * 3 + k], pixel, vec4(light[k], kept_frames));
+
+	// The same goes for what a mirror-like solid surface reflects, but it is
+	// looked up where the reflection appears to be: behind the surface, as
+	// far again as the thing reflected is in front of it. Any surface there
+	// about as smooth and facing much the same way will do.
+	const bool follow = fr.held.z != 0;
+	const vec4 mirror = imageLoad(img_mirror[now], pixel);
+	float spec_frames = kept_frames;
+	if (follow && mirror.w < 2.0 && history && WasAt(mirror.xyz, f))
+	{
+		const ivec2 corner = ivec2(floor(f + 0.001));
+		vec3 sh = vec3(0.0);
+		float sw = 0.0;
+		for (int t = 0; t < 4; t++)
+		{
+			const ivec2 q = corner + ivec2(t & 1, t >> 1);
+			if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y)
+				continue;
+			const vec4 was = imageLoad(img_surface[prev], q);
+			const vec4 kept = imageLoad(img_kept[prev * 3 + 1], q);
+			float roughness = imageLoad(img_mirror[prev], q).w;
+			if (roughness >= 2.0)
+				roughness -= 2.0;
+			if (was.a < 0.0 || kept.a <= 0.0 || abs(roughness - mirror.w) > 0.1 || dot(surface.xyz, was.xyz) < 0.8)
+				continue;
+			const float w = TapWeight(f, corner, t);
+			if (w <= 0.0)
+				continue;
+			sh += kept.rgb * w;
+			sw += w;
+		}
+		if (sw > 0.01)
+		{
+			spec_frames = min(max(kept_frames, 2.0), max_history);
+			light[1] = mix(sh / sw, spec_sample, 1.0 / spec_frames);
+		}
+	}
+
+	// Reflections in glass and water do not move across the screen the way
+	// the surface behind them does, so their history is looked up where
+	// they appear to be instead, and counted on its own.
+	const vec4 over = imageLoad(img_over, pixel);
+	float over_frames = 0.0;
+	if (follow && over.w != 0.0)
+	{
+		vec3 oh = vec3(0.0);
+		float olen = 0.0, ow = 0.0;
+		if (history && WasAt(over.xyz, f))
+		{
+			const ivec2 corner = ivec2(floor(f + 0.001));
+			for (int t = 0; t < 4; t++)
+			{
+				const ivec2 q = corner + ivec2(t & 1, t >> 1);
+				if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y)
+					continue;
+				// Any layer light found there will do. How far away a
+				// reflection appears to be changes from frame to frame on
+				// rippling water, so it cannot be used to tell reflections apart.
+				const vec4 kept = imageLoad(img_kept[prev * 3 + 2], q);
+				if (kept.a <= 0.0)
+					continue;
+				const float w = TapWeight(f, corner, t);
+				if (w <= 0.0)
+					continue;
+				oh += kept.rgb * w;
+				olen += kept.a * w;
+				ow += w;
+			}
+		}
+		over_frames = 1.0;
+		light[2] = over_sample;
+		if (ow > 0.01)
+		{
+			over_frames = min(olen / ow + 1.0, max_history);
+			light[2] = mix(oh / ow, over_sample, 1.0 / over_frames);
+		}
+	}
+
+	imageStore(img_kept[now * 3], pixel, vec4(light[0], kept_frames));
+	imageStore(img_kept[now * 3 + 1], pixel, vec4(light[1], spec_frames));
+	imageStore(img_kept[now * 3 + 2], pixel, vec4(light[2], over_frames));
 }

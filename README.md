@@ -126,9 +126,8 @@ frames a second, where the CPU renderer manages 10. Offline rendering is
 about four times faster than on a 32 core, 64 thread CPU; the figures are
 under *Offline demo rendering*.
 
-Not yet on the GPU: the separate history the CPU renderer keeps for mirror
-reflections. Its denoiser decides how far to smooth from how long a pixel has
-been in view rather than from measured noise.
+Not yet on the GPU: its denoiser decides how far to smooth from how long a
+pixel has been in view rather than from measured noise.
 
 Like the CPU renderer it can trace a smaller picture than the window and
 build the full size one from it over a few frames (`pt_scale`). The same
@@ -139,13 +138,15 @@ measurement on the RTX 4090 at other sizes, in frames a second:
 | 1920x1080 | 58 | 155 | 362 |
 | 5120x1440 | 23 | 63 | |
 
-**Known faults**
+The two renderers side by side at each of the four presets (`pt_quality`),
+on the same five seconds of `demo1`: the CPU renderer on the left on a 16 core
+Ryzen 9 7950X, the RTX renderer on the right on an RTX 4090, both at 1280x720
+with the filter on. Each picture changes as often as that renderer draws a
+frame; the figures are `pt_bench` averages over the first 24 seconds of the
+demo. The clip plays at 60 frames a second, so nothing in it can look
+smoother than that.
 
-* With the filter on, the fog can look as if it were painted on the walls
-  behind it while the view moves, and light that changes quickly trails a
-  little. The raw picture (**F7**) has neither, and has the noise instead.
-* Linux is built and checked by CI on every change but played far less than
-  Windows.
+![Eight pictures of the same five seconds of play, a row for each preset with the CPU renderer on the left and the RTX renderer on the right. Low: 45 against 431 frames a second. Medium: 20 against 275. High: 8.5 against 146. Ultra: 3.2 against 63](docs/images/cpu_vs_rtx.webp)
 
 ## Requirements
 
@@ -245,8 +246,17 @@ Some console commands and variables:
 | `pt_water 0`-`2` | classic, realistic, simulated |
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
 | `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time |
+| `pt_reflection_history 0`-`1` | what mirrors and glass show is followed from frame to frame where it appears to be, behind the surface, rather than where the surface is; on unless set, for comparison |
 | `pt_filter 0`-`2`, `pt_filter_cycle` (**F7**) | the picture as the paths alone make it, noise and all: `0` every frame on its own, `1` the same but frames add up while you stand still, `2` (the default) blended over time and filtered |
-| `pt_view 0`-`2`, `pt_view_cycle` (number pad **+**, and **-** to step back) | the scene drawn with its materials overridden, for checking the renderer and for pictures: `0` normal, `1` clay, every surface matte mid grey whatever its textures say, `2` mirror, every surface as smooth as can be, keeping its colour and whether it is metal. Lights are unchanged and what glows keeps its glow; the sky, glass, and sparks and beams are left alone. In clay, liquids are solid to the eye. Mirror turns reflections on, and is best judged in the raw picture (**F7**): filtered, reflections smear while the view moves. Not kept in the config; offline rendering and screenshots honour it |
+| `pt_view 0`-`13`, `pt_view_cycle` (number pad **+**, and **-** to step back) | the scene drawn some other way than as it is, for checking the renderer and for pictures; each means the same in both path tracers. The keys and the menu's row step through all of them but `3`, which is typed in the console. Not kept in the config; offline rendering and screenshots honour it, and changing it starts the picture afresh |
+| `pt_view 1`, `2` | materials overridden: `1` clay, every surface matte mid grey whatever its textures say, `2` mirror, every surface as smooth as can be, keeping its colour and whether it is metal. Lights are unchanged and what glows keeps its glow; the sky, glass, and sparks and beams are left alone. In clay, liquids are solid to the eye. Mirror turns reflections on, and is best judged in the raw picture (**F7**): filtered, reflections smear while the view moves |
+| `pt_view 3` | console only. The white furnace, a test of whether paths keep the light they carry: every surface, glass and liquids too, is matte and reflects everything, no light or glow is lit, sparks and beams are not there, and a path that reaches the sky or runs out of bounces brings back a half. A tracer that neither makes nor loses light draws every pixel at 186; brighter is light made, darker light lost. As it stands the picture comes out a few percent bright, more with more bounces: a white surface reflects all the light in its matte part and some more in its shine. With `pt_reflections 1` it is 186 everywhere |
+| `pt_view 4` | lighting only: what the eye sees is white, of the material it is, lit by the scene as it is |
+| `pt_view 5`, `6` | direct only: light that comes straight from a light, the sky or the air's glow, and what glows seen directly. Indirect only: all the rest, which has bounced or been mirrored on the way. The two add up to the picture, though each is exposed for itself unless `pt_auto_exposure` is `0` |
+| `pt_view 7`-`11` | one thing known of the first surface the eye meets, glass included, unlit: `7` base colour, `8` normals (the shading normal in the world, 0.5 + 0.5 n), `9` roughness, `10` metal, `11` glow (held to 1). The sky is black. But for the base colour a pixel is the number times 255 |
+| `pt_view 12` | bounce count: how many times the paths from each pixel bounced after the first surface, on average. The scale is the same on every preset: black none, blue 1, green 2 (cyan between), yellow 3, red 4 or more. A room is mostly blue, and that is the true answer: a path that carries little light is ended at random after its first bounce, and most carry little, so most paths end there whatever `pt_bounces` allows. A blue darker than blue is under 1: a pixel some of whose paths did not bounce at all, which is what reflects nothing (a light, for one) mixed by the filter or the edge smoothing with what does. Lights do not show here; their cost is in `13` |
+| `pt_view 13` | cost: every ray traced for the pixel this frame, the eye's, the bounces' and the ones sent towards lights to see whether they are in shadow, all `pt_samples` together. The scale is the same on every preset and each colour is twice the one before: black none, blue 4, green 8 (cyan between, at about 6), yellow 16, red 32 or more. Glass and water are brighter than what is around them, each layer the eye looks through being lit and traced on from. A light fitting is darker: it reflects nothing, so nothing is traced on from it |
+| `pt_view 3`, `7`-`13` | shown as traced, to be read off the picture: exposure 1, no auto exposure, no tone curve, no bloom, no fog (but `13` keeps the fog, whose rays are part of the cost) |
 | `pt_switch 1`-`6` (number pad **1**-**6**) | switch off, or back on, one of the things in the picture that depend on earlier frames, to find which one a fault comes from: anti-aliasing and the upscaler, light history, the noise filter, auto exposure, upscaling, the history view. A list of them all comes up for a few seconds with what is on and off. Number pad **0** puts them all back; **.** keeps the list up (`pt_show_filter`) |
 | `cl_maxfps` | the most frames a second the game runs at: 200 unless set (the game's own setting, which was 90 and in effect 83) |
 | `pt_stats 0` | hide the performance info, which is on by default (never shown in offline renders) |
@@ -259,6 +269,7 @@ Some console commands and variables:
 | `screenshot`, `pt_screenshot [paths]` | the frame as shown, or rendered again at high quality |
 | `record <name>`, `stop` | record a demo (the game's own commands) |
 | `pt_render <demo> [fps] [paths] [start] [length]` | render a demo offline into `baseq2\render\<demo>\`; start and length, in seconds, pick a part of it |
+| `pt_render_live 0`-`1` | with `1`, `pt_render` saves the frames the game itself would show, with the settings it is played with, instead of offline ones; the paths argument is not used. Given the frame rate a renderer reaches, that is a film of how it plays; off unless set, and not kept in the config |
 | `pt_render_blur 0`-`1` | motion blur for offline rendering: the share of each frame's time the shutter is open; 0.5 unless set, film's 180 degree shutter |
 | `pt_render_export 1` | `pt_render` saves each frame's buffers (`frameNNNNN.ptx`) in place of a picture, for a denoiser outside the game: see `ref_pt/rpt_export.c` for what is in the file |
 | `pt_bench [demo] [seconds] [quit]` | time a demo: `demo1` and 20 seconds unless given, 0 for all of it; `quit` leaves the game afterwards, for scripts (`quake2 +pt_bench demo1 20 quit`) |
