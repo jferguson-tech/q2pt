@@ -60,6 +60,10 @@ typedef struct image_s
 	qboolean	normal_byhand;				// a map made by hand went into normalmap
 	uint32_t	*colour;					// made with normalmap: pixels with the painted light
 											// taken out, or NULL where pixels are as good
+	uint32_t	*lit;						// made on demand, see R_ImageLit: pixels where the picture
+											// gives off light and black elsewhere, or NULL
+	float		lit_share;					// how much of the picture's light is in lit
+	qboolean	lit_read;					// lit is what the picture gave, NULL included
 } image_t;
 
 typedef struct
@@ -164,6 +168,11 @@ void	R_MaterialInfo (const char *name, matinfo_t *info);
 float	R_MetalColour (void);
 uint32_t *R_ImageNormalMap (image_t *image, const matinfo_t *info, int *width, int *height);
 image_t	*R_ImageGlowMap (image_t *image);
+const uint32_t *R_ImageLit (image_t *image, float *share);
+
+// A light's picture gives off its light from the part of it that is lit only
+// if this much of the light its colours stand for is in that part
+#define	LIT_SHARE_LEAST		0.4f
 
 //
 // rpt_world.c

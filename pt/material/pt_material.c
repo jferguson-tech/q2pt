@@ -78,6 +78,23 @@ its red, green and blue.
 #define METAL_PATCH		1.0f	/* metal and what covers it come in patches at least about this far across */
 #define EDGE_WIDEST		16.0f	/* texels of the picture: the most the edge of a patch is dithered over */
 
+/*
+Light. A lamp, a lit screen and the letters of a lit sign were painted far
+brighter than what is round them, in whatever colour: it is the brightest
+of red, green and blue that is measured, a red lamp being no dimmer for
+being red.
+*/
+#define GLOW_ABOVE		1.2f	/* what is lit is this much brighter than the picture is for the most part ... */
+#define GLOW_FROM		0.30f	/* ... and is shown no darker than this; ... */
+#define GLOW_FROM_MOST	0.42f	/* ... what is shown brighter than this may be lit however bright the rest is */
+#define GLOW_SURE		0.6f	/* a lit patch is this much brighter again somewhere in it: there is the lamp,
+								   and the rest of the patch is the glow painted round it */
+#define GLOW_REACH		3		/* the parts of one lamp lie no further apart than this: the rings of a lens,
+								   the squares of a grille */
+#define GLOW_SAME		0.12f	/* and are of one colour: their shares of red and of green differ by less */
+#define GLOW_APART		1.3f	/* what is lit is on average this much brighter than what is not, or nothing
+								   in the picture stands apart from the rest */
+
 /* the painted light the colours are relieved of */
 #define LIT_MOST		1.2f	/* a difference well past this is a lamp or a marking, not a highlight */
 #define SHADOW_KEPT		0.5f	/* what is darker may be dirt or depth as well as shadow: this much of it stays */
@@ -856,4 +873,211 @@ unsigned char *pt_material_height(const uint32_t *pixels, int width, int height,
 				* r.slopes[2 * ((size_t)(y + g->oy * g->scale) * bw + (size_t)(x + g->ox * g->scale))]);
 	release(&r);
 	return map;
+}
+
+/*
+The texel dx, dy from x, y in a picture of w by h, which goes round at its
+edges if it repeats. 0 where there is none.
+*/
+static int beside(int x, int y, int dx, int dy, int w, int h, int repeats, size_t *at)
+{
+	x += dx;
+	y += dy;
+	if (repeats)
+	{
+		x %= w;
+		y %= h;
+		if (x < 0)
+			x += w;
+		if (y < 0)
+			y += h;
+	}
+	else if (x < 0 || x >= w || y < 0 || y >= h)
+		return 0;
+	*at = (size_t)y * w + x;
+	return 1;
+}
+
+/* a colour apart from its brightness: its shares of red and of green */
+static void colour_shares(uint32_t c, const float *linear, float *red, float *green)
+{
+	const float r = linear[c & 0xff], g = linear[(c >> 8) & 0xff], b = linear[(c >> 16) & 0xff];
+	const float sum = r + g + b + 1.0e-4f;
+
+	*red = r / sum;
+	*green = g / sum;
+}
+
+uint32_t *pt_material_glow(const uint32_t *pixels, int width, int height, int repeats, float *share)
+{
+	enum { NOT, MAY_BE, LIT };
+	grid_t			g;
+	float			linear[256];
+	float			*bright, *clean, body, from, least, most;
+	unsigned char	*lit, *next_to;
+	uint32_t		*stack, *out;
+	size_t			count, i, j, top = 0, found = 0;
+	double			of_lit = 0.0, of_rest = 0.0, light = 0.0, all = 0.0;
+	int				x, y, dx, dy;
+
+	*share = 0.0f;
+	if (!set_grid(&g, width, height, repeats))
+		return NULL;
+	count = (size_t)width * height;
+	bright = (float *)malloc(g.count * 2 * sizeof(float));
+	lit = (unsigned char *)malloc(count * 2);
+	stack = (uint32_t *)malloc(count * sizeof(uint32_t));
+	if (!bright || !lit || !stack)
+	{
+		free(bright);
+		free(lit);
+		free(stack);
+		return NULL;
+	}
+	clean = bright + g.count;
+	next_to = lit + count;
+
+	for (x = 0; x < 256; x++)
+		linear[x] = powf((float)x / 255.0f, 2.2f);
+	for (y = 0; y < g.gh; y++)
+	{
+		const uint32_t *row = pixels + (size_t)picture_index(y - g.oy, height, repeats) * width;
+
+		for (x = 0; x < g.gw; x++)
+		{
+			const uint32_t c = row[picture_index(x - g.ox, width, repeats)];
+			const int	r8 = c & 0xff, g8 = (c >> 8) & 0xff, b8 = (c >> 16) & 0xff;
+
+			bright[(size_t)y * g.gw + x] = logf(linear[r8 > g8 ? (r8 > b8 ? r8 : b8) : (g8 > b8 ? g8 : b8)] + LOG_FLOOR);
+		}
+	}
+	remove_noise(bright, clean, &g);
+	body = typical(clean, g.count);
+
+	least = logf(powf(GLOW_FROM, 2.2f) + LOG_FLOOR);
+	most = logf(powf(GLOW_FROM_MOST, 2.2f) + LOG_FLOOR);
+	from = body + GLOW_ABOVE;
+	from = from < least ? least : (from > most ? most : from);
+
+	/* what is bright enough to be of a lit patch, and where such patches are certainly lit */
+	for (y = 0; y < height; y++)
+	{
+		const float *row = clean + (size_t)(y + g.oy) * g.gw + g.ox;
+
+		for (x = 0; x < width; x++)
+		{
+			i = (size_t)y * width + x;
+			lit[i] = row[x] >= from ? MAY_BE : NOT;
+			if (row[x] >= from + GLOW_SURE)
+			{
+				lit[i] = LIT;
+				stack[top++] = (uint32_t)i;
+			}
+		}
+	}
+	/*
+	From there the light spreads over the whole of each patch, and to what
+	lies near it and is as bright and of the same colour, though dark lies
+	between: that is more of the same lamp.
+	*/
+	while (top)
+	{
+		float	red, green, its_red, its_green;
+
+		i = stack[--top];
+		x = (int)(i % (size_t)width);
+		y = (int)(i / (size_t)width);
+		colour_shares(pixels[i], linear, &red, &green);
+		for (dy = -GLOW_REACH; dy <= GLOW_REACH; dy++)
+		{
+			for (dx = -GLOW_REACH; dx <= GLOW_REACH; dx++)
+			{
+				if (!beside(x, y, dx, dy, width, height, repeats, &j) || lit[j] != MAY_BE)
+					continue;
+				if (dx < -1 || dx > 1 || dy < -1 || dy > 1)
+				{
+					colour_shares(pixels[j], linear, &its_red, &its_green);
+					if ((its_red - red) * (its_red - red) + (its_green - green) * (its_green - green) >= GLOW_SAME * GLOW_SAME)
+						continue;
+				}
+				lit[j] = LIT;
+				stack[top++] = (uint32_t)j;
+			}
+		}
+	}
+
+	/* a picture of one thing all over, however bright in places, has no lit part to tell from the rest */
+	for (y = 0; y < height; y++)
+	{
+		const float *row = clean + (size_t)(y + g.oy) * g.gw + g.ox;
+
+		for (x = 0; x < width; x++)
+		{
+			if (lit[(size_t)y * width + x] == LIT)
+			{
+				of_lit += row[x];
+				found++;
+			}
+			else
+				of_rest += row[x];
+		}
+	}
+	free(bright);
+	free(stack);
+	if (!found || (found < count && of_lit / (double)found - of_rest / (double)(count - found) < GLOW_APART))
+	{
+		free(lit);
+		return NULL;
+	}
+
+	/* a gap a texel wide in what is lit is closed: the dark ring in a lamp's lens, the space within a letter */
+	for (y = 0; y < height; y++)
+	{
+		for (x = 0; x < width; x++)
+		{
+			i = (size_t)y * width + x;
+			next_to[i] = 0;
+			for (dy = -1; dy <= 1; dy++)
+				for (dx = -1; dx <= 1; dx++)
+					if (beside(x, y, dx, dy, width, height, repeats, &j) && lit[j] == LIT)
+						next_to[i] = 1;
+		}
+	}
+	for (y = 0; y < height; y++)
+	{
+		for (x = 0; x < width; x++)
+		{
+			int		closed = 1;
+
+			i = (size_t)y * width + x;
+			if (lit[i] == LIT)
+				continue;
+			for (dy = -1; dy <= 1; dy++)
+				for (dx = -1; dx <= 1; dx++)
+					if (beside(x, y, dx, dy, width, height, repeats, &j) && !next_to[j])
+						closed = 0;
+			/* MAY_BE, so that it is not taken for lit by the texels after it */
+			lit[i] = closed ? MAY_BE : NOT;
+		}
+	}
+
+	out = (uint32_t *)malloc(count * sizeof(uint32_t));
+	for (i = 0; out && i < count; i++)
+	{
+		const uint32_t c = pixels[i];
+		const float mine = linear[c & 0xff] + linear[(c >> 8) & 0xff] + linear[(c >> 16) & 0xff];
+
+		all += mine;
+		if (lit[i] != NOT)
+		{
+			light += mine;
+			out[i] = c | 0xff000000u;
+		}
+		else
+			out[i] = 0xff000000u;
+	}
+	free(lit);
+	if (out && all > 0.0)
+		*share = (float)(light / all);
+	return out;
 }

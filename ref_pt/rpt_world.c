@@ -227,6 +227,38 @@ static int W_AddMaterial (texinfo_t *tex, int body)
 			mat->emission_texture = W_AddTexture (glowmap->width, glowmap->height, glowmap->pixels, glowmap) + 1;
 			mat->emission[0] = mat->emission[1] = mat->emission[2] = (info.glow > 0 ? info.glow : 1) * r_detailglow;
 		}
+		else if (r_materialmaps && (value > 0 || info.glow > 0) && !(flags & (SURF_WARP|SURF_TRANS33|SURF_TRANS66)))
+		{
+			// The map or the name says the picture is of something lit. The
+			// picture says which part of it: the lamp and not its frame, the
+			// letters and not the sign.
+			const uint32_t	*lit;
+			float			share;
+
+			lit = R_ImageLit (image, &share);
+			if (value > 0)
+			{
+				// A light of the map's gives off what the map says, all of it
+				// from the part that is lit, where that part held most of the
+				// picture's light already. Where it did not, what was found
+				// is a few bright specks and the whole surface is the light.
+				if (lit && share >= LIT_SHARE_LEAST)
+				{
+					mat->emission_texture = W_AddTexture (image->width, image->height, lit, &image->lit) + 1;
+					mat->flags |= PT_MAT_EMIT_MAPPED;
+				}
+			}
+			else
+			{
+				// a screen or a sign glows where it is lit, and one that is
+				// off, or a vent that is named as lamps are, not at all
+				mat->flags &= ~PT_MAT_EMIT_BRIGHT;
+				if (lit)
+					mat->emission_texture = W_AddTexture (image->width, image->height, lit, &image->lit) + 1;
+				else
+					mat->emission[0] = mat->emission[1] = mat->emission[2] = 0;
+			}
+		}
 	}
 
 	if (flags & SURF_SKY)

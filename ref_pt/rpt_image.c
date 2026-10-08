@@ -465,6 +465,7 @@ static void R_FreeImage (image_t *image)
 		rpt.backend->texture_destroy (rpt.backend, image->pt_normal_texture - 1);
 	free (image->normalmap);
 	free (image->colour);
+	free (image->lit);
 	free (image->pixels);
 	memset (image, 0, sizeof(*image));
 }

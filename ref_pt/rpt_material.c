@@ -329,6 +329,38 @@ image_t *R_ImageGlowMap (image_t *image)
 	return Mat_FindMap (image, "_e.tga");
 }
 
+static int	mat_lit, mat_lit_msec;	// since the last report: pictures looked at for what is lit in them
+
+/*
+===============
+R_ImageLit
+
+The part of a picture that gives off light, for one known to show a lamp
+or a lit screen: its pixels there and black elsewhere, the picture's own
+size. It is read from the picture the first time it is asked for, see
+pt_material_glow. NULL where nothing in the picture stands apart from the
+rest. share is how much of the picture's light is in that part.
+
+Unlike the detail maps it depends on the picture alone, so it is made once
+and stays whatever the material settings become.
+===============
+*/
+const uint32_t *R_ImageLit (image_t *image, float *share)
+{
+	int		start;
+
+	if (!image->lit_read)
+	{
+		start = Sys_Milliseconds ();
+		image->lit = pt_material_glow (image->pixels, image->width, image->height, image->type == it_wall, &image->lit_share);
+		image->lit_read = true;
+		mat_lit_msec += Sys_Milliseconds () - start;
+		mat_lit++;
+	}
+	*share = image->lit_share;
+	return image->lit;
+}
+
 /*
 =================================================================
 
@@ -762,7 +794,11 @@ void R_MaterialsReport (void)
 			mat_made, mat_msec, mat_kept);
 	else if (mat_kept)
 		ri.Con_Printf (PRINT_DEVELOPER, "Materials: %d kept from before\n", mat_kept);
+	if (mat_lit)
+		ri.Con_Printf (PRINT_DEVELOPER, "Materials: %d pictures of lamps and screens looked at for what is lit in %d ms\n",
+			mat_lit, mat_lit_msec);
 	mat_made = mat_msec = mat_kept = 0;
+	mat_lit = mat_lit_msec = 0;
 }
 
 /*
@@ -771,9 +807,10 @@ R_MaterialShow_f
 
 pt_material_show <image>: writes the picture beside what was read from it,
 its colours without the painted light, its height, its normals, its
-roughness, its metal and what it reflects head on (as metal what
-pt_metal_colour makes of its colour, as anything else 4% of the light), as
-one PNG in scrnshot
+roughness, its metal, what it reflects head on (as metal what
+pt_metal_colour makes of its colour, as anything else 4% of the light) and
+the part of it that gives off light where it is known to be of something
+lit, as one PNG in scrnshot
 ===============
 */
 static void R_MaterialShow_f (void)
@@ -783,9 +820,9 @@ static void R_MaterialShow_f (void)
 	pt_material_maps_t	maps;
 	matinfo_t			info;
 	image_t				*image;
-	uint32_t			*sheet, *colour, c, shown;
+	uint32_t			*sheet, *colour, *lit, c, shown;
 	unsigned char		*high;
-	float				nx, ny, metal, rgb[3], reflects[3];
+	float				nx, ny, metal, rgb[3], reflects[3], share;
 	int					x, y, w, h, scale, at, k;
 
 	if (ri.Cmd_Argc () != 2 || strlen (ri.Cmd_Argv (1)) > MAX_QPATH - 8)
@@ -813,7 +850,7 @@ static void R_MaterialShow_f (void)
 	w = image->width * scale;
 	h = image->height * scale;
 	high = pt_material_height (image->pixels, image->width, image->height, &from);
-	sheet = malloc ((size_t)w * 7 * h * sizeof(uint32_t));
+	sheet = malloc ((size_t)w * 8 * h * sizeof(uint32_t));
 	if (!pt_material_read (image->pixels, image->width, image->height, &from, &maps) || !high || !sheet)
 	{
 		ri.Con_Printf (PRINT_ALL, "%s could not be read\n", name);
@@ -824,6 +861,8 @@ static void R_MaterialShow_f (void)
 		return;
 	}
 	colour = maps.colour ? maps.colour : image->pixels;
+	// its own reading, not R_ImageLit's: this is for looking at
+	lit = pt_material_glow (image->pixels, image->width, image->height, from.repeats, &share);
 
 	for (y=0 ; y<h ; y++)
 	{
@@ -845,13 +884,14 @@ static void R_MaterialShow_f (void)
 			for (k=0 ; k<3 ; k++)
 				shown |= (uint32_t)(pow (0.04f * (1.0f - metal) + reflects[k] * metal, 1.0f / 2.2f) * 255.0f + 0.5f) << (k * 8);
 
-			sheet[y * w * 7 + x] = image->pixels[at] | 0xff000000;
-			sheet[y * w * 7 + w + x] = colour[at] | 0xff000000;
-			sheet[y * w * 7 + w * 2 + x] = high[y * w + x] * 0x010101u | 0xff000000;
-			sheet[y * w * 7 + w * 3 + x] = (c & 0xffff) | ((uint32_t)((sqrt (nx > 0 ? nx : 0) * 0.5f + 0.5f) * 255.0f + 0.5f) << 16) | 0xff000000;
-			sheet[y * w * 7 + w * 4 + x] = (c >> 24) * 0x010101u | 0xff000000;
-			sheet[y * w * 7 + w * 5 + x] = ((c >> 16) & 0xff) * 0x010101u | 0xff000000;
-			sheet[y * w * 7 + w * 6 + x] = shown;
+			sheet[y * w * 8 + x] = image->pixels[at] | 0xff000000;
+			sheet[y * w * 8 + w + x] = colour[at] | 0xff000000;
+			sheet[y * w * 8 + w * 2 + x] = high[y * w + x] * 0x010101u | 0xff000000;
+			sheet[y * w * 8 + w * 3 + x] = (c & 0xffff) | ((uint32_t)((sqrt (nx > 0 ? nx : 0) * 0.5f + 0.5f) * 255.0f + 0.5f) << 16) | 0xff000000;
+			sheet[y * w * 8 + w * 4 + x] = (c >> 24) * 0x010101u | 0xff000000;
+			sheet[y * w * 8 + w * 5 + x] = ((c >> 16) & 0xff) * 0x010101u | 0xff000000;
+			sheet[y * w * 8 + w * 6 + x] = shown;
+			sheet[y * w * 8 + w * 7 + x] = lit ? lit[at] : 0xff000000;
 		}
 	}
 
@@ -859,15 +899,26 @@ static void R_MaterialShow_f (void)
 	Sys_Mkdir (path);
 	Mat_FlatName (image, flat);
 	Com_sprintf (path, sizeof(path), "%s/scrnshot/material_%s.png", ri.FS_Gamedir (), flat);
-	if (pt_png_write (path, sheet, w * 7, h))
-		ri.Con_Printf (PRINT_ALL, "Wrote %s: picture, %s, height, normals, roughness, metal (%s), what it reflects\n", path,
+	if (pt_png_write (path, sheet, w * 8, h))
+	{
+		ri.Con_Printf (PRINT_ALL, "Wrote %s: picture, %s, height, normals, roughness, metal (%s), what it reflects, ", path,
 			maps.colour ? "its colours without the painted light" : "the same again (no painted light taken out)",
 			info.metallic <= 0 ? "said to have none" : (info.metal_known ? "said to be metal" : "nothing is said of it"));
+		if (lit)
+			ri.Con_Printf (PRINT_ALL, "what of it is lit (%d%% of its light; %s)\n", (int)(share * 100.0f + 0.5f),
+				image->type != it_wall ? "not used: a skin gives off no light"
+				: (info.glow > 0 ? "used: its name says it is lit"
+				: (share >= LIT_SHARE_LEAST ? "used where a map makes it a light"
+				: "not used: too little of its light for a map's light to come from there alone")));
+		else
+			ri.Con_Printf (PRINT_ALL, "what of it is lit (no part of it stands apart)\n");
+	}
 	else
 		ri.Con_Printf (PRINT_ALL, "Couldn't write %s\n", path);
 
 	free (maps.detail);
 	free (maps.colour);
+	free (lit);
 	free (high);
 	free (sheet);
 }
