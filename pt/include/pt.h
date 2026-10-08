@@ -50,6 +50,10 @@ vertices appear counter clockwise.
 									   where the surface is metal, what it reflects
 									   is worked out from the colour, see pt_view_t's
 									   metal_colour. What it emits is not changed. */
+#define PT_MAT_SAMPLED			2048u	/* scene only: what this emits is also given as a
+									   light in lights, so a path that comes upon it
+									   counts its glow only where lights are not looked
+									   for: from the eye and in a sharp reflection */
 
 typedef struct pt_texture_s
 {
@@ -103,6 +107,13 @@ typedef struct pt_point_light_s
 	float		direction[3];	/* world only: a spotlight shines along this (unit) ... */
 	float		cone_cos;		/* ... within the cone with this cosine of its half
 								   angle; 0 = shines all round */
+	float		radius;			/* scene only: above 0 the light is a ball of this
+								   size, as bright all over, which gives off the
+								   same light in all as the point would: its
+								   radiance is intensity / (pi * radius^2). Its
+								   shadows are soft. Nothing is drawn of it: for
+								   that, triangles that emit the same
+								   (PT_MAT_SAMPLED), no larger than it is. */
 } pt_point_light_t;
 
 typedef struct pt_world_s
@@ -136,7 +147,7 @@ typedef struct pt_world_s
 /*
 What moves: rebuilt by the host every frame, in world space. Its emitting
 triangles light the scene but are found by chance, so anything that should
-light well also belongs in lights.
+light well also belongs in lights (see PT_MAT_SAMPLED).
 */
 typedef struct pt_scene_s
 {
@@ -294,6 +305,11 @@ typedef struct pt_view_s
 	int		fog;				/* light scattering in the air: haze and light shafts */
 	float	fog_density;		/* share of light scattered per unit of distance */
 	float	bloom;				/* glow around what is brighter than white; 0 = none */
+	float	bloom_max;			/* the most over white that anything adds to the
+								   glow, in whites: up to half of this it adds
+								   all it has, then less and less. Keeps a lamp
+								   hundreds of times white from drowning the
+								   picture. 0 = no limit */
 } pt_view_t;
 
 /* one part of the work on a view, and how long it took */

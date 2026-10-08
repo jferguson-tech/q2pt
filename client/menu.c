@@ -4720,6 +4720,9 @@ void M_Init (void)
 		Key_SetBinding (K_KP_PLUS, "pt_view_cycle");
 	if ( !keybindings[K_KP_MINUS] )
 		Key_SetBinding (K_KP_MINUS, "pt_view_cycle -1");
+	// a ball of light, thrown (the game's throwlight command)
+	if ( !keybindings['f'] )
+		Key_SetBinding ('f', "throwlight");
 	Cmd_AddCommand ("menu_game", M_Menu_Game_f);
 		Cmd_AddCommand ("menu_loadgame", M_Menu_LoadGame_f);
 		Cmd_AddCommand ("menu_savegame", M_Menu_SaveGame_f);

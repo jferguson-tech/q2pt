@@ -831,6 +831,73 @@ CL_AddPacketEntities
 
 ===============
 */
+/*
+===============
+CL_LightBall
+
+A ball of light. The server says only where it is, ten times a second, which
+is far too seldom to say how it has turned: that is worked out here, from how
+far it has moved since it was last drawn, as a ball rolling on a floor turns.
+Its colour and brightness come in skinnum (see RF_LIGHTBALL) and are handed
+to the renderer in lightstyle, the model it stands in for having skins of
+its own.
+===============
+*/
+static void CL_LightBall (centity_t *cent, entity_t *ent, int packed)
+{
+	vec3_t		d, k, cross;
+	float		dist, angle, c, s, dot;
+	unsigned	colour = (unsigned)packed;
+	int			i, j;
+
+	VectorSubtract (ent->origin, cent->ball_origin, d);
+	if (!cent->ball_time || cl.time < cent->ball_time || cl.time - cent->ball_time > 1000
+		|| DotProduct (d, d) > 256 * 256)
+	{	// new, or not seen for a while: askew, as a thing thrown is
+		vec3_t	askew = { 35, 20, 25 };
+
+		AngleVectors (askew, cent->ball_axis[0], cent->ball_axis[1], cent->ball_axis[2]);
+		VectorInverse (cent->ball_axis[1]);		// left, not right
+		VectorClear (d);
+	}
+	VectorCopy (ent->origin, cent->ball_origin);
+	cent->ball_time = cl.time ? cl.time : 1;
+
+	dist = sqrt (d[0] * d[0] + d[1] * d[1]);
+	if (dist > 0.001)
+	{
+		// about the level line square to the way it goes, by the angle whose
+		// arc is the way gone
+		VectorSet (k, -d[1] / dist, d[0] / dist, 0);
+		angle = dist / LIGHTBALL_RADIUS;
+		c = cos (angle);
+		s = sin (angle);
+		for (i=0 ; i<3 ; i++)
+		{
+			CrossProduct (k, cent->ball_axis[i], cross);
+			dot = DotProduct (k, cent->ball_axis[i]) * (1 - c);
+			for (j=0 ; j<3 ; j++)
+				cent->ball_axis[i][j] = cent->ball_axis[i][j] * c + cross[j] * s + k[j] * dot;
+		}
+		// keep it square: the small errors add up
+		VectorNormalize (cent->ball_axis[0]);
+		CrossProduct (cent->ball_axis[0], cent->ball_axis[1], cent->ball_axis[2]);
+		VectorNormalize (cent->ball_axis[2]);
+		CrossProduct (cent->ball_axis[2], cent->ball_axis[0], cent->ball_axis[1]);
+	}
+
+	// the angles that turn forward, left and up into the three axes
+	dot = -cent->ball_axis[0][2];
+	ent->angles[PITCH] = asin (dot > 1 ? 1 : (dot < -1 ? -1 : dot)) * (180 / M_PI);
+	ent->angles[YAW] = atan2 (cent->ball_axis[0][1], cent->ball_axis[0][0]) * (180 / M_PI);
+	ent->angles[ROLL] = atan2 (cent->ball_axis[1][2], cent->ball_axis[2][2]) * (180 / M_PI);
+
+	ent->skinnum = 0;
+	ent->lightstyle = packed;
+	V_AddLight (ent->origin, (colour >> 24) * 2, (colour & 255) / 255.0f, ((colour >> 8) & 255) / 255.0f,
+		((colour >> 16) & 255) / 255.0f);
+}
+
 void CL_AddPacketEntities (frame_t *frame)
 {
 	entity_t			ent;
@@ -1019,6 +1086,9 @@ void CL_AddPacketEntities (frame_t *frame)
 				ent.angles[i] = LerpAngle (a2, a1, cl.lerpfrac);
 			}
 		}
+
+		if (renderfx & RF_LIGHTBALL)
+			CL_LightBall (cent, &ent, s1->skinnum);
 
 		if (s1->number == cl.playernum+1)
 		{

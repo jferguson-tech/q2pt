@@ -195,7 +195,8 @@ MOVETYPE_STEP,			// gravity, special edge handling
 MOVETYPE_FLY,
 MOVETYPE_TOSS,			// gravity
 MOVETYPE_FLYMISSILE,	// extra size to monsters
-MOVETYPE_BOUNCE
+MOVETYPE_BOUNCE,
+MOVETYPE_BALL			// gravity; bounces, then rolls (g_lightball.c)
 } movetype_t;
 
 
@@ -730,6 +731,19 @@ void fire_shotgun (edict_t *self, vec3_t start, vec3_t aimdir, int damage, int k
 void fire_blaster (edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, int effect, qboolean hyper);
 void fire_grenade (edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, float timer, float damage_radius);
 void fire_grenade2 (edict_t *self, vec3_t start, vec3_t aimdir, int damage, int speed, float timer, float damage_radius, qboolean held);
+
+//
+// g_lightball.c
+//
+void Cmd_ThrowLight_f (edict_t *ent);
+void SV_Physics_Ball (edict_t *ent);
+
+//
+// g_phys.c
+//
+void SV_CheckVelocity (edict_t *ent);
+qboolean SV_RunThink (edict_t *ent);
+int ClipVelocity (vec3_t in, vec3_t normal, vec3_t out, float overbounce);
 void fire_rocket (edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, float damage_radius, int radius_damage);
 void fire_rail (edict_t *self, vec3_t start, vec3_t aimdir, int damage, int kick);
 void fire_bfg (edict_t *self, vec3_t start, vec3_t dir, int damage, int speed, float damage_radius);

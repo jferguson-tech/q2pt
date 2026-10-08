@@ -494,8 +494,12 @@ void BuildFrame(Frame &f, const pt_scene_t *in, const std::vector<std::unique_pt
 
 		f.materials.resize(std::max(1, in->num_materials));
 		for (int i = 0; i < in->num_materials; i++)
-			f.materials[i].Set(in->materials[i], texture(in->materials[i].texture), texture(in->materials[i].normal_texture),
+		{
+			Material &m = f.materials[i];
+			m.Set(in->materials[i], texture(in->materials[i].texture), texture(in->materials[i].normal_texture),
 				texture(in->materials[i].emission_texture - 1));
+			m.sampled = m.emissive && (m.flags & PT_MAT_SAMPLED);
+		}
 
 		f.tris.resize(in->num_triangles);
 		soup.resize((size_t)in->num_triangles * 3);
@@ -530,7 +534,7 @@ void BuildFrame(Frame &f, const pt_scene_t *in, const std::vector<std::unique_pt
 			l.pdf = 0;
 			l.style = 0;
 			l.cone_cos = 0.0f;
-		l.cone_cos = 0.0f;
+			l.radius = in->lights[i].radius > 0.0f ? in->lights[i].radius : 0.0f;
 			if (Luminance(l.emission) > 0.0f)
 				f.lights.push_back(l);
 		}

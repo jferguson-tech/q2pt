@@ -135,6 +135,7 @@ struct Light
 	int			style;		// point lights: which light style scales it
 	Vec3		dir;		// spotlights: where it points
 	float		cone_cos;	// and how wide; 0 = all round
+	float		radius = 0.0f;	// the frame's: above 0 a ball of light, not a point
 };
 
 // For each cell of a coarse grid, the lights that matter most there. Sampling
@@ -206,7 +207,7 @@ struct Frame
 	std::vector<Tri>		tris;
 	std::vector<Vec3>		prev;		// 3 per triangle: its corners last frame; may be empty
 	Bvh						bvh;
-	std::vector<Light>		lights;		// point lights only
+	std::vector<Light>		lights;		// points and balls, no triangles
 	bool					has_held = false;	// something in it is carried by the eye (PT_MAT_HELD)
 	uint32_t				hash = 0;	// changes when anything in it does
 };

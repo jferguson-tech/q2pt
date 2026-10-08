@@ -805,7 +805,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 	px.albedo[kDiffuse][i] = kd * tint;
 	px.albedo[kSpecular][i] = ks * tint;
 
-	// exact, so it skips the filters
+	// exact, so it skips the filters; the balls of light come with the map's lights below
 	const Lit flash = DirectFrameAll(sc, surf, rng);
 	// (the matte part has what the shine leaves here too, by the shine's
 	// share on the whole, which has no noise in it)
@@ -858,9 +858,9 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 			shine = Vec3();
 		const Vec3 left = Vec3(1, 1, 1) - shine;
 
-		const Lit direct = DirectWorld(sc, surf, rng, true);
-		c[kDiffuse] = left * direct.diffuse * (kInvPi * direct_on);
-		c[kSpecular] = Demodulate(direct.specular, spec_albedo) * direct_on;
+		const Lit direct = DirectWorld(sc, surf, rng, true), ball = DirectFrameBall(sc, surf, rng);
+		c[kDiffuse] = left * (direct.diffuse + ball.diffuse) * (kInvPi * direct_on);
+		c[kSpecular] = Demodulate(direct.specular + ball.specular, spec_albedo) * direct_on;
 		int followed[2] = {};		// rays the diffuse and the specular path were made of
 
 		if (bounces > 0 && indirect_on > 0.0f)
@@ -1506,9 +1506,20 @@ float TypicalLuminance(const CpuBackend *s)
 	return count ? (float)std::exp(sum / count) : 0.0f;
 }
 
+// How far over white a pixel counts as being for the glow, x being how far
+// it is: all of it up to half of most, and from there less and less of what
+// is left, never reaching most. No limit if most is not above 0.
+float BloomExcess(float x, float most)
+{
+	const float knee = most * 0.5f;
+	if (most <= 0.0f || x <= knee)
+		return x;
+	return knee + (most - knee) * (1.0f - std::exp(-(x - knee) / (most - knee)));
+}
+
 // Glow around what is brighter than the screen can show. Works on a half
 // size copy: the bright part is taken out, blurred widely, and added back.
-void Bloom(CpuBackend *s, float strength)
+void Bloom(CpuBackend *s, float strength, float most)
 {
 	const int rw = s->rw, rh = s->rh;
 	const int bw = std::max(1, rw / 2), bh = std::max(1, rh / 2);
@@ -1531,7 +1542,7 @@ void Bloom(CpuBackend *s, float strength)
 				const Vec3 c = s->hdr[(size_t)qy * rw + qx];
 				const float lum = Luminance(c);
 				if (lum > 1.0f)
-					sum += c * ((lum - 1.0f) / lum);
+					sum += c * (BloomExcess(lum - 1.0f, most) / lum);
 			}
 			a[(size_t)y * bw + x] = sum * 0.25f;
 		}
@@ -2062,7 +2073,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 			s->have_exposure = true;
 		}
 		if (view->bloom > 0.0f)
-			Bloom(s, view->bloom);
+			Bloom(s, view->bloom, view->bloom_max);
 	}
 	s->prev_time = view->time;
 

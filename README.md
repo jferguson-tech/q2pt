@@ -54,6 +54,11 @@ a second.*
   (rippled, reflecting and refracting) and simulated (a wave simulation per
   pool, with wakes from the player and whatever moves at the surface).
 * Fog and light shafts from single scattering along the view ray.
+* A ball of light to throw (**F**): a lamp behind six round steel plates. It
+  bounces, rolls down slopes, knocks into the others and comes to rest, and
+  lights wherever it is. The lamp itself is the light, as large and as bright
+  as it looks, so the shadows it casts are soft. Walk into one to kick it
+  along.
 * A denoiser (reprojected history and an edge-stopping spatial filter),
   temporal anti-aliasing that also upscales from a lower internal resolution,
   auto exposure, bloom and a choice of tone mapping.
@@ -248,6 +253,7 @@ Some console commands and variables:
 | `pt_reflections 0`-`2` | none, glass and water, every shiny surface |
 | `pt_water 0`-`2` | classic, realistic, simulated |
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
+| `pt_bloom_max` | the most that anything adds to the glow, in times white over white (4): up to half of it a bright thing adds all it has, then less and less, so that a lamp hundreds of times white glows like a strong lamp and does not drown the picture. `0` = no limit |
 | `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time |
 | `pt_reflection_history 0`-`1` | what mirrors and glass show is followed from frame to frame where it appears to be, behind the surface, rather than where the surface is; on unless set, for comparison |
 | `pt_filter 0`-`2`, `pt_filter_cycle` (**F7**) | the picture as the paths alone make it, noise and all: `0` every frame on its own, `1` the same but frames add up while you stand still, `2` (the default) blended over time and filtered |
@@ -272,6 +278,8 @@ Some console commands and variables:
 | `pt_material_delight 0`-`1` | how much of the light painted into a wall texture is taken out of its colours once it has been read as shape: `1` (the default) is all that was read, `0` leaves the colours as they are. Screens and lamps keep theirs |
 | `pt_material_cache 0`-`1` | keep the maps that were made in `baseq2\pt_cache`, so that a texture is read once only; on by default |
 | `pt_material_show <image>` | write a texture beside what was read from it, as a PNG in `baseq2\scrnshot`: its colours without the painted light, its height, normals, roughness, metal, and what it reflects head on. For example `pt_material_show textures/e1u1/metal1_1` or `pt_material_show models/monsters/soldier/skin` |
+| `throwlight [colour]` (**F**), `throwlight clear` | throw a ball of light: `warm`, `white`, `red`, `orange`, `yellow`, `green`, `cyan`, `blue` or `purple`, or the next of them in turn if none is named; `clear` takes back the ones you threw |
+| `lightball_max`, `lightball_brightness` | how many balls there may be at once before the oldest goes (6 unless set, at most 24), and how bright the next one thrown is (300; a rocket's light is 200) |
 | `screenshot`, `pt_screenshot [paths]` | the frame as shown, or rendered again at high quality |
 | `record <name>`, `stop` | record a demo (the game's own commands) |
 | `pt_render <demo> [fps] [paths] [start] [length]` | render a demo offline into `baseq2\render\<demo>\`; start and length, in seconds, pick a part of it |
@@ -379,12 +387,14 @@ were changed in 2026:
 | `client/console.c` | the console on a picture more than 2048 pixels wide |
 | `client/cl_main.c`, `client/client.h`, `client/keys.c`, `client/keys.h`, `client/vid.h` | mouse look by default; W, A, S and D do what the arrow keys do; hooks for offline demo rendering; `cl_maxfps` is 200 unless set, and is kept in the config |
 | `client/menu.c` | menu pages for the path tracing options and for rendering a demo; "reset defaults" keeps the WASD keys; the commands behind **F7**, **F11** and the number pad |
+| `game/g_cmds.c`, `g_local.h`, `g_phys.c`, `q_shared.h`; `client/cl_ents.c`, `client.h`, `menu.c` | the ball of light: the `throwlight` command and its key, a way of moving for what bounces and then rolls, and the turning and the light of a ball as the client draws it |
 | `client/snd_dma.c`, `snd_loc.h`, `snd_mem.c`, `snd_mix.c`, `sound.h` | 64-bit port; mixing the sound to a file in step with offline rendering |
 | `game/m_*.c`, `game/g_save.c` | braces round each row of the monster animation tables, the flash offsets and the save tables |
 | `game/g_ai.c`, `g_chase.c`, `g_combat.c`, `g_monster.c`, `g_spawn.c`, `g_target.c`, `p_hud.c`; `qcommon/cmd.c`, `cmodel.c`, `files.c`; `server/sv_ccmds.c`, `sv_ents.c`, `sv_main.c`, `sv_world.c`; `client/cl_cin.c`, `cl_ents.c`, `cl_fx.c`, `cl_parse.c`, `cl_tent.c`, `qmenu.c`; `ref_gl/gl_image.c`, `gl_light.c`, `gl_local.h`, `gl_mesh.c`, `gl_model.h`, `gl_rsurf.c`; `linux/glob.c`, `net_udp.c`, `q_shlinux.c`, `qgl_linux.c` | what gcc's `-Wall -Wextra` points out, so that the Linux build can treat every warning as an error: casts between signednesses, dead variables, missing returns, defaults and braces, checked reads of save and pak files |
 
 New beside them: `CMakeLists.txt` and `build.bat` (the build), `win32/quake2.manifest`
 (what the program tells Windows about itself), `client/cl_render.c`,
+`game/g_lightball.c` (the ball of light),
 `ref_pt/` and `pt/`, and for Linux `linux/linux.cmake`, `linux/spv_inc.cmake`,
 `linux/sys_sdl.c`, `linux/vid_sdl.c`, `linux/snd_sdl.c` and `linux/gl_sdl.c`. The full list is `git diff --name-status` between the first
 commit and `main`.

@@ -118,7 +118,7 @@ struct FrameBlock
 	int32_t	out_size[4];
 	float	open_origin[4], open_forward[4], open_right[4], open_up[4];	// motion blur: the eye as the shutter opened; open_origin[3]: there is blur
 	int32_t	held[4];		// first triangle of the frame that the eye carries, how many; [2]: reflections are followed where they appear to be
-	float	painted[4];		// [0]: what a metal painted dark reflects, see pt_view_t's metal_colour
+	float	painted[4];		// [0]: what a metal painted dark reflects, see pt_view_t's metal_colour; [1]: bloom_max
 };
 
 // one triangle, one material and one light as the shaders read them (std430)
@@ -155,7 +155,8 @@ struct GpuLight
 	float		dir[3];
 	float		cone_cos;
 	int32_t		style;
-	int32_t		pad[3];
+	float		radius;
+	int32_t		pad[2];
 };
 
 const uint32_t kBitEmissive = 1, kBitSampled = 2;	// GpuMaterial::bits
@@ -2215,6 +2216,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 			lights[i].origin[a] = scene->lights[i].origin[a];
 			lights[i].emission[a] = scene->lights[i].intensity[a];
 		}
+		lights[i].radius = std::max(scene->lights[i].radius, 0.0f);
 	}
 	if (num_lights)
 		hash = HashBytes(scene->lights, num_lights * sizeof(pt_point_light_t), hash);
@@ -2378,6 +2380,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.settings2[2] = paths;
 	f.settings2[3] = view->debug;
 	f.painted[0] = std::max(0.0f, view->metal_colour);
+	f.painted[1] = std::max(0.0f, view->bloom_max);
 
 	s->exposure_used = view->debug ? 1.0f : view->exposure * (view->auto_exposure ? s->auto_exposure : 1.0f);
 	f.medium[3] = s->exposure_used;

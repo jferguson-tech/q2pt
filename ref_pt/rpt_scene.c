@@ -46,7 +46,10 @@ static int				s_numtris, s_maxtris;
 static pt_material_t	*s_materials;
 static int				s_nummaterials, s_maxmaterials;
 
-static pt_point_light_t	s_lights[MAX_DLIGHTS];
+// the balls of light's own lights come first, then the client's
+#define	MAX_BALL_LIGHTS	32
+static pt_point_light_t	s_lights[MAX_BALL_LIGHTS + MAX_DLIGHTS];
+static int				s_numballlights;
 
 // world material index -> this frame's material index
 static int				s_worldremap[MAX_MAP_TEXINFO];
@@ -586,6 +589,200 @@ static void S_AddBeam (entity_t *e)
 	}
 }
 
+/*
+=============
+A ball of light (RF_LIGHTBALL): a lamp in a cage. The lamp is a glowing ball
+and is itself the light: the scene is given a light of its size and as
+bright as it is, and its triangles are what is seen of it. The light the
+client puts at its middle, for the renderers that know no better, is left
+out. On the lamp sit six round steel plates, one where each of its axes
+comes out, and the light comes out between them. A lamp that size gets
+round plates that close to it, so their shadows are soft and soon gone; what
+the plates do is keep in the third of its light that falls on them. However
+it lies, they never shut off a whole ring of directions, so that the floor
+it rests on is always lit some way round.
+=============
+*/
+#define	BALL_LAMP_DIV	6			// the lamp: squares along the edge of each face of the cube it is blown up from
+#define	BALL_LAMP_SIZE	0.9f		// its radius, of the whole ball's
+#define	BALL_LAMP_SLACK	1.02f		// the light is this much larger than the triangles drawn of it, which
+									// must not get in the way of a ray that ends on it
+#define	BALL_PLATE_ANGLE	27.0f	// a plate reaches this many degrees from its axis
+#define	BALL_PLATE_RINGS	3
+#define	BALL_PLATE_SIDES	20
+
+static float	s_balllamp[BALL_LAMP_DIV * BALL_LAMP_DIV * 12][3][3];
+static float	s_ballplate[6 * BALL_PLATE_SIDES * (BALL_PLATE_RINGS * 2 - 1)][3][3];
+static int		s_numballlamp, s_numballplate;
+
+// adds a triangle of a unit sphere, wound counter clockwise seen from outside
+static void S_BallTri (float tris[][3][3], int *count, const float *a, const float *b, const float *c)
+{
+	vec3_t	d1, d2, normal;
+
+	VectorSubtract (b, a, d1);
+	VectorSubtract (c, a, d2);
+	CrossProduct (d1, d2, normal);
+	VectorCopy (a, tris[*count][0]);
+	if (DotProduct (normal, a) >= 0)
+	{
+		VectorCopy (b, tris[*count][1]);
+		VectorCopy (c, tris[*count][2]);
+	}
+	else
+	{
+		VectorCopy (c, tris[*count][1]);
+		VectorCopy (b, tris[*count][2]);
+	}
+	(*count)++;
+}
+
+// a whole unit sphere: a cube blown up, each face divided evenly by angle
+static int S_BallLamp (float tris[][3][3])
+{
+	float	corner[2][2][3], a, b, len;
+	int		face, i, j, k, m, axis, sign, count;
+
+	count = 0;
+	for (face=0 ; face<6 ; face++)
+	{
+		axis = face >> 1;
+		sign = (face & 1) ? -1 : 1;
+		for (i=0 ; i<BALL_LAMP_DIV ; i++)
+		{
+			for (j=0 ; j<BALL_LAMP_DIV ; j++)
+			{
+				for (k=0 ; k<2 ; k++)
+				{
+					for (m=0 ; m<2 ; m++)
+					{
+						a = tan ((((float)(i + k) / BALL_LAMP_DIV) - 0.5f) * (M_PI / 2));
+						b = tan ((((float)(j + m) / BALL_LAMP_DIV) - 0.5f) * (M_PI / 2));
+						len = 1 / sqrt (1 + a * a + b * b);
+						corner[k][m][axis] = sign * len;
+						corner[k][m][(axis + 1) % 3] = a * len;
+						corner[k][m][(axis + 2) % 3] = b * len;
+					}
+				}
+				S_BallTri (tris, &count, corner[0][0], corner[1][0], corner[1][1]);
+				S_BallTri (tris, &count, corner[0][0], corner[1][1], corner[0][1]);
+			}
+		}
+	}
+	return count;
+}
+
+// the six plates: each a round piece of the unit sphere about one end of an axis
+static int S_BallPlates (float tris[][3][3])
+{
+	float	ring[BALL_PLATE_RINGS + 1][BALL_PLATE_SIDES + 1][3], theta, phi;
+	int		face, r, i, axis, sign, count;
+
+	count = 0;
+	for (face=0 ; face<6 ; face++)
+	{
+		axis = face >> 1;
+		sign = (face & 1) ? -1 : 1;
+		for (r=0 ; r<=BALL_PLATE_RINGS ; r++)
+		{
+			theta = r * (BALL_PLATE_ANGLE * M_PI / 180 / BALL_PLATE_RINGS);
+			for (i=0 ; i<=BALL_PLATE_SIDES ; i++)
+			{
+				phi = (i % BALL_PLATE_SIDES) * (2 * M_PI / BALL_PLATE_SIDES);
+				ring[r][i][axis] = sign * cos (theta);
+				ring[r][i][(axis + 1) % 3] = sin (theta) * cos (phi);
+				ring[r][i][(axis + 2) % 3] = sin (theta) * sin (phi);
+			}
+		}
+		for (i=0 ; i<BALL_PLATE_SIDES ; i++)
+		{
+			S_BallTri (tris, &count, ring[0][0], ring[1][i], ring[1][i + 1]);
+			for (r=1 ; r<BALL_PLATE_RINGS ; r++)
+			{
+				S_BallTri (tris, &count, ring[r][i], ring[r + 1][i], ring[r + 1][i + 1]);
+				S_BallTri (tris, &count, ring[r][i], ring[r + 1][i + 1], ring[r][i + 1]);
+			}
+		}
+	}
+	return count;
+}
+
+static void S_BallTriangles (float tris[][3][3], int count, float radius, int material,
+	vec3_t origin, vec3_t axis[3], entstate_t *before)
+{
+	static vec3_t	nowhere;
+	vec3_t			p[3], n[3], was[3], local;
+	int				i, j;
+
+	for (i=0 ; i<count ; i++)
+	{
+		for (j=0 ; j<3 ; j++)
+		{
+			VectorScale (tris[i][j], radius, local);
+			S_Transform (local, origin, axis, p[j]);
+			S_Transform (tris[i][j], nowhere, axis, n[j]);
+			if (before)
+				S_Transform (local, before->origin, before->axis, was[j]);
+		}
+		S_Triangle (p[0], p[1], p[2], 0, 0, 0, 0, 0, 0, material);
+		S_Normals (n[0], n[1], n[2]);
+		if (before)
+			S_Prev (was[0], was[1], was[2]);
+	}
+}
+
+static void S_AddBall (entity_t *e, int index)
+{
+	pt_material_t	mat;
+	pt_point_light_t	*light;
+	entstate_t		*before;
+	vec3_t			axis[3];
+	unsigned		colour = (unsigned)e->lightstyle;
+	float			radius, intensity, radiance[3];
+	int				i;
+
+	if (!s_numballlamp)
+	{
+		s_numballlamp = S_BallLamp (s_balllamp);
+		s_numballplate = S_BallPlates (s_ballplate);
+	}
+
+	S_EntityAxis (e, false, axis);
+	before = S_Before (index, e, e->origin, axis);
+
+	// as bright as the client's light of the same strength: see V_AddLight in CL_LightBall
+	radius = LIGHTBALL_RADIUS * BALL_LAMP_SIZE * BALL_LAMP_SLACK;
+	intensity = POINT_LIGHT_INTENSITY ((float)((colour >> 24) * 2));
+	if (s_numballlights == MAX_BALL_LIGHTS)
+		intensity = 0;		// no room for its light, so it had better not look lit
+	for (i=0 ; i<3 ; i++)
+		radiance[i] = ((colour >> (i * 8)) & 255) * (1.0f / 255) * intensity / (M_PI * radius * radius);
+
+	if (intensity > 0)
+	{
+		light = &s_lights[s_numballlights++];
+		memset (light, 0, sizeof(*light));
+		VectorCopy (e->origin, light->origin);
+		for (i=0 ; i<3 ; i++)
+			light->intensity[i] = radiance[i] * (M_PI * radius * radius);
+		light->radius = radius;
+	}
+
+	S_BallTriangles (s_balllamp, s_numballlamp, LIGHTBALL_RADIUS * BALL_LAMP_SIZE,
+		S_Material (-1, radiance[0], radiance[1], radiance[2], 1, PT_MAT_BLACK|PT_MAT_SAMPLED),
+		e->origin, axis, before);
+
+	// polished steel
+	memset (&mat, 0, sizeof(mat));
+	mat.texture = -1;
+	mat.alpha = 1;
+	mat.roughness = 0.25f;
+	mat.metallic = 1;
+	mat.normal_texture = -1;
+	mat.anim_next = -1;
+	S_BallTriangles (s_ballplate, s_numballplate, LIGHTBALL_RADIUS, S_FindMaterial (&mat), e->origin, axis, before);
+}
+
 #define	DOT_SIZE	16
 
 static int	s_dottexture = -1;		// a white disc on nothing, for particles
@@ -700,6 +897,7 @@ void R_BuildScene (refdef_t *fd, pt_scene_t *scene)
 	s_framecount++;
 	s_numtris = 0;
 	s_nummaterials = 0;
+	s_numballlights = 0;
 
 	AngleVectors (fd->viewangles, forward, right, up);
 
@@ -710,6 +908,12 @@ void R_BuildScene (refdef_t *fd, pt_scene_t *scene)
 		if (e->flags & RF_BEAM)
 		{
 			S_AddBeam (e);
+			continue;
+		}
+
+		if (e->flags & RF_LIGHTBALL)
+		{	// drawn here, whatever model stands in for it elsewhere
+			S_AddBall (e, i);
 			continue;
 		}
 
@@ -738,11 +942,18 @@ void R_BuildScene (refdef_t *fd, pt_scene_t *scene)
 
 	S_AddParticles (fd, forward, right, up);
 
-	numlights = 0;
-	for (i=0 ; i<fd->num_dlights && numlights<MAX_DLIGHTS ; i++)
+	numlights = s_numballlights;
+	for (i=0 ; i<fd->num_dlights && numlights<MAX_BALL_LIGHTS+MAX_DLIGHTS ; i++)
 	{
 		if (fd->dlights[i].intensity <= 0)
 			continue;
+		// a ball of light is its own light: not the client's as well
+		for (j=0 ; j<s_numballlights ; j++)
+			if (VectorCompare (fd->dlights[i].origin, s_lights[j].origin))
+				break;
+		if (j < s_numballlights)
+			continue;
+		memset (&s_lights[numlights], 0, sizeof(s_lights[0]));
 		for (j=0 ; j<3 ; j++)
 		{
 			s_lights[numlights].origin[j] = fd->dlights[i].origin[j];
