@@ -203,7 +203,7 @@ void R_InitSettings (void)
 	pt_water_cell = ri.Cvar_Get ("pt_water_cell", "8", CVAR_ARCHIVE);
 	pt_water_caustics = ri.Cvar_Get ("pt_water_caustics", "0", CVAR_ARCHIVE);
 	pt_water_damping = ri.Cvar_Get ("pt_water_damping", "1", CVAR_ARCHIVE);
-	pt_water_height = ri.Cvar_Get ("pt_water_height", "1", CVAR_ARCHIVE);
+	pt_water_height = ri.Cvar_Get ("pt_water_height", "2", CVAR_ARCHIVE);
 
 	pt_bump = ri.Cvar_Get ("pt_bump", "1", CVAR_ARCHIVE);
 	pt_roughness = ri.Cvar_Get ("pt_roughness", "1", CVAR_ARCHIVE);
