@@ -54,10 +54,13 @@ void main()
 		else if (debug == 5) c = extra;
 		else if (debug == 6) c = surface.xyz * 0.25 + 0.25;
 		else if (debug == 7) c = vec3(min(diffuse.a, 32.0) / 64.0);
+		else if (debug == 8) c = vec3(min(layers.a, 32.0) / 64.0);
 		else if (debug == 10) c = vec3(surface.a * 0.002);
 	}
 	if (fr.bases.x == VIEW_BOUNCES)
 		c = BounceColour(diffuse.r);
+	else if (fr.bases.x == VIEW_COST)
+		c = CostColour(diffuse.r);
 	c *= exposure;
 
 	// readings for the exposure, from pixels spread over the picture

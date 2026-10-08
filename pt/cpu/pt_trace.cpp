@@ -36,6 +36,7 @@ bool IsHole(const Tri &t, float u, float v)
 // it, which gathers the light in some places and thins it in others.
 float Visible(const Scene &sc, const Surface &s, Vec3 target, Rng &rng)
 {
+	rng.rays++;
 	Ray shadow;
 	shadow.o = s.p + s.ng * kRayOffset;
 	shadow.d = target - shadow.o;
@@ -243,6 +244,7 @@ Vec3 ClampSample(Vec3 c, float max_luminance)
 
 bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &hit, const Tri *&tri, HeldRays held)
 {
+	rng.rays++;
 	for (int skips = 0; ; skips++)
 	{
 		const auto in_world = [&](uint32_t t, float, float) { return !BackOfGlass(sc.world->tris[t], ray.d); };
@@ -394,13 +396,27 @@ Vec3 SurfaceChannel(int mode, const Surface &s)
 	}
 }
 
+// black, blue, green, yellow and red at 0 to 4, cyan between blue and green
+static Vec3 CountColour(float at)
+{
+	static const Vec3 ramp[] = {Vec3(0, 0, 0), Vec3(0, 0, 1), Vec3(0, 1, 1), Vec3(0, 1, 0), Vec3(1, 1, 0), Vec3(1, 0, 0)};
+	// cyan is a stop of its own, half way from 1 to 2
+	at = std::min(std::max(at, 0.0f), 4.0f);
+	const float stop = at < 1.0f ? at : at < 2.0f ? 1.0f + (at - 1.0f) * 2.0f : at + 1.0f;
+	const int below = std::min((int)stop, 4);
+	return ramp[below] + (ramp[below + 1] - ramp[below]) * (stop - (float)below);
+}
+
 Vec3 BounceColour(float bounces)
 {
-	static const Vec3 ramp[] = {Vec3(0, 0, 0), Vec3(0, 0, 1), Vec3(0, 1, 1), Vec3(0, 1, 0),
-		Vec3(1, 1, 0), Vec3(1, 0, 0), Vec3(1, 0, 1), Vec3(1, 1, 1)};
-	const float at = std::min(std::max(bounces, 0.0f), 7.0f);
-	const int below = std::min((int)at, 6);
-	return ramp[below] + (ramp[below + 1] - ramp[below]) * (at - (float)below);
+	return CountColour(bounces);
+}
+
+Vec3 CostColour(float rays)
+{
+	// a colour for each doubling from PT_COST_BLUE up, and a fade to black below it
+	const float at = rays / PT_COST_BLUE;
+	return CountColour(at < 1.0f ? at : 1.0f + std::log2(at));
 }
 
 void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth)
@@ -1000,39 +1016,52 @@ Vec3 Radiance(const Scene &sc, Ray ray, Rng &rng, bool camera, bool count_emitte
 		if (ld + ls <= 0.0f)
 			return radiance;		// reflects nothing
 
+		// The shine takes its share of the light first and the matte part
+		// has what is left, so the two together never reflect more than
+		// falls on them. The share is that of one way the light could be
+		// mirrored, drawn here and followed below if the path goes that way.
+		Vec3 mirrored, shine;
+		if (ls <= 0.0f || !SampleSpecular(s, rng, mirrored, shine))
+			shine = Vec3();
+		const Vec3 matte = s.kd * (Vec3(1, 1, 1) - shine);
+
 		const Lit world = DirectWorld(sc, s, rng, false), frame = DirectFrameOne(sc, s, rng);
-		radiance += throughput * (s.kd * (world.diffuse + frame.diffuse) * kInvPi + world.specular + frame.specular);
+		radiance += throughput * (matte * (world.diffuse + frame.diffuse) * kInvPi + world.specular + frame.specular);
 
 		if (depth >= max_bounces)
 			return furnace ? radiance + throughput * PT_FURNACE_LIGHT : radiance;
 
-		// continue through one lobe, chosen by how much each reflects
-		float pick_spec = ls / (ld + ls);
-		if (ld > 0.0f && ls > 0.0f)
-			pick_spec = std::min(0.95f, std::max(0.05f, pick_spec));
+		Vec3 wi;
 		if (sc.reflections < 2)
 		{
-			// shiny surfaces still show highlights from lights, but nothing is
-			// followed off them
+			// Shiny surfaces still show highlights from lights, but nothing
+			// is followed off them: the matte part stands in for the shine,
+			// and carries its share too.
 			if (ld <= 0.0f)
 				return radiance;
-			pick_spec = 0.0f;
-		}
-
-		Vec3 wi;
-		if (rng.Float() < pick_spec)
-		{
-			Vec3 weight;
-			if (!SampleSpecular(s, rng, wi, weight))
-				return radiance;
-			throughput *= weight * (1.0f / pick_spec);
-			count_emitters = !s.light_sampled_spec;
+			wi = SampleDiffuse(s, rng);
+			throughput *= s.kd;
+			count_emitters = false;
 		}
 		else
 		{
-			wi = SampleDiffuse(s, rng);
-			throughput *= s.kd * (1.0f / (1.0f - pick_spec));
-			count_emitters = false;
+			// continue through one lobe, chosen by how much each reflects
+			const float lm = Luminance(matte), lh = Luminance(shine);
+			if (lm + lh <= 0.0f)
+				return radiance;
+			const float pick_spec = lh / (lm + lh);
+			if (rng.Float() < pick_spec)
+			{
+				wi = mirrored;
+				throughput *= shine * (1.0f / pick_spec);
+				count_emitters = !s.light_sampled_spec;
+			}
+			else
+			{
+				wi = SampleDiffuse(s, rng);
+				throughput *= matte * (1.0f / (1.0f - pick_spec));
+				count_emitters = false;
+			}
 		}
 
 		// paths that carry little are ended at random, the rest made to count for them
