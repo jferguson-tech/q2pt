@@ -1213,39 +1213,52 @@ vec3 Radiance(vec3 origin, vec3 dir, bool count_emitters, int depth, int max_bou
 		if (ld + ls <= 0.0)
 			return radiance;		// reflects nothing
 
+		// The shine takes its share of the light first and the matte part
+		// has what is left, so the two together never reflect more than
+		// falls on them. The share is that of one way the light could be
+		// mirrored, drawn here and followed below if the path goes that way.
+		vec3 mirrored, shine;
+		if (ls <= 0.0 || !SampleSpecular(s, mirrored, shine))
+			shine = vec3(0.0);
+		const vec3 matte = s.kd * (1.0 - shine);
+
 		const Lit world = DirectWorld(s, false), frame = DirectFrameOne(s);
-		radiance += throughput * (s.kd * (world.diffuse + frame.diffuse) * INV_PI + world.specular + frame.specular);
+		radiance += throughput * (matte * (world.diffuse + frame.diffuse) * INV_PI + world.specular + frame.specular);
 
 		if (depth >= max_bounces)
 			return furnace ? radiance + throughput * FURNACE_LIGHT : radiance;
 
-		// continue through one lobe, chosen by how much each reflects
-		float pick_spec = ls / (ld + ls);
-		if (ld > 0.0 && ls > 0.0)
-			pick_spec = clamp(pick_spec, 0.05, 0.95);
+		vec3 wi;
 		if (fr.settings.z < 2)
 		{
-			// shiny surfaces still show highlights from lights, but nothing is
-			// followed off them
+			// Shiny surfaces still show highlights from lights, but nothing
+			// is followed off them: the matte part stands in for the shine,
+			// and carries its share too.
 			if (ld <= 0.0)
 				return radiance;
-			pick_spec = 0.0;
-		}
-
-		vec3 wi;
-		if (Rand() < pick_spec)
-		{
-			vec3 weight;
-			if (!SampleSpecular(s, wi, weight))
-				return radiance;
-			throughput *= weight * (1.0 / pick_spec);
-			count_emitters = !s.light_sampled_spec;
+			wi = SampleDiffuse(s);
+			throughput *= s.kd;
+			count_emitters = false;
 		}
 		else
 		{
-			wi = SampleDiffuse(s);
-			throughput *= s.kd * (1.0 / (1.0 - pick_spec));
-			count_emitters = false;
+			// continue through one lobe, chosen by how much each reflects
+			const float lm = Luminance(matte), lh = Luminance(shine);
+			if (lm + lh <= 0.0)
+				return radiance;
+			const float pick_spec = lh / (lm + lh);
+			if (Rand() < pick_spec)
+			{
+				wi = mirrored;
+				throughput *= shine * (1.0 / pick_spec);
+				count_emitters = !s.light_sampled_spec;
+			}
+			else
+			{
+				wi = SampleDiffuse(s);
+				throughput *= matte * (1.0 / (1.0 - pick_spec));
+				count_emitters = false;
+			}
 		}
 
 		// paths that carry little are ended at random, the rest made to count for them

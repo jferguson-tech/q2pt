@@ -1520,7 +1520,12 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 	{
 		Target &t = s->targets[i];
 		const bool positions = i == kSeen || i == kMirror || i == kMirror + 1 || i == kOver;
-		const VkFormat format = positions ? VK_FORMAT_R32G32B32A32_SFLOAT
+		// The light gathered over frames is a running average, each frame
+		// moving it by a small part of the difference. At half precision
+		// the smallest of those steps round away and the others do not, and
+		// light is lost: so these are kept at full precision.
+		const bool gathered = i >= kKept && i < kKept + 6;
+		const VkFormat format = (positions || gathered) ? VK_FORMAT_R32G32B32A32_SFLOAT
 			: (i == kPicture ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R16G16B16A16_SFLOAT);
 
 		VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
