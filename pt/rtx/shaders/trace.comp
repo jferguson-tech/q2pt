@@ -194,7 +194,7 @@ void main()
 				imageStore(img_mirror[now], pixel, vec4(0.0, 0.0, 0.0, 3.0));
 				imageStore(img_over, pixel, vec4(0.0));
 				imageStore(img_albedo[0], pixel, vec4(0.0));
-				imageStore(img_albedo[1], pixel, vec4(0.0));
+				imageStore(img_albedo[1], pixel, vec4(0.0, 0.0, 0.0, surf.roughness));
 				imageStore(img_noisy[0], pixel, vec4(0.0));
 				imageStore(img_noisy[1], pixel, vec4(0.0));
 				imageStore(img_noisy[2], pixel, vec4(0.0));
@@ -323,7 +323,7 @@ void main()
 		imageStore(img_mirror[now], pixel, vec4(0.0, 0.0, 0.0, (have_layer ? layer_roughness : 1.0) + 2.0));
 		imageStore(img_over, pixel, vec4(over_pos, have_layer ? 1.0 : 0.0));
 		imageStore(img_albedo[0], pixel, vec4(0.0));
-		imageStore(img_albedo[1], pixel, vec4(0.0));
+		imageStore(img_albedo[1], pixel, vec4(0.0, 0.0, 0.0, have_layer ? layer_roughness : 1.0));
 		imageStore(img_noisy[0], pixel, view_mode == VIEW_COST ? vec4(vec3(float(rays_traced)), 0.0) : vec4(0.0));
 		imageStore(img_noisy[1], pixel, vec4(0.0));
 		imageStore(img_noisy[2], pixel, vec4(over, 0.0));
@@ -455,7 +455,7 @@ void main()
 	imageStore(img_mirror[now], pixel, vec4(spec_pos, surf.roughness + (spec_ok ? 0.0 : 2.0)));
 	imageStore(img_over, pixel, vec4(over_pos, have_layer ? 1.0 : 0.0));
 	imageStore(img_albedo[0], pixel, vec4(kd, 1.0));
-	imageStore(img_albedo[1], pixel, vec4(ks, 1.0));
+	imageStore(img_albedo[1], pixel, vec4(ks, surf.roughness));
 	// how much the paths disagreed among themselves, the first measure of
 	// the noise in this pixel; one path alone can say nothing
 	const float inv_paths = 1.0 / float(paths);

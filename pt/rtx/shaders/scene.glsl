@@ -156,7 +156,7 @@ layout(std430, set = 0, binding = 16) readonly buffer FramePrev { float v[]; } f
 // something, one is this frame's and the other the last one's, in turn.
 layout(set = 0, binding = 17, rgba16f) uniform image2D img_surface[2];	// shading normal, distance (negative: none)
 layout(set = 0, binding = 18, rgba32f) uniform image2D img_seen;		// where to look for it in the last frame; roughness
-layout(set = 0, binding = 19, rgba16f) uniform image2D img_albedo[2];	// what the diffuse and specular light are multiplied by
+layout(set = 0, binding = 19, rgba16f) uniform image2D img_albedo[2];	// what the diffuse and specular light are multiplied by; [1].a: the surface's roughness, as img_seen has it but cheaper to read
 layout(set = 0, binding = 20, rgba16f) uniform image2D img_noisy[3];	// this frame's diffuse, specular and layer light; a: how much the pixel's paths disagreed, as the variance of their luminance
 layout(set = 0, binding = 21, rgba16f) uniform image2D img_extra;		// light that needs no filtering
 layout(set = 0, binding = 22, rgba16f) uniform image2D img_kept[6];		// the three gathered over time; a: frames

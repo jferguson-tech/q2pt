@@ -72,7 +72,7 @@ void main()
 	// itself and must not be smeared; so is what the layers in front
 	// reflect, where there are any, while the glow of the air alone, which
 	// is all the channel holds elsewhere, can take a lot of smoothing.
-	const float roughness = imageLoad(img_seen, pixel).a;
+	const float roughness = imageLoad(img_albedo[1], pixel).a;
 	const bool layers = imageLoad(img_over, pixel).w != 0.0;
 	float inv_tolerance[3];
 	inv_tolerance[0] = 1.0 / (4.0 * sqrt(variance[0]) + 1.0e-3);
@@ -105,7 +105,7 @@ void main()
 			if (w <= 1.0e-5)
 				continue;
 			// a reflection in a surface as smooth is a different picture
-			const float wr = abs(imageLoad(img_seen, q).a - roughness) * 8.0;
+			const float wr = abs(imageLoad(img_albedo[1], q).a - roughness) * 8.0;
 
 			for (int k = 0; k < 3; k++)
 			{
