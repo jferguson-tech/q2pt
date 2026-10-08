@@ -340,7 +340,9 @@ void main()
 
 	// exact, so it skips the filters
 	const Lit flash = DirectFrameAll(surf);
-	vec3 extra = front_add + (surf.kd * flash.diffuse * INV_PI + flash.specular) * tint * through;
+	// (the matte part has what the shine leaves here too, by the shine's
+	// share on the whole, which has no noise in it)
+	vec3 extra = front_add + (surf.kd * (1.0 - SpecularAlbedo(surf)) * flash.diffuse * INV_PI + flash.specular) * tint * through;
 	if ((surf.mat.bits & BIT_EMISSIVE) != 0u && surf.front)
 		extra += Emitted(surf, true) * tint * through;
 	extra *= direct_on;
@@ -372,8 +374,16 @@ void main()
 	float spec_reach = -1.0;		// how far the last specular path went before its first hit
 	for (int k = 0; k < paths; k++)
 	{
+		// The shine takes its share of the light first and the matte part
+		// has what is left, so the two together never reflect more than
+		// falls on them: see Radiance. The share is that of one way the
+		// light could be mirrored, which is the way followed below.
+		vec3 mirrored, shine;
+		if (!has_specular || !SampleSpecular(surf, mirrored, shine))
+			shine = vec3(0.0);
+
 		const Lit direct = DirectWorld(surf, true);
-		vec3 d = direct.diffuse * (INV_PI * direct_on);
+		vec3 d = (1.0 - shine) * direct.diffuse * (INV_PI * direct_on);
 		vec3 sp = direct.specular / spec_albedo * direct_on;
 		int followed_d = 0, followed_s = 0;		// rays the diffuse and the specular path were made of
 
@@ -381,23 +391,27 @@ void main()
 		{
 			const vec3 from = surf.p + surf.ng * RAY_OFFSET;
 			float reached;
+			// The reflection is followed only some of the time, and counts
+			// for more when it is. The matte part gives up as much as the
+			// reflection counts for, and nothing when it is not followed, so
+			// that the two still add up; the chance is never less than the
+			// share, or the matte part would have to give up more than it has.
+			const float chance = spec_chance > 0.0 ? min(1.0, max(spec_chance, MaxComponent(shine))) : 0.0;
+			const bool follow = chance > 0.0 && Rand() < chance && MaxComponent(shine) > 0.0;
 			if (has_diffuse)
 			{
+				const vec3 kept = follow ? 1.0 - shine * (1.0 / chance) : vec3(1.0);
 				rays_followed = 0;
-				d += Radiance(from, SampleDiffuse(surf), false, 1, bounces, reached);
+				d += kept * Radiance(from, SampleDiffuse(surf), false, 1, bounces, reached);
 				followed_d = rays_followed;
 			}
-			if (spec_chance > 0.0 && Rand() < spec_chance)
+			if (follow)
 			{
-				vec3 wi, weight;
-				if (SampleSpecular(surf, wi, weight))
-				{
-					rays_followed = 0;
-					sp += weight * Radiance(from, wi, !surf.light_sampled_spec, 1, fr.settings.w, reached)
-						/ spec_albedo * (1.0 / spec_chance);
-					followed_s = rays_followed;
-					spec_reach = reached;
-				}
+				rays_followed = 0;
+				sp += shine * Radiance(from, mirrored, !surf.light_sampled_spec, 1, fr.settings.w, reached)
+					/ spec_albedo * (1.0 / chance);
+				followed_s = rays_followed;
+				spec_reach = reached;
 			}
 		}
 		else if (furnace)
