@@ -147,9 +147,12 @@ typedef struct pt_scene_s
 } pt_scene_t;
 
 /*
-Ways of drawing the scene with its materials overridden, for checking a
-renderer and for pictures. Lights are as they are, and what glows keeps its
-glow. The sky, glass, and what only emits (PT_MAT_BLACK) are left alone.
+Ways of drawing the scene other than as it is, for checking a renderer and
+for pictures.
+
+Clay and mirror override the materials. Lights are as they are, and what
+glows keeps its glow. The sky, glass, and what only emits (PT_MAT_BLACK) are
+left alone.
 */
 #define PT_VIEW_NORMAL	0
 #define PT_VIEW_CLAY	1	/* every surface matte mid grey, fully rough, not metal,
@@ -157,6 +160,49 @@ glow. The sky, glass, and what only emits (PT_MAT_BLACK) are left alone.
 						   they are solid, though light still passes them. */
 #define PT_VIEW_MIRROR	2	/* every surface as smooth as the backend can make
 						   one; its colour and whether it is metal are kept */
+/*
+The white furnace: a test of whether paths keep the light they carry. Every
+surface, glass and liquids too, is matte and reflects all the light that
+falls on it; no light or glow is lit, what only emits is not there, and a
+path that reaches the sky, leaves the map or runs out of bounces brings back
+PT_FURNACE_LIGHT. A tracer that neither makes nor loses light draws every
+pixel at that level; brighter is light made, darker is light lost.
+*/
+#define PT_VIEW_FURNACE	3
+#define PT_FURNACE_LIGHT	0.5f
+#define PT_VIEW_LIGHTING	4	/* the light alone: what the eye sees is white, of
+							   the material it is, lit by the scene as it is */
+/* Light that reaches what the eye sees straight from a light, the sky or the
+   air's own glow, and what glows seen directly; and all the rest, which has
+   bounced or been mirrored on the way. The two add up to the picture. */
+#define PT_VIEW_DIRECT		5
+#define PT_VIEW_INDIRECT	6
+/* One thing known of the first surface the eye meets, glass included, unlit;
+   the sky is black. But for the base colour, the number is what is shown:
+   after the display's own curve a value of 0.5 is a pixel of 128. */
+#define PT_VIEW_BASE_COLOUR	7
+#define PT_VIEW_NORMALS		8	/* the shading normal, in the world, 0.5 + 0.5 n */
+#define PT_VIEW_ROUGHNESS	9
+#define PT_VIEW_METAL		10
+#define PT_VIEW_GLOW		11	/* what it emits, held to 1 */
+/* How many times the paths from each pixel bounced, on average, after the
+   first surface: black none, blue 1, green 2 (cyan between), yellow 3, red 4
+   or more, whatever the settings. Under 1, a blue darker than blue, is a
+   pixel some of whose paths did not bounce at all: what reflects nothing,
+   such as a light, mixed with what does. */
+#define PT_VIEW_BOUNCES		12
+/* What the pixel cost: every ray traced for it this frame, the eye's, the
+   bounces' and those sent to lights to see whether they are in shadow, all
+   its samples together. Each colour is twice the one before: black none,
+   blue PT_COST_BLUE, green twice that (cyan between), yellow four times,
+   red eight times or more, whatever the settings. */
+#define PT_VIEW_COST		13
+#define PT_COST_BLUE		4.0f
+#define PT_NUM_VIEWS		14
+/* The furnace, the single values and the bounce count are numbers to be
+   read off the picture: send exposure 1, no auto exposure, the clipped tone
+   curve, no bloom and no fog with them. */
+#define PT_VIEW_IS_MEASURE(mode)	((mode) == PT_VIEW_FURNACE || (mode) >= PT_VIEW_BASE_COLOUR)
 
 /* one 3D view */
 typedef struct pt_view_s
@@ -200,7 +246,7 @@ typedef struct pt_view_s
 						   picture filtered. 1: neither; a frame stands alone, except
 						   that while the eye is at rest frames add up. 0: neither, ever */
 	int		debug;			/* 0 = the picture; otherwise one part of it, see pt_debug */
-	int		view_mode;		/* PT_VIEW_: the scene drawn with its materials overridden.
+	int		view_mode;		/* PT_VIEW_: the scene drawn some other way than as it is.
 						   Send restart when it changes, or the old picture
 						   bleeds into the new one. */
 
@@ -222,6 +268,8 @@ typedef struct pt_view_s
 	int		texture_filter;		/* smooth textures where seen directly */
 	int		denoise;			/* passes of the spatial filter, 0-4 */
 	int		history;			/* frames of lighting kept while things change */
+	int		reflection_history;	/* what mirrors show is followed where it appears to
+								   be, not where the surface is; 0 = where the surface is */
 	int		threads;			/* 0 = all */
 	int		auto_exposure;		/* adapt exposure to the scene; exposure then
 								   scales the result */
