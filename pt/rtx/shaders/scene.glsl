@@ -131,7 +131,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	vec4	open_up;
 	ivec4	held;			// x: first triangle of the frame carried by the eye (the weapon in hand); y: how many; z: reflections are followed where they appear to be
 	vec4	painted;		// x: what a metal painted dark reflects, see pt_view_t's metal_colour; y: the most over white that adds to the glow, 0 = no limit; z: points along a view ray where the air's light is looked for; w: frames of it kept while things change
-	vec4	liquid;			// x: how far from level the waves of simulated liquids reach
+	vec4	liquid;			// x: how far from level the waves of simulated liquids reach; y: how readily what was gathered is let go where the light has changed, see change.comp
 } fr;
 
 // the map and what moves, each as three corners per triangle, what goes with
@@ -181,6 +181,23 @@ layout(set = 0, binding = 31, rgba32f) uniform image2D img_over;		// xyz: the sa
 // further. The mean and the mean square of the luminance, the frame's and the
 // last one's, in turn, like img_kept.
 layout(set = 0, binding = 32, rg32f) uniform image2D img_moments[6];
+// Where the light has changed, in blocks of 8 pixels: [0] to [2] each
+// channel's sums over a block, [3].x how far what was gathered there is to
+// be let go, 0 to 1, and .y how far apart the sums were. See change.comp.
+layout(set = 0, binding = 33, rgba32f) uniform image2D img_change[4];
+
+// how far what was gathered at a pixel is to be let go: the blocks' values,
+// smoothly from one block to the next
+float Changed(ivec2 pixel)
+{
+	const ivec2 blocks = (fr.size.xy + 7) / 8;
+	const vec2 at = (vec2(pixel) + 0.5) / 8.0 - 0.5;
+	const ivec2 b0 = ivec2(floor(at));
+	const vec2 a = at - vec2(b0);
+	const ivec2 lo = clamp(b0, ivec2(0), blocks - 1), hi = clamp(b0 + 1, ivec2(0), blocks - 1);
+	return mix(mix(imageLoad(img_change[3], lo).x, imageLoad(img_change[3], ivec2(hi.x, lo.y)).x, a.x),
+		mix(imageLoad(img_change[3], ivec2(lo.x, hi.y)).x, imageLoad(img_change[3], hi).x, a.x), a.y);
+}
 
 float Luminance(vec3 c)
 {

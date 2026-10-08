@@ -61,6 +61,7 @@ static cvar_t	*pt_fog;					// haze and light shafts
 static cvar_t	*pt_fog_density;
 static cvar_t	*pt_fog_samples;		// points along each view ray where the air's light is looked for
 static cvar_t	*pt_fog_history;		// frames of the air's light kept while things change
+static cvar_t	*pt_react;				// how readily kept light is let go where the light has changed, 0 = never
 static cvar_t	*pt_sky;				// sky brightness
 static cvar_t	*pt_lamp_glow;			// how bright lamp fixtures look to the eye
 static cvar_t	*pt_surface_light;		// scales the light from glowing surfaces
@@ -186,6 +187,7 @@ void R_InitSettings (void)
 	pt_fog_density = ri.Cvar_Get ("pt_fog_density", "0.0004", CVAR_ARCHIVE);
 	pt_fog_samples = ri.Cvar_Get ("pt_fog_samples", "2", CVAR_ARCHIVE);
 	pt_fog_history = ri.Cvar_Get ("pt_fog_history", "6", CVAR_ARCHIVE);
+	pt_react = ri.Cvar_Get ("pt_react", "1", CVAR_ARCHIVE);
 	pt_sky = ri.Cvar_Get ("pt_sky", "2", CVAR_ARCHIVE);
 	pt_lamp_glow = ri.Cvar_Get ("pt_lamp_glow", "1.5", CVAR_ARCHIVE);
 	pt_surface_light = ri.Cvar_Get ("pt_surface_light", "1", CVAR_ARCHIVE);
@@ -431,6 +433,7 @@ void R_ViewSettings (pt_view_t *view)
 	view->fog_density = pt_fog_density->value;
 	view->fog_samples = pt_fog_samples->value;
 	view->fog_history = pt_fog_history->value;
+	view->react = pt_react->value;
 
 	if (R_Offline ())
 		R_OfflineSettings (view);

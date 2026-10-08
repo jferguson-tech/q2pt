@@ -58,6 +58,9 @@ const uint32_t trace_comp_spv[] =
 const uint32_t temporal_comp_spv[] =
 #include "temporal.comp.inc"
 ;
+const uint32_t change_comp_spv[] =
+#include "change.comp.inc"
+;
 const uint32_t atrous_comp_spv[] =
 #include "atrous.comp.inc"
 ;
@@ -119,7 +122,7 @@ struct FrameBlock
 	float	open_origin[4], open_forward[4], open_right[4], open_up[4];	// motion blur: the eye as the shutter opened; open_origin[3]: there is blur
 	int32_t	held[4];		// first triangle of the frame that the eye carries, how many; [2]: reflections are followed where they appear to be
 	float	painted[4];		// [0]: what a metal painted dark reflects, see pt_view_t's metal_colour; [1]: bloom_max; [2]: fog_samples; [3]: fog_history
-	float	liquid[4];		// [0]: wave_reach
+	float	liquid[4];		// [0]: wave_reach; [1]: react
 };
 
 // one triangle, one material and one light as the shaders read them (std430)
@@ -167,7 +170,7 @@ const uint32_t kBitEmissive = 1, kBitSampled = 2, kBitSwell = 4;	// GpuMaterial:
 const uint32_t kNumInstances = 5;
 const uint32_t kMaskScene = 1, kMaskHeld = 2;
 const int kNumStyles = 256;							// light styles, at the start of the tables
-const uint32_t kNumBindings = 33;
+const uint32_t kNumBindings = 34;
 
 // The pictures kept per pixel between the passes, in the order the shaders'
 // bindings take them; see scene.glsl.
@@ -188,7 +191,8 @@ enum
 	kMirror = 28,	// 2
 	kOver = 30,
 	kMoments = 31,	// 6
-	kNumTargets = 37
+	kChange = 37,	// 4
+	kNumTargets = 41
 };
 
 const uint32_t kMaxTextures = 4096;
@@ -356,7 +360,7 @@ struct RtxBackend
 	VkPipeline				trace_pipeline = VK_NULL_HANDLE, temporal_pipeline = VK_NULL_HANDLE;
 	VkPipeline				atrous_pipeline = VK_NULL_HANDLE, compose_pipeline = VK_NULL_HANDLE;
 	VkPipeline				bloom_pipeline = VK_NULL_HANDLE, resolve_pipeline = VK_NULL_HANDLE;
-	VkPipeline				grade_pipeline = VK_NULL_HANDLE;
+	VkPipeline				grade_pipeline = VK_NULL_HANDLE, change_pipeline = VK_NULL_HANDLE;
 	bool					bloom_on = false;
 	float					camera[16] = {};		// the last view, to tell whether it has moved
 	FrameBlock				block{};				// what the shaders were last told
@@ -364,6 +368,8 @@ struct RtxBackend
 	bool					trace_ready = false;	// there is a picture of this frame's view to show
 	bool					trace_pending = false;	// but it has yet to be traced
 	bool					has_history = false;	// the last frame's pictures can be built on
+	bool					react_on = false;		// this frame looks for where the light has changed
+	int						still_frames = 0;		// frames in a row in which nothing changed
 	int						parity = 0;				// which of each pair of pictures is this frame's
 	uint32_t				frame_index = 0;
 	uint32_t				prev_hash = 0;
@@ -1529,7 +1535,9 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 		// light is lost: so these are kept at full precision.
 		const bool gathered = i >= kKept && i < kKept + 6;
 		const bool moments = i >= kMoments && i < kMoments + 6;
-		const VkFormat format = (positions || gathered) ? VK_FORMAT_R32G32B32A32_SFLOAT
+		// one value for each block of 8 by 8 pixels
+		const bool blocks = i >= kChange && i < kChange + 4;
+		const VkFormat format = (positions || gathered || blocks) ? VK_FORMAT_R32G32B32A32_SFLOAT
 			: moments ? VK_FORMAT_R32G32_SFLOAT
 			: (i == kPicture ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R16G16B16A16_SFLOAT);
 
@@ -1538,6 +1546,8 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 		ici.format = format;
 		const bool full = i == kPicture || i == kSteady || i == kSteady + 1;
 		ici.extent = {(uint32_t)(full ? out_width : width), (uint32_t)(full ? out_height : height), 1};
+		if (blocks)
+			ici.extent = {((uint32_t)width + 7) / 8, ((uint32_t)height + 7) / 8, 1};
 		ici.mipLevels = 1;
 		ici.arrayLayers = 1;
 		ici.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -1574,7 +1584,7 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 		{17, kSurface, 2}, {18, kSeen, 1}, {19, kAlbedo, 2}, {20, kNoisy, 3},
 		{21, kExtra, 1}, {22, kKept, 6}, {23, kFilter, 6}, {24, kPicture, 1},
 		{26, kHdr, 1}, {27, kBloom, 2}, {28, kSteady, 2}, {29, kGraded, 1},
-		{30, kMirror, 2}, {31, kOver, 1}, {32, kMoments, 6},
+		{30, kMirror, 2}, {31, kOver, 1}, {32, kMoments, 6}, {33, kChange, 4},
 	};
 	VkDescriptorImageInfo info[kNumTargets];
 	for (const auto &g : groups)
@@ -1654,6 +1664,7 @@ void CreateScene(RtxBackend *s)
 	bind[28].descriptorCount = 2;
 	bind[30].descriptorCount = 2;
 	bind[32].descriptorCount = 6;
+	bind[33].descriptorCount = 4;
 
 	VkDescriptorSetLayoutCreateInfo dlci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
 	dlci.bindingCount = kNumBindings;
@@ -1691,6 +1702,7 @@ void CreateScene(RtxBackend *s)
 
 	s->trace_pipeline = MakeComputePipeline(s, trace_comp_spv, sizeof(trace_comp_spv));
 	s->temporal_pipeline = MakeComputePipeline(s, temporal_comp_spv, sizeof(temporal_comp_spv));
+	s->change_pipeline = MakeComputePipeline(s, change_comp_spv, sizeof(change_comp_spv));
 	s->atrous_pipeline = MakeComputePipeline(s, atrous_comp_spv, sizeof(atrous_comp_spv));
 	s->compose_pipeline = MakeComputePipeline(s, compose_comp_spv, sizeof(compose_comp_spv));
 	s->bloom_pipeline = MakeComputePipeline(s, bloom_comp_spv, sizeof(bloom_comp_spv));
@@ -1807,7 +1819,7 @@ void DestroyScene(RtxBackend *s)
 	FreeTexture(s, s->blank);
 	FreeTargets(s);
 	for (VkPipeline p : {s->trace_pipeline, s->temporal_pipeline, s->atrous_pipeline, s->compose_pipeline,
-		s->bloom_pipeline, s->resolve_pipeline, s->grade_pipeline})
+		s->bloom_pipeline, s->resolve_pipeline, s->grade_pipeline, s->change_pipeline})
 		if (p)
 			vkDestroyPipeline(s->device, p, nullptr);
 	if (s->trace_playout) vkDestroyPipelineLayout(s->device, s->trace_playout, nullptr);
@@ -2449,6 +2461,13 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	memcpy(f.water_at, s->water_at, sizeof(f.water_at));
 	memcpy(f.water_wave, s->water_wave, sizeof(f.water_wave));
 	f.liquid[0] = std::min(std::max(view->wave_reach, 0.0f), 8.0f);
+	// Looked for while things change and for a few frames after: the frame
+	// a light goes out is the last that differs from the one before, and
+	// what little of it is missed then would fade very slowly from an
+	// average that runs on.
+	s->still_frames = still ? std::min(s->still_frames + 1, 1000) : 0;
+	s->react_on = f.output_i[3] && view->react > 0.0f && s->still_frames < 8;
+	f.liquid[1] = s->react_on ? std::min(view->react, 1.0f) : 0.0f;
 
 	memcpy(s->frame_block.ptr, &f, sizeof(f));
 	s->prev_time = view->time;
@@ -2560,8 +2579,20 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 	run(s->trace_pipeline, 0, 0, 0);
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
 
-	// gathered with what earlier frames saw
+	// gathered with what earlier frames saw, less where the light is found
+	// to have changed since: looked for block by block, see change.comp
 	mark();
+	if (s->react_on)
+	{
+		run(s->change_pipeline, 0, 0, 0);
+		BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
+		groups_x = (gx + 7) / 8;
+		groups_y = (gy + 7) / 8;
+		run(s->change_pipeline, 1, 0, 0);
+		BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
+		groups_x = gx;
+		groups_y = gy;
+	}
 	run(s->temporal_pipeline, 0, 0, 0);
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
 
