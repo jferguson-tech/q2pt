@@ -182,7 +182,7 @@ layout(set = 0, binding = 31, rgba32f) uniform image2D img_over;		// xyz: the sa
 // last one's, in turn, like img_kept.
 layout(set = 0, binding = 32, rg32f) uniform image2D img_moments[6];
 // how much the frame's lights put on the pixel, see FrameLightLevel, by parity
-layout(set = 0, binding = 33, r16f) uniform image2D img_flash[2];
+layout(set = 0, binding = 33, r32f) uniform image2D img_flash[2];
 
 float Luminance(vec3 c)
 {

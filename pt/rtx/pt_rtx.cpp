@@ -1532,7 +1532,7 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 		const bool moments = i >= kMoments && i < kMoments + 6;
 		const bool flash = i >= kFlash && i < kFlash + 2;
 		const VkFormat format = (positions || gathered) ? VK_FORMAT_R32G32B32A32_SFLOAT
-			: moments ? VK_FORMAT_R32G32_SFLOAT : flash ? VK_FORMAT_R16_SFLOAT
+			: moments ? VK_FORMAT_R32G32_SFLOAT : flash ? VK_FORMAT_R32_SFLOAT
 			: (i == kPicture ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R16G16B16A16_SFLOAT);
 
 		VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
