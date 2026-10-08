@@ -452,7 +452,7 @@ void R_RenderFrame (refdef_t *fd)
 	view.fov_x = fd->fov_x;
 	view.fov_y = fd->fov_y;
 	R_ViewSettings (&view);
-	if (fd->rdflags & RDF_UNDERWATER)
+	if (R_WaterEyeUnder (fd->vieworg, view.wave_strength, (fd->rdflags & RDF_UNDERWATER) != 0))
 		R_WaterAround (fd->vieworg, view.medium_absorb);
 	R_BuildScene (fd, &scene);
 	view.scene = &scene;

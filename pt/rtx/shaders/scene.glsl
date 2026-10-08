@@ -39,6 +39,7 @@ const float FURNACE_LIGHT = 0.5;
 // Material.bits
 const uint BIT_EMISSIVE = 1u;
 const uint BIT_SAMPLED = 2u;		// reached through the light lists, so not counted when hit by chance
+const uint BIT_SWELL = 4u;		// a simulated liquid, met where its waves stand and not at its triangles: see WaveCross
 
 const float PI = 3.14159265;
 const float INV_PI = 0.31830989;
@@ -121,14 +122,15 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	ivec4	frame_has;		// smooth normals, where things were last frame, which of each pair of images is this frame's, anti-aliasing
 	ivec4	size;			// xy: of the picture being traced; z: simulated bodies of liquid
 	vec4	water_rect[8];	// each body's extent: min x, min y, max x, max y
-	vec4	water_at[8];	// x: the height of its surface; y: the material that carries its maps
+	vec4	water_at[8];	// x: the height of its surface; y: the material that carries its maps; z: its wave picture; w: its caustic picture
+	vec4	water_wave[8];	// where its pictures lie: the material's wave_rect
 	ivec4	out_size;		// xy: of the finished picture, the size of the view
 	vec4	open_origin;	// motion blur: the eye as the shutter opened; w: there is blur
 	vec4	open_forward;
 	vec4	open_right;
 	vec4	open_up;
 	ivec4	held;			// x: first triangle of the frame carried by the eye (the weapon in hand); y: how many; z: reflections are followed where they appear to be
-	vec4	painted;		// x: what a metal painted dark reflects, see pt_view_t's metal_colour; y: the most over white that adds to the glow, 0 = no limit
+	vec4	painted;		// x: what a metal painted dark reflects, see pt_view_t's metal_colour; y: the most over white that adds to the glow, 0 = no limit; z: how far from level the waves of simulated liquids reach
 } fr;
 
 // the map and what moves, each as three corners per triangle, what goes with
@@ -386,32 +388,201 @@ bool IsHole(Material mat, Tri tri, vec2 bary)
 	return Texel(mat.texture, TexCoord(tri, bary), false).a < 0.5;
 }
 
+float StoredHeight(ivec2 at, int map)
+{
+	const vec2 h = texelFetch(sampler2D(textures[nonuniformEXT(map)], nearest_sampler), at, 0).ba;
+	return h.x * 65280.0 + h.y * 255.0;
+}
+
+// how far above its level a simulated liquid stands at xy: map is its wave
+// picture, of this size, lying at rect
+float WaveHeight(int map, vec4 rect, ivec2 size, vec2 xy)
+{
+	// between the middles of the cells, and level with the outermost beyond them
+	const vec2 f = clamp((xy - rect.xy) * rect.zw * vec2(size) - 0.5, vec2(0.0), vec2(size - 1));
+	const ivec2 at = min(ivec2(f), size - 2);
+	const vec2 a = f - vec2(at);
+	const float h = mix(mix(StoredHeight(at, map), StoredHeight(at + ivec2(1, 0), map), a.x),
+		mix(StoredHeight(at + ivec2(0, 1), map), StoredHeight(at + ivec2(1, 1), map), a.x), a.y);
+	return (h * (1.0 / 65535.0) - 0.5) * 16.0 * fr.settings_f.z;
+}
+
+// Where the ray first crosses the surface of a simulated liquid before limit.
+// The surface is not the level triangles the map has for it but stands where
+// the waves do, above and below them: the ray is followed through the band
+// the waves keep to until it is on the other side of the surface. Gives how
+// far along that is, the side the ray came from (1 above, -1 below), the
+// level of the liquid and its wave picture.
+bool WaveCross(vec3 origin, vec3 dir, float tmin, float limit, out float where, out float side, out float level, out int map)
+{
+	bool found = false;
+	where = 0.0;
+	side = 1.0;
+	level = 0.0;
+	map = -1;
+	const vec3 inv = 1.0 / mix(dir, vec3(1.0e-8), lessThan(abs(dir), vec3(1.0e-8)));
+	const float reach = fr.painted.z * fr.settings_f.z + 0.1;
+	limit = min(limit, 1.0e7);
+	for (int i = 0; i < fr.size.z; i++)
+	{
+		// the part of the ray within the waves' reach of the level, over the body
+		const float z = fr.water_at[i].x;
+		const vec3 a = (vec3(fr.water_rect[i].xy, z - reach) - origin) * inv, b = (vec3(fr.water_rect[i].zw, z + reach) - origin) * inv;
+		const vec3 lo = min(a, b), hi = max(a, b);
+		const float t0 = max(tmin, max(lo.x, max(lo.y, lo.z))), t1 = min(limit, min(hi.x, min(hi.y, hi.z)));
+		if (t0 >= t1)
+			continue;
+		const int waves = int(fr.water_at[i].z), caustics = int(fr.water_at[i].w);
+		const vec4 rect = fr.water_wave[i];
+		if (waves < 0)
+			continue;
+		const ivec2 size = textureSize(sampler2D(textures[nonuniformEXT(waves)], nearest_sampler), 0);
+		if (size.x < 2 || size.y < 2)
+			continue;
+
+#define ABOVE(t) (origin.z + dir.z * (t) - z - WaveHeight(waves, rect, size, origin.xy + dir.xy * (t)))
+		// Far from the surface the steps are as long as its slope allows,
+		// taken to be no steeper than one in one; near it half a cell. A ray
+		// that skims it for long gets longer steps as it goes, so as to end.
+		const float cell = 1.0 / (rect.z * float(size.x));
+		const float across = length(dir.xy);
+		const float closing = 1.0 / (abs(dir.z) + across);
+		float least = 0.5 * cell / max(across, 1.0e-6);
+
+		float ta = t0, fa = ABOVE(t0);
+		// a ray that leaves the surface starts on it, and a little further
+		// along shows which side it left on
+		if (abs(fa) < 0.05)
+			fa = ABOVE(min(t0 + 0.1, t1));
+		for (int k = 0; ta < t1; k++)
+		{
+			if (k >= 64)
+				least *= 1.06;
+			const float tb = min(ta + max(abs(fa) * closing, least), t1);
+			const float fb = ABOVE(tb);
+			if ((fa < 0.0) != (fb < 0.0))
+			{
+				// the caustic picture also says where there is liquid at all
+				const ivec2 cell_at = clamp(ivec2(floor((origin.xy + dir.xy * (0.5 * (ta + tb)) - rect.xy) * rect.zw * vec2(size))), ivec2(0), size - 1);
+				if (caustics < 0 || texelFetch(sampler2D(textures[nonuniformEXT(caustics)], nearest_sampler), cell_at, 0).a > 0.5)
+				{
+					float on = ta, past = tb;
+					for (int halving = 0; halving < 10; halving++)
+					{
+						const float mid = 0.5 * (on + past);
+						if ((ABOVE(mid) < 0.0) == (fa < 0.0))
+							on = mid;
+						else
+							past = mid;
+					}
+					where = on;
+					side = fa < 0.0 ? -1.0 : 1.0;
+					level = z;
+					map = waves;
+					limit = on;
+					found = true;
+					break;
+				}
+			}
+			ta = tb;
+			fa = fb;
+		}
+#undef ABOVE
+	}
+	return found;
+}
+
+// A ray that leaves the surface of a simulated liquid where it stands below
+// its level is behind the level sheet, and must not meet that from the back.
+bool BehindSheet(Hit hit, vec3 dir)
+{
+	if (hit.moving || fr.settings_f.z <= 0.0)
+		return false;
+	const vec3 p0 = Corner(false, hit.tri, 0);
+	return dot(cross(Corner(false, hit.tri, 1) - p0, Corner(false, hit.tri, 2) - p0), dir) > 0.0;
+}
+
 // The nearest thing a path meets: not what only casts shadows (for the
 // eye), not the holes in a grating, and, for light finding its way through
 // (cross), a see-through surface only as often as it is opaque.
-bool Closest(vec3 origin, vec3 dir, inout float tmin, bool camera, bool cross_through, uint mask, out Hit hit, out Material mat)
+bool Closest(vec3 origin, vec3 dir, inout float tmin, bool camera, bool cross_through, uint mask, bool waves, out Hit hit, out Material mat)
 {
 	rays_traced++;
+	const bool swell = waves && fr.size.z > 0 && fr.settings_f.z > 0.0;
 	for (int skips = 0; ; skips++)
 	{
-		if (!Nearest(origin, dir, tmin, 1.0e30, mask, hit))
+		// One search a turn, so that there is one of them here and no more:
+		// each place the shader searches from costs every ray. First for
+		// the nearest thing, again from behind it if that is the level
+		// triangle of a simulated liquid, which is met where its waves stand
+		// (see WaveCross); then, if the ray crosses those first, straight
+		// down or up through the crossing for the triangle that says there is
+		// liquid there and what it is made of.
+		bool found = false, probing = false;
+		float from = tmin, where = 0.0, side = 1.0, level = 0.0;
+		int map = -1;
+		for (int turn = 0; turn < 12; turn++)
+		{
+			Hit h;
+			const bool got = Nearest(probing ? vec3(origin.xy + dir.xy * where, level + side * 1.25) : origin,
+				probing ? vec3(0.0, 0.0, -side) : dir, from, probing ? 2.5 : 1.0e30, probing ? MASK_SCENE : mask, h);
+			if (!probing)
+			{
+				if (got)
+					mat = MaterialOf(h.moving, TriOf(h).material);
+				if (got && swell && (mat.bits & BIT_SWELL) != 0u && turn < 8)
+				{
+					from = h.t + 0.01;
+					continue;
+				}
+				found = got;
+				hit = h;
+				if (!swell || !WaveCross(origin, dir, tmin, got ? h.t : 1.0e30, where, side, level, map))
+					break;
+				probing = true;
+				from = 0.0;
+			}
+			else
+			{
+				if (!got)
+					break;
+				from = h.t + 1.0e-3;
+				if (h.moving)
+					continue;
+				const Material there = world_materials.m[world_tris.t[h.tri].material];
+				if (there.wave_map != map)
+					continue;
+				const vec3 p0 = Corner(false, h.tri, 0);
+				if (cross(Corner(false, h.tri, 1) - p0, Corner(false, h.tri, 2) - p0).z * side > 0.0)
+				{
+					hit = h;
+					hit.t = where;
+					mat = there;
+					found = true;
+					break;
+				}
+			}
+		}
+		if (!found)
 			return false;
 		const Tri tri = TriOf(hit);
-		mat = MaterialOf(hit.moving, tri.material);
 		const bool skip = skips < 32 && (
 			(camera && (mat.flags & MAT_CAMERA_INVISIBLE) != 0u) ||
 			IsHole(mat, tri, hit.bary) ||
 			(cross_through && mat.alpha < 1.0 && Rand() >= mat.alpha) ||
-			(fr.bases.x == VIEW_FURNACE && (mat.flags & MAT_BLACK) != 0u));
+			(fr.bases.x == VIEW_FURNACE && (mat.flags & MAT_BLACK) != 0u) ||
+			(!waves && (mat.bits & BIT_SWELL) != 0u && BehindSheet(hit, dir)));
 		if (!skip)
 			return true;
 		tmin = hit.t + 0.01;
 	}
 }
 
+// for light finding its way about: to that a simulated liquid is the level
+// sheet the map has for it, which costs every such ray less to look for
 bool Closest(vec3 origin, vec3 dir, inout float tmin, bool camera, bool cross_through, out Hit hit, out Material mat)
 {
-	return Closest(origin, dir, tmin, camera, cross_through, MASK_ALL, hit, mat);
+	return Closest(origin, dir, tmin, camera, cross_through, MASK_ALL, false, hit, mat);
 }
 
 // how much the waves of a simulated liquid brighten light passing through
@@ -559,7 +730,7 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 		const vec2 at = (s.p.xy - mat.wave_rect.xy) * mat.wave_rect.zw;
 		const vec4 w = Texel(mat.wave_map, at, true);
 		wave = (w.rg - 0.5) * wave_strength;
-		wave_height = (w.b - 0.5) * 8.0 * wave_strength;
+		wave_height = ((w.b * 65280.0 + w.a * 255.0) * (1.0 / 65535.0) - 0.5) * 16.0 * wave_strength;
 		// what the texture stands for lies below the surface, so a tilted
 		// surface shows it shifted, as through a lens
 		uv += wave * 0.5;
@@ -613,6 +784,14 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 	{
 		// the surface is level, facing up or (seen from below) down
 		n = normalize(vec3(-wave, 1.0)) * (n.z < 0.0 ? -1.0 : 1.0);
+		if (!hit.moving && (mat.bits & BIT_SWELL) != 0u)
+		{
+			// met where the waves stand (see WaveCross), on the side this
+			// triangle faces: it really is tilted as they are
+			n = normalize(vec3(-wave, 1.0)) * (s.tri_n.z < 0.0 ? -1.0 : 1.0);
+			s.front = true;
+			s.ng = n;
+		}
 		// crests gather the light in the liquid and troughs spread it
 		s.colour *= clamp(1.0 + wave_height * 0.35, 0.6, 1.8);
 	}

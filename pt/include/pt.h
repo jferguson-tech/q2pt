@@ -87,10 +87,16 @@ typedef struct pt_material_s
 	int			anim_next;		/* world only: the material shown one animation
 								   step later, or -1 */
 	int			wave_map;		/* liquids: texture_create handle + 1 of a wave
-								   picture (R, G slopes in x and y about 0.5),
-								   0 = none; replaces the PT_MAT_WAVES ripples */
+								   picture (R, G slopes in x and y about 0.5; B, A
+								   the height above the triangle in sixteen bits,
+								   B the upper, 16 units from 0 to 65535 and level
+								   half way), 0 = none; replaces the PT_MAT_WAVES
+								   ripples. Level triangles with one are drawn
+								   where the waves stand, see wave_reach */
 	int			caustic_map;	/* handle + 1 of how much the waves brighten the
-								   light going through, R / 255 * 4; 0 = none */
+								   light going through, R / 255 * 4; 0 = none. A
+								   is 0 where the picture covers no liquid, and
+								   the waves' surface is not looked for there */
 	float		wave_rect[4];	/* the maps cover world x, y from [0], [1] and are
 								   1 / [2], 1 / [3] across */
 	float		absorb[3];		/* liquids: share of light lost per unit of
@@ -278,6 +284,8 @@ typedef struct pt_view_s
 								   reflection path; 1 = the backend's own choice */
 	int		refraction;			/* liquids bend the view */
 	float	wave_strength;		/* ripples on liquids; 0 = flat, 1 = normal */
+	float	wave_reach;			/* no wave picture holds a height further than this
+								   from level this frame, in units */
 	float	metal_colour;		/* PT_MAT_METAL_PAINTED: how much of the light a
 								   metal painted mid dark (1.2% of white, as old
 								   game art paints steel) reflects. One painted

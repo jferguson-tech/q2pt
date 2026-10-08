@@ -114,7 +114,7 @@ struct FrameBlock
 	int32_t	output_i[4];
 	float	output_f[4];
 	int32_t	frame_has[4], size[4];
-	float	water_rect[8][4], water_at[8][4];
+	float	water_rect[8][4], water_at[8][4], water_wave[8][4];
 	int32_t	out_size[4];
 	float	open_origin[4], open_forward[4], open_right[4], open_up[4];	// motion blur: the eye as the shutter opened; open_origin[3]: there is blur
 	int32_t	held[4];		// first triangle of the frame that the eye carries, how many; [2]: reflections are followed where they appear to be
@@ -159,7 +159,7 @@ struct GpuLight
 	int32_t		pad[2];
 };
 
-const uint32_t kBitEmissive = 1, kBitSampled = 2;	// GpuMaterial::bits
+const uint32_t kBitEmissive = 1, kBitSampled = 2, kBitSwell = 4;	// GpuMaterial::bits
 // Instances of the top level structure: the map, its glass, what moves, its
 // glass, and what the eye carries. The last has a mask bit of its own so that
 // a ray can be cast at it alone, or past it: see Nearest in scene.glsl.
@@ -335,7 +335,7 @@ struct RtxBackend
 	float					sky_total = 0.0f, sky_scale = 1.0f;
 	// simulated bodies of liquid: extent, height of the surface, material
 	int						num_waters = 0;
-	float					water_rect[8][4] = {}, water_at[8][4] = {};
+	float					water_rect[8][4] = {}, water_at[8][4] = {}, water_wave[8][4] = {};
 
 	// textures the host has changed, until the next frame takes them
 	Buffer					updates;
@@ -1980,7 +1980,17 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 		rect[3] = body.max_y;
 		at[0] = body.z;
 		at[1] = (float)(body.mat - w->materials.data());
-		at[2] = at[3] = 0.0f;
+		// as SetMaterial has them
+		const auto used = [&](int t) { return (t >= 0 && t < (int)kMaxTextures && s->textures[t].view) ? t : -1; };
+		at[2] = (float)used(body.mat->wave_map - 1);
+		at[3] = (float)used(body.mat->caustic_map - 1);
+		for (int i = 0; i < 4; i++)
+			s->water_wave[s->num_waters][i] = body.mat->wave_rect[i];
+		// whatever shows this body's waves is met where they stand: the
+		// shaders look for that surface in the bodies listed here
+		for (int i = 0; i < in->num_materials; i++)
+			if (in->materials[i].wave_map == body.mat->wave_map && at[2] >= 0.0f)
+				materials[i].bits |= kBitSwell;
 		s->num_waters++;
 	}
 	s->sky_res = sky_cells ? w->sky_res : 0;
@@ -2427,6 +2437,8 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.size[2] = s->num_waters;
 	memcpy(f.water_rect, s->water_rect, sizeof(f.water_rect));
 	memcpy(f.water_at, s->water_at, sizeof(f.water_at));
+	memcpy(f.water_wave, s->water_wave, sizeof(f.water_wave));
+	f.painted[2] = std::min(std::max(view->wave_reach, 0.0f), 8.0f);
 
 	memcpy(s->frame_block.ptr, &f, sizeof(f));
 	s->prev_time = view->time;

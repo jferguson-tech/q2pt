@@ -18,6 +18,7 @@ struct pt_water_s
 	unsigned char *open;	/* per cell: is there liquid here */
 	int			covered;		/* has pt_water_cover been called */
 	float		leftover;		/* time not yet simulated */
+	float		reach;			/* furthest from level in the last wave picture */
 };
 
 pt_water_t *pt_water_create(float min_x, float min_y, float max_x, float max_y, float cell_size, int max_cells)
@@ -241,6 +242,7 @@ static uint32_t byte_of(float v)
 const uint32_t *pt_water_waves(pt_water_t *w, float wave_scale)
 {
 	const float inv = wave_scale / (2.0f * w->cell);
+	float reach = 0.0f;
 	int x, y;
 
 	for (y = 0; y < w->height; y++)
@@ -250,15 +252,66 @@ const uint32_t *pt_water_waves(pt_water_t *w, float wave_scale)
 			const float here = w->h[(size_t)y * w->width + x];
 			const float sx = (at(w, w->h, x + 1, y, here) - at(w, w->h, x - 1, y, here)) * inv;
 			const float sy = (at(w, w->h, x, y + 1, here) - at(w, w->h, x, y - 1, here)) * inv;
-			const float height = here * wave_scale;
+			float height = here * wave_scale;
+			uint32_t stored;
+
+			if (height < -PT_WATER_HEIGHT_MAX) height = -PT_WATER_HEIGHT_MAX;
+			if (height > PT_WATER_HEIGHT_MAX) height = PT_WATER_HEIGHT_MAX;
+			if (fabsf(height) > reach)
+				reach = fabsf(height);
+			stored = (uint32_t)((height / (2.0f * PT_WATER_HEIGHT_MAX) + 0.5f) * 65535.0f + 0.5f);
 			w->waves[(size_t)y * w->width + x] =
 				byte_of(sx * PT_WATER_SLOPE_SCALE + 0.5f)
 				| (byte_of(sy * PT_WATER_SLOPE_SCALE + 0.5f) << 8)
-				| (byte_of(height * 0.125f + 0.5f) << 16)
-				| 0xff000000u;
+				| ((stored >> 8) << 16)
+				| ((stored & 0xff) << 24);
 		}
 	}
+	w->reach = reach;
 	return w->waves;
+}
+
+float pt_water_height_at(const pt_water_t *w, float x, float y, float wave_scale, int *covered)
+{
+	/* between the middles of the cells, and level with the outermost beyond them */
+	float fx = (x - w->min_x) / w->cell - 0.5f, fy = (y - w->min_y) / w->cell - 0.5f, ax, ay, height;
+	const int cx = (int)floorf((x - w->min_x) / w->cell), cy = (int)floorf((y - w->min_y) / w->cell);
+	const int inside = cx >= 0 && cy >= 0 && cx < w->width && cy < w->height;
+	const float *row;
+	int x0, y0;
+
+	if (covered)
+		*covered = inside && w->open[(size_t)cy * w->width + cx];
+	if (!inside)
+		return 0.0f;
+	if (fx < 0.0f) fx = 0.0f;
+	if (fy < 0.0f) fy = 0.0f;
+	if (fx > w->width - 1) fx = (float)(w->width - 1);
+	if (fy > w->height - 1) fy = (float)(w->height - 1);
+	x0 = (int)fx; y0 = (int)fy;
+	if (x0 > w->width - 2) x0 = w->width - 2;
+	if (y0 > w->height - 2) y0 = w->height - 2;
+	ax = fx - x0; ay = fy - y0;
+	row = &w->h[(size_t)y0 * w->width + x0];
+	height = ((row[0] * (1.0f - ax) + row[1] * ax) * (1.0f - ay)
+		+ (row[w->width] * (1.0f - ax) + row[w->width + 1] * ax) * ay) * wave_scale;
+	if (height < -PT_WATER_HEIGHT_MAX) height = -PT_WATER_HEIGHT_MAX;
+	if (height > PT_WATER_HEIGHT_MAX) height = PT_WATER_HEIGHT_MAX;
+	return height;
+}
+
+float pt_water_reach(const pt_water_t *w) { return w->reach; }
+
+static int here_or_near(const pt_water_t *w, int x, int y)
+{
+	int dx, dy;
+
+	for (dy = -1; dy <= 1; dy++)
+		for (dx = -1; dx <= 1; dx++)
+			if (x + dx >= 0 && y + dy >= 0 && x + dx < w->width && y + dy < w->height
+				&& w->open[(size_t)(y + dy) * w->width + x + dx])
+				return 1;
+	return 0;
 }
 
 const uint32_t *pt_water_caustics(pt_water_t *w, float strength)
@@ -297,7 +350,9 @@ const uint32_t *pt_water_caustics(pt_water_t *w, float strength)
 					+ at(w, w->tmp, x, y - 1, here) + at(w, w->tmp, x, y + 1, here)
 					+ 4.0f * here) * 0.125f;
 				const uint32_t b = byte_of(blurred / PT_WATER_CAUSTIC_MAX);
-				w->caustics[(size_t)y * w->width + x] = b | (b << 8) | (b << 16) | 0xff000000u;
+				/* A says whether there is liquid here or in a cell next to this one */
+				const int wet = here_or_near(w, x, y);
+				w->caustics[(size_t)y * w->width + x] = b | (b << 8) | (b << 16) | (wet ? 0xff000000u : 0);
 			}
 		}
 	}

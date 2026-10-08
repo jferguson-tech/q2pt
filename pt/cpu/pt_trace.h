@@ -60,10 +60,13 @@ bool BackOfGlass(const Tri &tri, Vec3 dir);
 // random in proportion to how much they pass. ray.tmin moves past what was
 // skipped. held says what is done with the frame's triangles that the eye
 // carries (PT_MAT_HELD): taken like any other, passed by, or the only ones
-// met, for a ray that is cast at them alone.
+// met, for a ray that is cast at them alone. waves: a simulated liquid is met
+// where its waves stand, as the eye must see it; without, it is the level
+// sheet the map has for it, which is all that light finding its way about
+// needs and costs every such ray less to look for.
 enum HeldRays { kHeldToo, kNotHeld, kHeldOnly };
 bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &hit, const Tri *&tri,
-	HeldRays held = kHeldToo);
+	HeldRays held = kHeldToo, bool waves = false);
 
 // smooth: filter the textures, for surfaces the eye sees directly. Further
 // along a path the nearest texel is as good and cheaper.

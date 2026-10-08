@@ -94,6 +94,7 @@ float	r_surfacelight = 1, r_pointlight = 1, r_liquidglow = 0.25f;
 float	r_detailglow = 1;
 int		r_watermode = 2;
 int		r_normalflip;
+float	r_waterreach;
 float	r_watercell = 8, r_waterwaves = 1, r_watercaustics = 0, r_waterdamping = 1;
 float	r_bumpscale = 1, r_roughscale = 1, r_metalscale = 1;
 int		r_materialmaps = 1;
@@ -404,6 +405,7 @@ void R_ViewSettings (pt_view_t *view)
 	view->reflection_rate = pt_reflection_rate->value;
 	view->refraction = pt_refraction->value != 0;
 	view->wave_strength = pt_waves->value;
+	view->wave_reach = r_waterreach;
 	view->metal_colour = R_MetalColour ();
 
 	view->light_samples = pt_light_samples->value;
