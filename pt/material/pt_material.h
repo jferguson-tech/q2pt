@@ -123,9 +123,10 @@ texel is lit if it is far brighter than the picture is for the most part and
 belongs to a patch that is brighter still somewhere: the lamp and the glow
 painted round it, not its frame; the letters, not the sign. A red lamp
 counts for as bright as a white one. What lies within a few texels of a lit
-patch and is as bright and of the same colour is lit with it, as the rings of
-one lens are, and gaps a texel wide in what is lit are closed. repeats is as
-in pt_material_from_t.
+patch and is as bright and of the same colour is lit with it, as the bright
+rings of one lens are; so is what is strongly coloured and lies between lit
+texels of its own colour, as its dark rings do; and gaps a texel wide in
+what is lit are closed. repeats is as in pt_material_from_t.
 
 NULL if nothing in the picture stands apart from the rest of it: it is
 unlit, or of one thing all over, as a crystal or a sheet of lava is, and

@@ -320,6 +320,15 @@ static void S_AddInline (entity_t *e, model_t *mod, int index)
 			{
 				mat.texture = R_ImageTexture (image);
 				mat.normal_texture = mat.normal_texture >= 0 ? R_ImageNormalTexture (image) : -1;
+				// The picture of what glows is numbered as the world numbers
+				// its textures too. It is the one made by hand, or the lit
+				// part read from the image, as W_AddMaterial chose.
+				if (mat.emission_texture)
+				{
+					image_t	*glow = (mat.flags & PT_MAT_EMIT_MAPPED) ? NULL : R_ImageGlowMap (image);
+
+					mat.emission_texture = (glow ? R_ImageTexture (glow) : R_ImageLitTexture (image)) + 1;
+				}
 				mat.anim_next = -1;
 				if (e->flags & RF_TRANSLUCENT)
 					mat.alpha *= e->alpha;

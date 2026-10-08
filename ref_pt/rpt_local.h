@@ -64,6 +64,7 @@ typedef struct image_s
 											// gives off light and black elsewhere, or NULL
 	float		lit_share;					// how much of the picture's light is in lit
 	qboolean	lit_read;					// lit is what the picture gave, NULL included
+	int			pt_lit_texture;				// backend handle + 1 for lit
 } image_t;
 
 typedef struct
@@ -169,6 +170,7 @@ float	R_MetalColour (void);
 uint32_t *R_ImageNormalMap (image_t *image, const matinfo_t *info, int *width, int *height);
 image_t	*R_ImageGlowMap (image_t *image);
 const uint32_t *R_ImageLit (image_t *image, float *share);
+int		R_ImageLitTexture (image_t *image);
 
 // A light's picture gives off its light from the part of it that is lit only
 // if this much of the light its colours stand for is in that part

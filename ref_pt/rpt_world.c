@@ -239,9 +239,10 @@ static int W_AddMaterial (texinfo_t *tex, int body)
 			if (value > 0)
 			{
 				// A light of the map's gives off what the map says, all of it
-				// from the part that is lit, where that part held most of the
-				// picture's light already. Where it did not, what was found
-				// is a few bright specks and the whole surface is the light.
+				// from the part that is lit, where a good share of the light
+				// its picture stood for was in that part already. Where it was
+				// not, what was found is a few bright specks, and the whole
+				// surface is the light as it always was.
 				if (lit && share >= LIT_SHARE_LEAST)
 				{
 					mat->emission_texture = W_AddTexture (image->width, image->height, lit, &image->lit) + 1;

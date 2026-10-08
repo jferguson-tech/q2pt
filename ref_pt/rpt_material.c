@@ -907,9 +907,10 @@ static void R_MaterialShow_f (void)
 		if (lit)
 			ri.Con_Printf (PRINT_ALL, "what of it is lit (%d%% of its light; %s)\n", (int)(share * 100.0f + 0.5f),
 				image->type != it_wall ? "not used: a skin gives off no light"
-				: (info.glow > 0 ? "used: its name says it is lit"
-				: (share >= LIT_SHARE_LEAST ? "used where a map makes it a light"
-				: "not used: too little of its light for a map's light to come from there alone")));
+				: (share >= LIT_SHARE_LEAST
+					? (info.glow > 0 ? "used: its name says it is lit" : "used where a map makes it a light")
+					: (info.glow > 0 ? "used, as its name says it is lit, but not where a map makes it a light: too little of its light is there"
+						: "not used: too little of its light for a map's light to come from there alone")));
 		else
 			ri.Con_Printf (PRINT_ALL, "what of it is lit (no part of it stands apart)\n");
 	}

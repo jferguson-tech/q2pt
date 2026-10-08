@@ -92,6 +92,8 @@ being red.
 #define GLOW_REACH		3		/* the parts of one lamp lie no further apart than this: the rings of a lens,
 								   the squares of a grille */
 #define GLOW_SAME		0.12f	/* and are of one colour: their shares of red and of green differ by less */
+#define GLOW_LENS		0.7f	/* a lens is strongly coloured all through, dark rings and all: 1 - least / most of
+								   its red, green and blue is this or more */
 #define GLOW_APART		1.3f	/* what is lit is on average this much brighter than what is not, or nothing
 								   in the picture stands apart from the rest */
 
@@ -1030,7 +1032,57 @@ uint32_t *pt_material_glow(const uint32_t *pixels, int width, int height, int re
 		return NULL;
 	}
 
-	/* a gap a texel wide in what is lit is closed: the dark ring in a lamp's lens, the space within a letter */
+	/*
+	A lens is lit unevenly, and has rings and ribs in it painted as dark as
+	its frame. They are told from the frame by colour: what is strongly
+	coloured and lies between lit texels of its own colour, one on either
+	side of it, is lens.
+	*/
+	for (y = 0; y < height; y++)
+	{
+		for (x = 0; x < width; x++)
+		{
+			enum { MOST_NEAR = (2 * GLOW_REACH + 1) * (2 * GLOW_REACH + 1) };
+			const uint32_t c = pixels[(size_t)y * width + x];
+			const int	r8 = c & 0xff, g8 = (c >> 8) & 0xff, b8 = (c >> 16) & 0xff;
+			const int	most8 = r8 > g8 ? (r8 > b8 ? r8 : b8) : (g8 > b8 ? g8 : b8);
+			const int	least8 = r8 < g8 ? (r8 < b8 ? r8 : b8) : (g8 < b8 ? g8 : b8);
+			signed char	near_x[MOST_NEAR], near_y[MOST_NEAR];
+			float		red, green, its_red, its_green;
+			int			count_near = 0, a, b;
+
+			i = (size_t)y * width + x;
+			next_to[i] = 0;
+			if (lit[i] == LIT || (float)(most8 - least8) < GLOW_LENS * (float)(most8 > 0 ? most8 : 1))
+				continue;
+			colour_shares(c, linear, &red, &green);
+			for (dy = -GLOW_REACH; dy <= GLOW_REACH; dy++)
+			{
+				for (dx = -GLOW_REACH; dx <= GLOW_REACH; dx++)
+				{
+					if (!beside(x, y, dx, dy, width, height, repeats, &j) || lit[j] != LIT)
+						continue;
+					colour_shares(pixels[j], linear, &its_red, &its_green);
+					if ((its_red - red) * (its_red - red) + (its_green - green) * (its_green - green) >= GLOW_SAME * GLOW_SAME)
+						continue;
+					near_x[count_near] = (signed char)dx;
+					near_y[count_near++] = (signed char)dy;
+				}
+			}
+			for (a = 0; a < count_near && !next_to[i]; a++)
+				for (b = a + 1; b < count_near; b++)
+					if (near_x[a] * near_x[b] + near_y[a] * near_y[b] < 0)
+					{
+						next_to[i] = 1;
+						break;
+					}
+		}
+	}
+	for (i = 0; i < count; i++)
+		if (next_to[i])
+			lit[i] = LIT;
+
+	/* a gap a texel wide in what is lit is closed: the space within a letter, the seam between two lamps */
 	for (y = 0; y < height; y++)
 	{
 		for (x = 0; x < width; x++)
