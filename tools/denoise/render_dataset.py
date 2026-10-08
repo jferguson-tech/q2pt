@@ -16,6 +16,15 @@ import argparse, os, random, shutil, subprocess, sys, time
 import make_tours
 
 HELD_OUT = ['ware2', 'jail3', 'mine3', 'power2', 'city2', 'q2dm4']
+# HELD_OUT has been measured after every training run and has steered the
+# work, so it is no longer a blind test. These three are: from the two
+# mission packs (two of The Reckoning's maps, one of Ground Zero's), drawn
+# with random.Random('q2pt denoiser final test maps') on 2026-10-08 before
+# any frame of either pack had been rendered. They are for --split final,
+# once, when the work is finished: never train on them, and do not render
+# or measure them before then. They need the packs' pak0.pak beside the
+# game's own.
+FINAL = ['xdm2', 'xmoon2', 'rdm7']
 
 # tag, blur, fog, clips, frames a clip, frames a second, paths a pixel in the reference
 TRAIN_JOBS = [('a', 0.0, 1, 4, 12, 30, 512), ('b', 0.0, 0, 1, 12, 60, 512), ('c', 0.5, 1, 2, 12, 30, 512)]
@@ -120,7 +129,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--game', required=True, help='the folder quake2 runs from')
     ap.add_argument('--out', required=True)
-    ap.add_argument('--split', choices=['train', 'test'], required=True)
+    ap.add_argument('--split', choices=['train', 'test', 'final'], required=True)
     ap.add_argument('--paths', type=int, default=0, help="paths a pixel in the reference, in place of each job's own")
     ap.add_argument('--mode', type=int, default=10, help='gl_mode: 10 is 1280x720')
     ap.add_argument('--maps', default='')
@@ -135,8 +144,11 @@ def main():
     files = make_tours.read_paks(os.path.join(args.game, 'baseq2'))
     maps = sorted(n[5:-4] for n in files if n.startswith('maps/') and n.endswith('.bsp'))
     if args.split == 'train':
-        maps = [m for m in maps if m not in HELD_OUT]
+        maps = [m for m in maps if m not in HELD_OUT + FINAL]
         jobs = TRAIN_JOBS
+    elif args.split == 'final':
+        maps = [m for m in maps if m in FINAL]
+        jobs = TEST_JOBS
     else:
         maps = [m for m in maps if m in HELD_OUT]
         jobs = TEST_JOBS
@@ -160,7 +172,7 @@ def main():
         for tag, blur, fog, clips, frames, fps, paths, *more in jobs:
             for m in maps:
                 # a test tour is the same sharp and blurred, to compare them
-                tour_tag = 'test' if args.split == 'test' else tag
+                tour_tag = 'test' if args.split != 'train' else tag
                 run_job(args, m, tag, blur, fog, clips, frames, fps, args.paths or paths, tour_tag, args.seed, more[0] if more else {})
     finally:
         if os.path.exists(backup):
