@@ -17,7 +17,7 @@ pt_render_export 1
 pt_render mydemo 60 16
 ```
 
-That leaves `baseq2/render/mydemo/frameNNNNN.ptx`, one a frame (about 80 MB
+That leaves `baseq2/render/mydemo/frameNNNNN.ptx`, one a frame (about 140 MB
 each at 1280x720: they can be deleted once the pictures are made). Then:
 
 ```
@@ -30,18 +30,49 @@ sharp frames; frames rendered with `pt_render_blur` are denoised as they
 are. The status bar and the glow around bright things (`pt_bloom`) are not
 in these frames.
 
+The film is gone over twice, from its end to its start and then from its
+start to its end, so that each frame can draw on the frames on both sides
+of it. `--past-only` makes one pass, in which a frame draws only on those
+before it: about twice as fast and, on the test clips, under 0.1 dB worse.
+`--paths 4` (or 8) uses only that many of the paths a frame was rendered
+with.
+
 The weights are not in this repository: they are a download beside a
 release.
 
 ## How it works
 
-The network (model.py) sees, for each frame, the noisy light with the
-surfaces' own colour divided out, that colour, the normals, the distance,
-and its own answer for the frame before, moved along the motion the game
-exported to where things are now. It returns a fresh estimate and, per
-pixel, how much of the last answer to keep. Textures never pass through it,
-so they stay as sharp as they were rendered; keeping part of the last
-answer is what stops a film from flickering.
+The game exports the light of each frame in three layers (what surfaces
+scatter, what they mirror, and what lies in front of them such as beams and
+particles), each with the surfaces' own colour divided out, and beside them
+that colour, the normals, the distance, how noisy each pixel is, and how
+each pixel moved since the frame before.
+
+The network (model.py, 4.0 million weights) sees those for one frame,
+together with its own answers for the frame before and, on the second pass,
+the frame after, each moved along the exported motion to where things are
+now. It returns a fresh estimate of each layer and, per pixel, how much of
+the neighbouring frames' answers to mix in. Textures never pass through it,
+so they stay as sharp as they were rendered; mixing in the neighbouring
+frames is what stops a film from flickering.
+
+Light is scaled before the network sees it by the exposure the game would
+be showing that frame at, which lags behind the scene as the game's does:
+a flash in a dark room is judged the way it will be seen.
+
+## How good it is
+
+`results/` has the measurements of each training run on the six held-out
+maps, against references of 16,384 paths a pixel and against Intel Open
+Image Denoise 2.3.3 given the same frames with their colour and normal
+buffers. As of the fourth run (`results/stage4.md`) it flickers less than
+Open Image Denoise at 4 and 16 paths but is still slightly behind it in
+PSNR and SSIM: 38.79 dB against 38.95 dB at 16 paths, 37.64 against 38.10
+at 4. It is ahead on four of the six clips at 4 paths and three at 16; the
+largest loss is where a BFG is fired in a dark room.
+
+Frames rendered with motion blur denoise far better than sharp frames
+blurred afterwards (33.6 dB against 27.7 dB at 16 paths).
 
 ## Training it again
 
@@ -50,7 +81,9 @@ answer is what stops a film from flickering.
    (make_tours.py reads the maps from your own .pak files), runs the game on
    them and saves the buffers. Six maps are held out as the test set and
    never trained on. This takes hours and a few hundred GB.
-2. `train.py --data DATA/train --out RUN`
+2. `train.py --data DATA/train --out RUN`, and `--start OTHER/denoiser.pt`
+   to carry on from weights already trained. It needs a GPU with about
+   10 GB.
 3. `evaluate.py --data DATA/test --weights RUN/denoiser.pt --out REPORT`
    measures it against the references, the noisy frames and, with `--oidn`,
    Intel Open Image Denoise.
