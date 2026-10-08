@@ -52,6 +52,22 @@ vec3 EyeDir(vec3 forward, vec3 right, vec3 up, vec2 at)
 		+ up * ((1.0 - 2.0 * at.y / fr.size.y) * fr.forward.w));
 }
 
+// The light the air scatters to the eye from the first reach of a view ray:
+// the reach is cut into as many lengths as there are samples, and a point
+// drawn in each.
+vec3 FogGlow(vec3 from, vec3 dir, float reach, float fog, float max_sample)
+{
+	const int count = max(1, int(fr.painted.z));
+	vec3 sum = vec3(0.0);
+	for (int k = 0; k < count; k++)
+	{
+		const float at = (float(k) + Rand()) * reach / float(count);
+		const vec3 lit = DirectMedium(from + dir * at);
+		sum += ClampSample(lit * (fog * (0.25 * INV_PI) * exp(-fog * at) * reach), max_sample);
+	}
+	return sum / float(count);
+}
+
 void main()
 {
 	const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -297,9 +313,7 @@ void main()
 		// sky is dimmed by it and the shafts in it show
 		if (fog > 0.0 && stand_in)
 		{
-			const float at = Rand() * stand_depth;
-			const vec3 lit = DirectMedium(eye + eye_dir * at);
-			over += ClampSample(lit * (fog * (0.25 * INV_PI) * exp(-fog * at) * stand_depth), max_sample) * direct_on;
+			over += FogGlow(eye, eye_dir, stand_depth, fog, max_sample) * direct_on;
 			beyond *= exp(-fog * (sky_hit ? sky_depth : layer_depth));
 		}
 
@@ -349,13 +363,11 @@ void main()
 
 	// Air that scatters light: some of what the surface sends is lost on the
 	// way, and the air itself glows where light falls through it, which is
-	// what shows as shafts. One point along the way is sampled per frame.
+	// what shows as shafts. A few points along the way are sampled per frame.
 	if (fog > 0.0)
 	{
 		const float reach = have_layer ? layer_depth : hit.t;		// the straight part of the view
-		const float at = Rand() * reach;
-		const vec3 lit = DirectMedium(eye + eye_dir * at);
-		over += ClampSample(lit * (fog * (0.25 * INV_PI) * exp(-fog * at) * reach), max_sample) * direct_on;
+		over += FogGlow(eye, eye_dir, reach, fog, max_sample) * direct_on;
 
 		const float kept = exp(-fog * depth);
 		kd *= kept;
