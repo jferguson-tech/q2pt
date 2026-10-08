@@ -67,8 +67,16 @@ bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &
 // smooth: filter the textures, for surfaces the eye sees directly. Further
 // along a path the nearest texel is as good and cheaper.
 void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth = false);
-// in the clay view this material is clay: all that is solid, and liquids
-bool ClayCovers(const Material &mat);
+// in this view mode the material is solid whatever its alpha says. Clay: all
+// that is solid, and liquids. The white furnace: everything.
+bool ViewSolid(int mode, const Material &mat);
+// the lighting only view: the surface as it would be were its texture white
+void WhiteSurface(Surface &s);
+// what a view of one thing known of the surface shows (PT_VIEW_BASE_COLOUR
+// to PT_VIEW_GLOW)
+Vec3 SurfaceChannel(int mode, const Surface &s);
+// the colour that stands for a number of bounces, see PT_VIEW_BOUNCES
+Vec3 BounceColour(float bounces);
 
 // what an emitter sends back along the ray that hit it
 Vec3 Emitted(const Surface &s, bool seen);
@@ -90,8 +98,9 @@ bool SampleSpecular(const Surface &s, Rng &rng, Vec3 &wi, Vec3 &weight);
 // Radiance arriving back along the ray. camera: the ray left the eye.
 // count_emitters: emitters in the light lists count if hit (the bounce that
 // made this ray could not have sampled them). depth: bounces already taken.
-// reached, if given, gets how far the ray went before it met anything.
+// reached, if given, gets how far the ray went before it met anything;
+// followed, if given, is raised by the number of rays the path was made of.
 Vec3 Radiance(const Scene &sc, Ray ray, Rng &rng, bool camera, bool count_emitters, int depth, int max_bounces,
-	float *reached = nullptr);
+	float *reached = nullptr, int *followed = nullptr);
 
 } // namespace PT_NS

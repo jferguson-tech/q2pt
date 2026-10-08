@@ -313,7 +313,7 @@ static void R_ViewMode (pt_view_t *view)
 	int			mode;
 
 	mode = (int)pt_view->value;
-	if (mode < PT_VIEW_NORMAL || mode > PT_VIEW_MIRROR)
+	if (mode < PT_VIEW_NORMAL || mode >= PT_NUM_VIEWS)
 		mode = PT_VIEW_NORMAL;
 	view->view_mode = mode;
 
@@ -321,6 +321,18 @@ static void R_ViewMode (pt_view_t *view)
 	// would show nothing
 	if (mode == PT_VIEW_MIRROR)
 		view->reflections = 2;
+
+	// a view that numbers are read off is shown as it is traced
+	if (PT_VIEW_IS_MEASURE(mode))
+	{
+		view->exposure = 1;
+		view->auto_exposure = 0;
+		view->tonemap = 2;
+		view->saturation = 1;
+		view->contrast = 1;
+		view->bloom = 0;
+		view->fog = 0;
+	}
 
 	// the light gathered so far is of the other view
 	if (mode != was)

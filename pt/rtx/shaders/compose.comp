@@ -56,6 +56,8 @@ void main()
 		else if (debug == 7) c = vec3(min(diffuse.a, 32.0) / 64.0);
 		else if (debug == 10) c = vec3(surface.a * 0.002);
 	}
+	if (fr.bases.x == VIEW_BOUNCES)
+		c = BounceColour(diffuse.r);
 	c *= exposure;
 
 	// readings for the exposure, from pixels spread over the picture
