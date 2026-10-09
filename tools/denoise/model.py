@@ -25,13 +25,20 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 PARTS = 3                # diffuse, mirrored, layers
-IN_CHANNELS = 9 + 3 + 3 + 3 + 3 + 3 + 1 + 1 + (9 + 1 + 1) * 2
+IN_CHANNELS = 9 + 3 + 3 + 3 + 3 + 3 + 1 + 1 + (9 + 1 + 1) * 2 + 9 * 3 + 3
 OUT_CHANNELS = 9 + PARTS * 2
 
 
 def squash(x):
     """light of any strength into a range a network likes"""
     return torch.log1p(torch.clamp(x, min=0.0) * 16.0) * 0.25
+
+
+def wide(x):
+    """Light as its logarithm over six decades. squash is all but linear
+    below a sixteenth, so what it shows of a dark frame depends on how the
+    frame was scaled; here a different scale is little more than a shift."""
+    return torch.log1p(torch.clamp(x, min=0.0) * 4096.0) * 0.125
 
 
 def unsquash(y):
@@ -143,12 +150,19 @@ class Denoiser(nn.Module):
         noise = torch.sqrt(torch.clamp(f['variance'], min=0.0)) * s / (lum + 0.01)
         noise = torch.clamp(noise, max=8.0) * 0.25
 
+        # the same against the brightness and the noise of the pixels around: with few paths a
+        # pixel's own light is often nothing, and its own noise then says only that
+        around = F.avg_pool2d(torch.cat([lum, torch.clamp(f['variance'], min=0.0) * s * s], dim=1), 7, stride=1, padding=3,
+                              count_include_pad=False)
+        noise_around = torch.log1p(torch.sqrt(around[:, PARTS:]) / (around[:, :PARTS] + 1e-4)) * 0.25
+
         base = squash(lit)
         paths_f = (torch.log2(paths.float()) / 4.0).view(-1, 1, 1, 1).expand_as(depth)
         # the exact light is not touched, but says where lamps and the sky are
         x = torch.cat([base, noise, f['albedo'], f['specular'], squash(f['exact'] * s),
                        normal, depth_f, paths_f, squash(last), have, depth_gap,
-                       squash(next_), have_next, next_gap], dim=1)
+                       squash(next_), have_next, next_gap,
+                       wide(lit), wide(last), wide(next_), noise_around], dim=1)
         y = self.net(x.to(memory_format=torch.channels_last)).float()
 
         fresh = unsquash(y[:, 0:9] + base.float())

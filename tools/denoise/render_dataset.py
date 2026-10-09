@@ -40,10 +40,13 @@ TRAIN_JOBS += [('d', 0.0, 1, 4, 12, 30, 512, MORE), ('e', 0.5, 1, 2, 12, 30, 512
 DARK, DARK_MOST = 2.0, 6
 DARK_JOB = ('f', 0.0, 1, 12, 30, 512, dict(fire_chance=0.7, fire_kinds=(1, 2, 3, 4, 5, 6, 6)))
 TYPICAL_TARGET = 0.0054      # pt/cpu/pt_cpu.cpp
-# --dim renders every map with its own lights and sky turned down 4 to 8
-# times (a strength drawn for each map), so that every map gives dark clips.
-# What is fired is as bright as ever: a flash in a dim room is the hard case.
-DIM_JOBS = [('g', 0.0, 1, 2, 8, 30, 512, MORE)]
+# --dim renders every map with its own lights and sky turned down, so that
+# every map gives dark clips. What is fired is as bright as ever: a flash in
+# a dim room is the hard case. Job g turns them down 4 to 8 times (a
+# strength drawn for each map), which leaves a bright map bright; job h by
+# whatever makes the game's exposure brighten the map 4 to 16 times, going
+# by the clips of job a already rendered of it.
+DIM_JOBS = [('g', 0.0, 1, 1, 8, 30, 512, MORE), ('h', 0.0, 1, 1, 8, 30, 512, MORE)]
 
 TEST_JOBS = [('s', 0.0, 1, 1, 12, 30, 16384), ('m', 0.5, 1, 1, 12, 30, 4096)]
 
@@ -136,6 +139,21 @@ def dark_clips(args, m, tries):
     return keep
 
 
+def dim_for(args, m, tag):
+    """how many times a map's lights are turned down for a dim job"""
+    rng = random.Random('dim/%s/%s/%d' % (m, tag, args.seed))
+    if tag == 'g':
+        return 2.0 ** rng.uniform(2.0, 3.0)
+    import glob
+    import numpy as np
+    import ptx
+    first = sorted(glob.glob(os.path.join(args.out, args.split, '%s_a' % m, 'c*', '*.ptx')))[::6]
+    if not first:
+        return 0.0
+    typical = float(np.median([ptx.typical(ptx.clean(ptx.Frame(p).data[ptx.ALL_PICTURE:ptx.ALL_PICTURE + 3, ::8, ::8])) for p in first]))
+    return max(1.0, 2.0 ** rng.uniform(2.0, 4.0) * typical / TYPICAL_TARGET)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--game', required=True, help='the folder quake2 runs from')
@@ -187,7 +205,12 @@ def main():
             for m in maps:
                 # a test tour is the same sharp and blurred, to compare them
                 tour_tag = 'test' if args.split != 'train' else tag
-                dim = 2.0 ** random.Random('dim/%s/%s/%d' % (m, tag, args.seed)).uniform(2.0, 3.0) if args.dim else 1.0
+                dim = dim_for(args, m, tag) if args.dim else 1.0
+                if not dim:
+                    print('%s_%s: no clips of job a to go by' % (m, tag), flush=True)
+                    continue
+                if args.dim:
+                    print('%s_%s: lights turned down %.1f times' % (m, tag, dim), flush=True)
                 run_job(args, m, tag, blur, fog, clips, frames, fps, args.paths or paths, tour_tag, args.seed, more[0] if more else {}, dim=dim)
     finally:
         if os.path.exists(backup):

@@ -94,6 +94,13 @@ def relative(x, y):
     return torch.clamp((x - y) ** 2 / (x.detach() + 0.02) ** 2, max=25.0).mean()
 
 
+def logs(x, y):
+    """Squared difference of the logarithms: the same error counts the same
+    in the dark of a picture as in its light, and too bright as much as too
+    dim."""
+    return ((torch.log(torch.clamp(x, min=0.0) + 0.01) - torch.log(torch.clamp(y, min=0.0) + 0.01)) ** 2).mean()
+
+
 def haze(item, scale, paths, length):
     """Now and then, a coloured haze over a clip that comes and goes, thicker
     with distance and noisy as the tracer's own would be. Flashes that fill
@@ -118,18 +125,24 @@ def haze(item, scale, paths, length):
         item['ref_picture'][i, first:last + 1] += clean
 
 
-def measure(light, f, ref, ref_light, expo):
-    """the losses that need one frame only: the picture, its parts, and how it is shown"""
+def measure(light, f, ref, ref_light, expo, shift):
+    """The losses that need one frame only: the picture and its parts in
+    logarithms, and the picture as it is shown. shift [B,1,1,1]: the picture
+    is also judged at an exposure this many times off, as the game shows a
+    frame when the light has just changed."""
     out = picture(light, f['albedo'], f['specular'], f['exact'])
-    whole = relative(out * expo, ref * expo)
+    whole = logs(out * expo, ref * expo)
     # each part against its own reference, as it enters the picture
-    apart = (relative(f['albedo'] * light[:, 0:3] * expo, f['albedo'] * ref_light[:, 0:3] * expo)
-             + relative(f['specular'] * light[:, 3:6] * expo, f['specular'] * ref_light[:, 3:6] * expo)
-             + relative(light[:, 6:9] * expo, ref_light[:, 6:9] * expo)) / 3
+    apart = (logs(f['albedo'] * light[:, 0:3] * expo, f['albedo'] * ref_light[:, 0:3] * expo)
+             + logs(f['specular'] * light[:, 3:6] * expo, f['specular'] * ref_light[:, 3:6] * expo)
+             + logs(light[:, 6:9] * expo, ref_light[:, 6:9] * expo)) / 3
     shown, want = display(out, expo, True), display(ref, expo, True)
     gx, gy = gradients(shown)
     rx, ry = gradients(want)
-    seen = F.l1_loss(shown, want) + 0.5 * (F.l1_loss(gx, rx) + F.l1_loss(gy, ry))
+    off, off_want = display(out, expo * shift, True), display(ref, expo * shift, True)
+    # the squared error is what PSNR counts
+    seen = F.l1_loss(shown, want) + 0.5 * (F.l1_loss(gx, rx) + F.l1_loss(gy, ry)) \
+        + 10.0 * (F.mse_loss(shown, want) + F.mse_loss(off, off_want)) + 0.5 * F.l1_loss(off, off_want)
     return whole, apart, seen, shown, want
 
 
@@ -185,7 +198,11 @@ def main():
             expo = torch.tensor([exposure_for(t) for t in typical.tolist()], device=device).view(-1, 1, 1, 1)
             # the network's own scale is judged from the noisy frames in use, so not exactly
             scale = torch.tensor([network_scale(t) for t in typical.tolist()], device=device) \
-                * torch.exp2(torch.empty(b, device=device).uniform_(-1.0, 1.0))
+                * torch.exp2(torch.empty(b, device=device).uniform_(-2.0, 2.0))
+            # one clip in three is also judged at another exposure, up to 16 times off either way
+            shift = torch.where(torch.rand(b, device=device) < 0.33,
+                                torch.exp2(torch.empty(b, device=device).uniform_(-4.0, 4.0)),
+                                torch.ones(b, device=device)).view(-1, 1, 1, 1)
             haze(item, scale, item['paths'], args.length)
             frames = [{k: item[k][:, t] for k in KEYS} for t in range(args.length)]
             opt.zero_grad(set_to_none=True)
@@ -197,8 +214,8 @@ def main():
                 f = frames[t]
                 with torch.autocast('cuda', dtype=torch.bfloat16):
                     light, state = model(f, item['paths'], scale, state, None, backwards=True)
-                whole, apart, seen, _, _ = measure(light, f, item['ref_picture'][:, t], item['ref_light'][:, t], expo)
-                back = back + whole + 0.5 * apart + 0.2 * seen
+                whole, apart, seen, _, _ = measure(light, f, item['ref_picture'][:, t], item['ref_light'][:, t], expo, shift)
+                back = back + 0.25 * whole + 0.125 * apart + 0.5 * seen
                 # what the second pass is given is a fact to it, not something to change
                 state = (state[0].detach(), state[1])
                 if t:
@@ -217,7 +234,7 @@ def main():
                 f = frames[t]
                 with torch.autocast('cuda', dtype=torch.bfloat16):
                     light, state = model(f, item['paths'], scale, state, ahead[t])
-                whole, apart, seen, shown, want = measure(light, f, item['ref_picture'][:, t], item['ref_light'][:, t], expo)
+                whole, apart, seen, shown, want = measure(light, f, item['ref_picture'][:, t], item['ref_light'][:, t], expo, shift)
                 parts[0] += whole
                 parts[1] += apart
                 parts[2] += seen
@@ -228,7 +245,7 @@ def main():
                     parts[3] += (((shown - moved[:, 0:3]) - (want - moved[:, 3:6])).abs() * ok).mean()
                 last_out, last_ref = shown, want
             parts = parts / args.length
-            loss = parts[0] + 0.5 * parts[1] + 0.2 * parts[2] + 0.5 * parts[3]
+            loss = 0.25 * parts[0] + 0.125 * parts[1] + 0.5 * parts[2] + 0.5 * parts[3]
             parts[4] = back.detach()
 
             loss.backward()
