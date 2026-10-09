@@ -180,6 +180,8 @@ void main()
 			break;
 		}
 		MakeSurface(hit, base, origin, dir, fr.settings2.y != 0, surf);
+		if (view_mode == 0)
+			AddFroth(surf);
 		tint *= Fade(absorb, hit.t - entered);
 		entered = hit.t;
 		if (view_mode >= VIEW_LIGHTING)
@@ -223,7 +225,7 @@ void main()
 		// Glass and water are clear materials with a tint painted on. The
 		// boundary reflects some of the light, more at a glancing angle, and
 		// lets the rest in; water bends it on the way.
-		bool bent = false;
+		bool bent = false, shut = false;
 		if ((surf.mat.flags & MAT_BLACK) == 0u && surf.roughness < LIGHT_SAMPLED_ROUGHNESS)
 		{
 			const bool waves = (surf.mat.flags & MAT_WAVES) != 0u;
@@ -248,15 +250,34 @@ void main()
 			// with reflections off the light simply all goes through
 			if (reflections < 1 && fresnel < 1.0)
 				fresnel = 0.0;
-			if (fresnel > 0.0)
+			// froth is wet and shines, but less than the liquid under it
+			const float shine = fresnel * (1.0 - 0.75 * surf.froth);
+			shut = fresnel >= 1.0;
+			// Froth is matt, and lit by the room as well as by its lamps.
+			// Half the rays that would have gone to look for what the
+			// surface mirrors go to look for that light instead; from under
+			// the liquid it is the light above that comes through.
+			const bool scatter = surf.froth > 0.0 && Rand() < 0.5;
+			const float chosen = surf.froth > 0.0 ? 0.5 : 1.0;
+			if (shine > 0.0 || scatter)
 			{
 				vec3 mirror = surf.n * (2.0 * dot(surf.n, surf.wo)) - surf.wo;
 				if (dot(mirror, surf.ng) < 0.0)
 					mirror -= surf.ng * (2.0 * dot(mirror, surf.ng));
+				float side = 1.0;
+				if (scatter)
+				{
+					side = surf.tri_n.z < -0.5 ? -1.0 : 1.0;
+					mirror = SampleDiffuse(surf) * side;
+				}
 				float reached;
-				const float weight = through * fresnel;
-				front_mirror += ClampSample(Radiance(surf.p + surf.ng * RAY_OFFSET, mirror, true, 1, fr.settings.w, reached),
-					max_sample) * weight;
+				const float weight = scatter ? 0.0 : through * shine;
+				const vec3 found = ClampSample(Radiance(surf.p + surf.ng * (side * RAY_OFFSET), mirror, !scatter, 1, fr.settings.w, reached),
+					max_sample);
+				if (scatter)
+					front_mirror += found * surf.kd * (through * (1.0 - shine) * (shut ? 1.0 : surf.mat.alpha) / chosen);
+				else
+					front_mirror += found * (weight / chosen);
 
 				// A reflection appears to sit behind the glass, as far again
 				// as the thing reflected is in front. That is where to look
@@ -267,7 +288,7 @@ void main()
 					over_pos = eye + eye_dir * (travelled + hit.t + min(reached, 100000.0));
 				}
 			}
-			through *= 1.0 - fresnel;
+			through *= 1.0 - shine;
 
 			// going in, the liquid starts soaking up light; coming out, it stops
 			if (waves)
@@ -288,12 +309,21 @@ void main()
 		}
 
 		// the painted tint: covers its share of what is behind and shows lit itself
-		const float share = through * surf.mat.alpha;
+		// where the liquid lets nothing out, froth has all that it does not mirror
+		const float cover = shut && surf.froth > 0.0 ? 1.0 : surf.mat.alpha;
+		const float share = through * cover;
+		if (surf.froth > 0.0 && surf.tri_n.z < -0.5)
+		{
+			// froth seen from under the liquid: what lights it is above,
+			// and comes through it
+			surf.n = -surf.n;
+			surf.ng = -surf.ng;
+		}
 		if ((surf.mat.bits & BIT_EMISSIVE) != 0u && surf.front)
 			front_add += Emitted(surf, true) * share;
 		if (share > 0.0 && MaxComponent(surf.kd) > 0.0)
 			front_diffuse += surf.kd * (DirectWorld(surf, true).diffuse + DirectFrameOne(surf).diffuse) * (INV_PI * share);
-		through *= 1.0 - surf.mat.alpha;
+		through *= 1.0 - cover;
 		if (!bent)
 			tmin = hit.t + 0.01;
 	}
