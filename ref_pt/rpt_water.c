@@ -567,7 +567,7 @@ void R_WaterFrame (refdef_t *fd)
 			if (b->foam_texture >= 0 && b->foam)
 				rpt.backend->texture_update (rpt.backend, b->foam_texture, b->foam);
 			b->fresh = false;
-			PERF ("water upload");
+			PERF (NULL);		// the backend's own: "texture copy", and the wait before it
 		}
 		if (b->reach > r_waterreach)
 			r_waterreach = b->reach;

@@ -263,7 +263,7 @@ at the frame times of 30, 60, 120, 240 and 480 frames a second:
 - **The processor**: each column is a whole frame, from one being shown to
   the next, made up of the game's server, its sound, the rest of the client,
   each step of getting the view ready, the water (touching, stepping, making
-  its pictures, sending them), drawing the status bar, the graphs themselves,
+  its pictures, copying them for the card), drawing the status bar, the graphs themselves,
   and the time spent waiting for the card or the screen.
 - **The card** (RTX renderer): each pass it runs, with a white mark at the
   length of the whole frame to show what it had to spare. The card gives its

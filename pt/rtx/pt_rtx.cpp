@@ -3023,11 +3023,13 @@ void TextureUpdate(pt_backend_t *b, int handle, const uint32_t *pixels)
 		const Texture &t = s->textures[handle];
 		const VkDeviceSize bytes = (VkDeviceSize)t.width * t.height * 4;
 		// the card may still be copying from here for the last frame
+		LapStart(s);
 		if (s->pending.empty())
 		{
 			const VkFence both[2] = {s->fence, s->fence_trace};
 			vkWaitForFences(s->device, 2, both, VK_TRUE, UINT64_MAX);
 		}
+		Lap(s, "wait card", 2);
 		if (!s->updates.buffer || s->updates_used + bytes > s->updates.size)
 		{
 			if (!s->pending.empty())
@@ -3039,6 +3041,7 @@ void TextureUpdate(pt_backend_t *b, int handle, const uint32_t *pixels)
 		memcpy(static_cast<uint8_t *>(s->updates.ptr) + s->updates_used, pixels, (size_t)bytes);
 		s->pending.push_back(Pending{handle, s->updates_used});
 		s->updates_used += bytes;
+		Lap(s, "texture copy");
 	}
 	catch (const Fail &f)
 	{
