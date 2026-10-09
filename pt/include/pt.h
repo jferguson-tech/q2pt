@@ -319,6 +319,11 @@ typedef struct pt_view_s
 								   surface to be followed by, so its light
 								   trails what moves; fewer frames trail less
 								   and are noisier. Below 1 = as history */
+	float	react;				/* how readily what was gathered is let go where
+								   the light is found to have changed, so that it
+								   does not trail a light that moves, flashes or
+								   goes out: 0 = never, 1 = at once. Such places
+								   are noisier for a few frames. RTX only */
 	float	bloom;				/* glow around what is brighter than white; 0 = none */
 	float	bloom_max;			/* the most over white that anything adds to the
 								   glow, in whites: up to half of this it adds
