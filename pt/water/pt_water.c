@@ -35,6 +35,9 @@ struct pt_water_s
 	float		leftover;		/* time not yet simulated */
 	float		reach;			/* furthest from level in the last wave picture */
 	float		tall;			/* the same before wave_scale, or a great deal if no picture was made yet */
+	float		shown;			/* the wave_scale of the last wave picture */
+	float		*mark;			/* how high the liquid has lately stood in each cell: what it left wet */
+	float		*stir;			/* how ruffled each cell is, 0 to 1: see STIR_REST */
 	float		*foam;			/* how much of each cell froth covers, 0 to FOAM_MAX; NULL until asked for */
 	float		*old;			/* that times how old it is, 0 just made to 1; what is added to foam is new */
 	float		*shore;			/* how much the liquid froths of itself at each cell, against its banks; NULL until worked out */
@@ -46,7 +49,20 @@ struct pt_water_s
 	unsigned	seed;
 	int			touched;		/* something has been done to it since the last step */
 	int			quiet;			/* the last step left it level and at rest */
+	int			settling;		/* a wet mark is still drying or ripples are still dying down */
 };
+
+/* how fast the wet a wave left behind it dries, in units of height a second */
+#define WET_DRIES		0.3f
+
+/* Ripples too fine for the cells. No liquid lies quite still, so there are
+   always a few; a slope, a height above or below level and a stream each
+   ruffle it more, up to 1, and it settles by so much a second. */
+#define STIR_REST		0.25f
+#define STIR_SLOPE		2.0f
+#define STIR_HEIGHT		0.5f
+#define STIR_STREAM		0.01f
+#define STIR_SETTLES	0.4f
 
 /* a surface nowhere further from level than this, in units, with nothing
    flowing faster than FLOW_REST units a second, is at rest */
@@ -121,12 +137,15 @@ pt_water_t *pt_water_create(float min_x, float min_y, float max_x, float max_y, 
 	w->fy = (float *)calloc((size_t)w->width * (w->height + 1), sizeof(float));
 	w->depth = (float *)malloc(count * sizeof(float));
 	w->tmp = (float *)calloc(count, sizeof(float));
+	w->mark = (float *)calloc(count, sizeof(float));
+	w->stir = (float *)calloc(count, sizeof(float));
+	w->shown = 1.0f;
 	w->waves = (uint32_t *)calloc(count, sizeof(uint32_t));
 	w->caustics = (uint32_t *)calloc(count, sizeof(uint32_t));
 	w->open = (unsigned char *)malloc(count);
 	if (w->open)
 		memset(w->open, 1, count);
-	if (!w->open || !w->h || !w->u || !w->v || !w->fx || !w->fy || !w->depth || !w->tmp || !w->waves || !w->caustics)
+	if (!w->open || !w->h || !w->u || !w->v || !w->fx || !w->fy || !w->depth || !w->tmp || !w->mark || !w->stir || !w->waves || !w->caustics)
 	{
 		pt_water_destroy(w);
 		return NULL;
@@ -150,6 +169,8 @@ void pt_water_destroy(pt_water_t *w)
 	free(w->depth);
 	free(w->current);
 	free(w->tmp);
+	free(w->mark);
+	free(w->stir);
 	free(w->waves);
 	free(w->caustics);
 	free(w->open);
@@ -788,13 +809,44 @@ void pt_water_step(pt_water_t *w, float dt, float gravity, float damping)
 	}
 	if (guard >= 32 || w->leftover < 1.0e-6f)
 		w->leftover = 0.0f;
+	w->settling = 0;
+	{
+		/* What the liquid has stood against stays wet for a while. And
+		   where waves are, or a stream, the surface is ruffled with ripples
+		   too fine for the cells, which are a while in settling. */
+		const float dried = WET_DRIES * dt, settled = STIR_SETTLES * dt;
+		int x, y;
+
+		for (y = 0; y < w->height; y++)
+		{
+			for (x = 0; x < w->width; x++)
+			{
+				const size_t i = (size_t)y * w->width + x;
+				const float here = w->h[i];
+				const float was = w->mark[i] - dried;
+				float busy = (fabsf(at(w, w->h, x + 1, y, here) - at(w, w->h, x - 1, y, here))
+					+ fabsf(at(w, w->h, x, y + 1, here) - at(w, w->h, x, y - 1, here))) * (STIR_SLOPE / w->cell)
+					+ fabsf(here) * STIR_HEIGHT;
+
+				if (w->current)
+					busy += (fabsf(w->current[i * 2]) + fabsf(w->current[i * 2 + 1])) * STIR_STREAM;
+				if (busy > 1.0f) busy = 1.0f;
+				/* a mark still drying, or ripples still settling, keep it awake */
+				if (w->open[i] && (w->mark[i] > here + HEIGHT_REST || w->stir[i] > busy + 0.01f))
+					w->settling = 1;
+				w->mark[i] = here > was ? here : was;
+				if (busy < w->stir[i] - settled) busy = w->stir[i] - settled;
+				w->stir[i] = busy;
+			}
+		}
+	}
 	if (w->foaming > 0.0f)
 		foam_step(w, dt);
 
 	/* Has it come to rest? Then it is put level, which nobody can tell
 	   from where it was, and stays so until something touches it. */
 	w->touched = 0;
-	w->quiet = !w->foamy && !w->sprays;
+	w->quiet = !w->foamy && !w->sprays && !w->settling;
 	if (w->quiet)
 	{
 		const size_t cells = (size_t)w->width * w->height;
@@ -869,6 +921,7 @@ const uint32_t *pt_water_waves(pt_water_t *w, float wave_scale)
 		}
 	}
 	w->reach = reach;
+	w->shown = wave_scale;
 	w->tall = wave_scale > 0.0f ? reach / wave_scale : 1.0e9f;
 	return w->waves;
 }
@@ -904,58 +957,71 @@ float pt_water_height_at(const pt_water_t *w, float x, float y, float wave_scale
 
 float pt_water_reach(const pt_water_t *w) { return w->reach; }
 
-static int here_or_near(const pt_water_t *w, int x, int y)
+/* how high the liquid has lately stood here or in a cell next to this one,
+   or less than nothing where there is no liquid in any of them */
+static float mark_near(const pt_water_t *w, int x, int y)
 {
+	float most = -1.0e9f;
 	int dx, dy;
 
 	for (dy = -1; dy <= 1; dy++)
 		for (dx = -1; dx <= 1; dx++)
 			if (x + dx >= 0 && y + dy >= 0 && x + dx < w->width && y + dy < w->height
-				&& w->open[(size_t)(y + dy) * w->width + x + dx])
-				return 1;
-	return 0;
+				&& w->open[(size_t)(y + dy) * w->width + x + dx]
+				&& w->mark[(size_t)(y + dy) * w->width + x + dx] > most)
+				most = w->mark[(size_t)(y + dy) * w->width + x + dx];
+	return most;
+}
+
+/* a curvature as a byte: see PT_WATER_CURVE_MAX */
+static uint32_t curve_byte(float c)
+{
+	float s = sqrtf(fabsf(c) / PT_WATER_CURVE_MAX);
+
+	if (s > 1.0f) s = 1.0f;
+	return (uint32_t)(128.5f + (c < 0.0f ? -127.0f : 127.0f) * s);
 }
 
 const uint32_t *pt_water_caustics(pt_water_t *w, float strength)
 {
 	/*
-	Where the surface curves like a lens, hollow side up, it gathers the
-	light passing through; where it bulges it spreads it. The curvature of
-	the height field says which, and by how much.
+	Where the surface bulges it gathers the light passing through, as a
+	lens does, and where it is hollow it spreads it. How much, and how far
+	below, goes by how sharply it curves, which is all that is worked out
+	here: whoever lights something through the surface knows how far the
+	light has to go and does the rest.
 	*/
-	const float gain = strength * 6.0f / w->cell;
-	int x, y, pass;
+	const float scale = strength * w->shown / (w->cell * w->cell);
+	int x, y;
 
+	/* smoothed a little first: light does not come from one point */
 	for (y = 0; y < w->height; y++)
 	{
 		for (x = 0; x < w->width; x++)
 		{
 			const float here = w->h[(size_t)y * w->width + x];
-			const float lap = at(w, w->h, x - 1, y, here) + at(w, w->h, x + 1, y, here)
-				+ at(w, w->h, x, y - 1, here) + at(w, w->h, x, y + 1, here) - 4.0f * here;
-			float bright = 1.0f + lap * gain;
-			if (bright < 0.15f) bright = 0.15f;
-			if (bright > PT_WATER_CAUSTIC_MAX) bright = PT_WATER_CAUSTIC_MAX;
-			w->tmp[(size_t)y * w->width + x] = bright;
+			w->tmp[(size_t)y * w->width + x] = (at(w, w->h, x - 1, y, here) + at(w, w->h, x + 1, y, here)
+				+ at(w, w->h, x, y - 1, here) + at(w, w->h, x, y + 1, here) + 4.0f * here) * 0.125f;
 		}
 	}
 
-	/* light spreads a little on the way down */
-	for (pass = 0; pass < 1; pass++)
+	for (y = 0; y < w->height; y++)
 	{
-		for (y = 0; y < w->height; y++)
+		for (x = 0; x < w->width; x++)
 		{
-			for (x = 0; x < w->width; x++)
-			{
-				const float here = w->tmp[(size_t)y * w->width + x];
-				const float blurred = (at(w, w->tmp, x - 1, y, here) + at(w, w->tmp, x + 1, y, here)
-					+ at(w, w->tmp, x, y - 1, here) + at(w, w->tmp, x, y + 1, here)
-					+ 4.0f * here) * 0.125f;
-				const uint32_t b = byte_of(blurred / PT_WATER_CAUSTIC_MAX);
-				/* A says whether there is liquid here or in a cell next to this one */
-				const int wet = here_or_near(w, x, y);
-				w->caustics[(size_t)y * w->width + x] = b | (b << 8) | (b << 16) | (wet ? 0xff000000u : 0);
-			}
+			const float here = w->tmp[(size_t)y * w->width + x];
+			const float left = at(w, w->tmp, x - 1, y, here), right = at(w, w->tmp, x + 1, y, here);
+			const float below = at(w, w->tmp, x, y - 1, here), above = at(w, w->tmp, x, y + 1, here);
+			const float xx = (left + right - 2.0f * here) * scale;
+			const float yy = (below + above - 2.0f * here) * scale;
+			const float stir = w->open[(size_t)y * w->width + x]
+				? (STIR_REST + (1.0f - STIR_REST) * w->stir[(size_t)y * w->width + x]) * strength * (1.0f / PT_WATER_RIPPLE_MAX) : 0.0f;
+			const float mark = mark_near(w, x, y) * w->shown / PT_WATER_HEIGHT_MAX;
+			uint32_t wet = 0;
+
+			if (mark > -1.0e8f)
+				wet = PT_WATER_WET + (uint32_t)((mark < 0.0f ? 0.0f : mark > 1.0f ? 1.0f : mark) * (255 - PT_WATER_WET) + 0.5f);
+			w->caustics[(size_t)y * w->width + x] = curve_byte(xx) | (curve_byte(yy) << 8) | (byte_of(stir) << 16) | (wet << 24);
 		}
 	}
 	return w->caustics;

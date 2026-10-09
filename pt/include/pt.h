@@ -103,10 +103,13 @@ typedef struct pt_material_s
 								   half way), 0 = none; replaces the PT_MAT_WAVES
 								   ripples. Level triangles with one are drawn
 								   where the waves stand, see wave_reach */
-	int			caustic_map;	/* handle + 1 of how much the waves brighten the
-								   light going through, R / 255 * 4; 0 = none. A
-								   is 0 where the picture covers no liquid, and
-								   the waves' surface is not looked for there */
+	int			caustic_map;	/* handle + 1 of a picture of how sharply the
+								   waves curve, which gathers and spreads the
+								   light going through, and in A of how high the
+								   liquid has lately stood: see pt_water_caustics
+								   in pt/water. 0 = none. A is 0 where the picture
+								   covers no liquid, and the waves' surface is
+								   not looked for there */
 	int			foam_map;		/* handle + 1 of the froth on the liquid; 0 =
 								   none. R is how much of the surface it covers,
 								   G how old it is (0 fresh, 255 old: older froth
@@ -304,6 +307,11 @@ typedef struct pt_view_s
 	float	wave_strength;		/* ripples on liquids; 0 = flat, 1 = normal */
 	float	wave_reach;			/* no wave picture holds a height further than this
 								   from level this frame, in units */
+	float	water_shafts;		/* how much liquids scatter the light in them
+								   towards the eye, which shows as shafts; 0 =
+								   not at all, 1 = normal */
+	float	water_wet;			/* how wet the banks of simulated liquids show
+								   where they have stood; 0 = not at all, 1 = normal */
 	float	metal_colour;		/* PT_MAT_METAL_PAINTED: how much of the light a
 								   metal painted mid dark (1.2% of white, as old
 								   game art paints steel) reflects. One painted
