@@ -231,6 +231,7 @@ no extensions, so it draws walls and their lighting in two passes.
 build.bat                 64-bit, with debug information
 build.bat x64 Release
 build.bat x86 Release     32-bit
+build.bat x64 RelWithDebInfo perf    with the pt_perf graphs built in
 ```
 
 The 64-bit programs go to `run\`, the 32-bit ones to `run\x86\`, and the game
@@ -249,6 +250,35 @@ cmake --build build/linux -j
 The Linux build is compiled with `-Wall -Wextra` and every warning is an
 error. Should a newer compiler find something new to say, `-DQ2_WERROR=OFF`
 on the first `cmake` line lets it build while that is dealt with.
+
+**Where the time goes** (`perf`, or `-DPT_PERF=ON` on the `cmake` line)
+
+A build made this way has the `pt_perf` graphs in it, for finding out what a
+frame's time is spent on while the game is played. They are left out of any
+other build, timers and all, so that nobody pays for them who is not looking.
+
+Two graphs scroll by, a column for each of the last 240 frames, with lines
+at the frame times of 30, 60, 120, 240 and 480 frames a second:
+
+- **The processor**: each column is a whole frame, from one being shown to
+  the next, made up of the game's server, its sound, the rest of the client,
+  each step of getting the view ready, the water (touching, stepping, making
+  its pictures, sending them), drawing the status bar, the graphs themselves,
+  and the time spent waiting for the card or the screen.
+- **The card** (RTX renderer): each pass it runs, with a white mark at the
+  length of the whole frame to show what it had to spare. The card gives its
+  times a frame late, so a column here is the view before the one above it.
+  The trace is one pass and is not told apart further.
+
+Beside them is what each part comes to, the longest first: smoothed, and the
+worst of the last second. The line underneath says which of the two the
+frame is held up by. A frame much longer than the rest runs off the top and
+is marked white there. With the CPU renderer there is one graph, of its five
+stages and the rest of the frame.
+
+`pt_perf_freeze` stops the graphs to be looked at, and `pt_perf_spike 10`
+writes down every frame longer than 10 ms. A normal build afterwards puts
+everything back as it was.
 
 ## Game data
 
@@ -321,6 +351,9 @@ Some console commands and variables:
 | `pt_switch 1`-`6` (number pad **1**-**6**) | switch off, or back on, one of the things in the picture that depend on earlier frames, to find which one a fault comes from: anti-aliasing and the upscaler, light history, the noise filter, auto exposure, upscaling, the history view. A list of them all comes up for a few seconds with what is on and off. Number pad **0** puts them all back; **.** keeps the list up (`pt_show_filter`) |
 | `cl_maxfps` | the most frames a second the game runs at: 200 unless set (the game's own setting, which was 90 and in effect 83) |
 | `pt_stats 0` | hide the performance info, which is on by default (never shown in offline renders) |
+| `pt_perf 0`-`2` | only in a build made with `perf` (see Building): graphs of where the time of every frame goes, as it is played. `1` = the graphs, `2` = and what each part comes to (the default in such a build), `0` = off. See below |
+| `pt_perf_freeze` | a command: the graphs stand still to be looked at, or go on again. Bind it to a key |
+| `pt_perf_spike` | every frame that takes more than this many ms has its parts printed in the console and added to `baseq2/pt_perf.txt`; `0` = none |
 | `pt_simd 0`-`1` | CPU renderer: the build for AVX2 where the processor has it, or the one for any processor, to compare the two |
 | `pt_debug 1`-`13` | one part of the picture on its own; `12` is the noise the filter measured in the diffuse light, as it stands after filtering (the standard deviation, times 4) |
 | `pt_bump`, `pt_roughness`, `pt_metallic` | scale how deep, how rough and how metallic every surface is taken to be; 1 unless set. Below 1, `pt_metallic` makes what is metal less than metal |

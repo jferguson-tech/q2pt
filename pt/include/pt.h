@@ -363,6 +363,9 @@ typedef struct pt_stage_s
 {
 	const char	*name;		/* a short word, the same from frame to frame */
 	float		ms;
+	int			where;		/* only from perf: 0 the processor at work, 1 the
+							   card, 2 the processor waiting for the card or
+							   the screen */
 } pt_stage_t;
 
 /* a rectangle of pixels */
@@ -413,6 +416,13 @@ struct pt_backend_s
 	   they ran, and returns how many: 0 if there is nothing new since it was
 	   last asked. */
 	int		(*stages)(pt_backend_t *self, pt_stage_t *stages, int max);
+
+	/* Only in a build made with PT_PERF, NULL in any other. A finer look at
+	   the same: every part of the frame that is timed, what was done here
+	   since perf was last asked first, then the card's parts of the latest
+	   view whose times are known. Asked once a frame, after present. Fills
+	   in up to max and returns how many. */
+	int		(*perf)(pt_backend_t *self, pt_stage_t *stages, int max);
 
 	/* the picture last presented: width*height pixels, bytes R,G,B,A, top row
 	   first, with or without the overlay. Returns 0 if it cannot. */

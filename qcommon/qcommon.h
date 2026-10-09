@@ -759,6 +759,24 @@ extern	cvar_t	*log_stats;
 
 extern	FILE *log_stats_file;
 
+// A build made with PT_PERF adds up how long parts of the frame take, for the
+// pt_perf graph of the path traced renderers. The sums are kept in the
+// values of cvars, which is the one thing a renderer can see of the program
+// it is loaded by: it reads them every frame and puts them back to nothing.
+#ifdef PT_PERF
+#define PERF_TIMED(name, call) \
+	do { \
+		static cvar_t	*perf_spent; \
+		double			perf_began = Sys_PerfMs (); \
+		call; \
+		if (!perf_spent) \
+			perf_spent = Cvar_Get (name, "0", 0); \
+		perf_spent->value += (float)(Sys_PerfMs () - perf_began); \
+	} while (0)
+#else
+#define PERF_TIMED(name, call)	call
+#endif
+
 // host_speeds times
 extern	int		time_before_game;
 extern	int		time_after_game;

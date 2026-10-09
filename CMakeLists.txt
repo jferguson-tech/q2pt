@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
 project(q2pt C)
 
+# -DPT_PERF=ON builds in the pt_perf graph of where each frame's time goes,
+# and the timers it reads. Left out, none of that is in the program at all.
+option(PT_PERF "Build in the pt_perf graph and its timers" OFF)
+if(PT_PERF)
+	add_compile_definitions(PT_PERF)
+endif()
+
 # Linux: the game and the two path traced renderers, on SDL2 and X11. The
 # original OpenGL and software renderers are Windows only so far.
 if(NOT WIN32)
@@ -100,7 +107,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(REF_PT_SRC
 	ref_pt/rpt_main.c ref_pt/rpt_image.c ref_pt/rpt_draw.c ref_pt/rpt_world.c
 	ref_pt/rpt_model.c ref_pt/rpt_scene.c ref_pt/rpt_material.c ref_pt/rpt_settings.c
-	ref_pt/rpt_water.c ref_pt/rpt_shot.c ref_pt/rpt_offline.c ref_pt/rpt_bench.c
+	ref_pt/rpt_water.c ref_pt/rpt_shot.c ref_pt/rpt_offline.c ref_pt/rpt_bench.c ref_pt/rpt_perf.c
 	pt/water/pt_water.c pt/png/pt_png.c pt/material/pt_material.c
 	win32/q_shwin.c ${SHARED_SRC} ref_pt/ref_pt.def)
 

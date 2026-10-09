@@ -1,5 +1,6 @@
 @echo off
-rem usage: build [x64|x86] [Release|Debug|RelWithDebInfo]
+rem usage: build [x64|x86] [Release|Debug|RelWithDebInfo] [perf]
+rem perf builds in the pt_perf graph of where the time goes, see the README
 setlocal
 set ARCH=%1
 if "%ARCH%"=="" set ARCH=x64
@@ -12,5 +13,7 @@ if not defined VSDIR echo Visual Studio not found & exit /b 1
 call "%VSDIR%\VC\Auxiliary\Build\vcvarsall.bat" %ARCH% >nul || exit /b 1
 
 set "BDIR=%~dp0build\%ARCH%-%CFG%"
-cmake -S "%~dp0." -B "%BDIR%" -G Ninja -DCMAKE_BUILD_TYPE=%CFG% || exit /b 1
+set PERF=OFF
+if /i "%3"=="perf" set PERF=ON
+cmake -S "%~dp0." -B "%BDIR%" -G Ninja -DCMAKE_BUILD_TYPE=%CFG% -DPT_PERF=%PERF% || exit /b 1
 cmake --build "%BDIR%" -- -k 0

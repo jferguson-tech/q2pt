@@ -1015,8 +1015,10 @@ void R_BuildScene (refdef_t *fd, pt_scene_t *scene)
 		}
 	}
 
+	PERF ("entities");
 	S_AddParticles (fd, forward, right, up);
 	S_AddSpray (right, up);
+	PERF ("particles");
 
 	numlights = s_numballlights;
 	for (i=0 ; i<fd->num_dlights && numlights<MAX_BALL_LIGHTS+MAX_DLIGHTS ; i++)

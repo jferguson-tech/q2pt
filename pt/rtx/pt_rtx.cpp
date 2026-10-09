@@ -207,7 +207,17 @@ const uint32_t kMaxTextures = 4096;
 // The parts a view's time is counted in. The first is spent here, getting
 // the view ready; the rest on the card, which notes the time between them.
 const int kNumStages = 6;
-const uint32_t kNumStamps = kNumStages;		// one before each of the card's parts and one after the last
+// The card notes the time before each of its parts and after the last. A
+// build made with PT_PERF looks closer, at each pass, and has two readings
+// more past those for the frame's own commands: see pt_perf in the README.
+#ifdef PT_PERF
+const uint32_t kMaxStamps = 24;
+const uint32_t kNumQueries = kMaxStamps + 2;
+const int kMaxLaps = 16;
+#else
+const uint32_t kMaxStamps = kNumStages;
+const uint32_t kNumQueries = kMaxStamps;
+#endif
 const char *const kStageNames[kNumStages] = {"scene", "build", "trace", "history", "filter", "out"};
 
 struct Buffer
@@ -409,10 +419,58 @@ struct RtxBackend
 	float		stage_ms[kNumStages] = {};	// the latest known
 	bool		stages_known = false;
 	bool		stages_new = false;			// and nobody has asked since
+	int			stamp_stage[kMaxStamps] = {};	// the stage the time after each reading belongs to
+	uint32_t	stamps_written = 0;
+#ifdef PT_PERF
+	const char	*stamp_name[kMaxStamps] = {};	// and the name of the pass that follows it
+	pt_stage_t	card[kMaxStamps] = {};		// the card's passes on the latest view known
+	int			num_card = 0;
+	bool		show_free = false;			// the two readings round the frame's commands may be written
+	bool		show_asked = false;
+	float		show_ms = 0.0f;
+	pt_stage_t	laps[kMaxLaps] = {};		// what was done here since perf was last asked
+	int			num_laps = 0;
+	bool		laps_taken = true;
+	std::chrono::steady_clock::time_point lap_at;
+#endif
 
 	char		device_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE] = "";
 	char		stats[320] = "";
 };
+
+// The work done here, timed part by part: LapStart, then Lap after each part
+// with a name for it. Nothing at all unless the build is made with PT_PERF.
+#ifdef PT_PERF
+void LapStart(RtxBackend *s)
+{
+	if (s->laps_taken)
+	{
+		s->num_laps = 0;
+		s->laps_taken = false;
+	}
+	s->lap_at = std::chrono::steady_clock::now();
+}
+
+void Lap(RtxBackend *s, const char *name, int where = 0)
+{
+	const auto now = std::chrono::steady_clock::now();
+	const float ms = std::chrono::duration<float, std::milli>(now - s->lap_at).count();
+	s->lap_at = now;
+	for (int i = 0; i < s->num_laps; i++)
+	{
+		if (!strcmp(s->laps[i].name, name))
+		{
+			s->laps[i].ms += ms;
+			return;
+		}
+	}
+	if (s->num_laps < kMaxLaps)
+		s->laps[s->num_laps++] = {name, ms, where};
+}
+#else
+inline void LapStart(RtxBackend *) {}
+inline void Lap(RtxBackend *, const char *, int = 0) {}
+#endif
 
 RtxBackend *Self(pt_backend_t *b) { return reinterpret_cast<RtxBackend *>(b); }
 
@@ -1814,14 +1872,14 @@ void CreateScene(RtxBackend *s)
 		{
 			VkQueryPoolCreateInfo qpci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
 			qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
-			qpci.queryCount = kNumStamps;
+			qpci.queryCount = kNumQueries;
 			Check(vkCreateQueryPool(s->device, &qpci, nullptr, &s->stamps), "vkCreateQueryPool");
 			s->stamp_ms = (double)props.limits.timestampPeriod * 1.0e-6;	// it is given in nanoseconds
 			s->stamp_mask = bits >= 64 ? ~0ull : (1ull << bits) - 1;
 
 			// nothing may be read from a query that was never reset
 			VkCommandBuffer cmd = BeginOnce(s);
-			vkCmdResetQueryPool(cmd, s->stamps, 0, kNumStamps);
+			vkCmdResetQueryPool(cmd, s->stamps, 0, kNumQueries);
 			EndOnce(s);
 		}
 	}
@@ -2233,7 +2291,9 @@ void SubmitTrace(RtxBackend *s)
 {
 	if (!s->trace_pending)
 		return;
+	LapStart(s);
 	vkWaitForFences(s->device, 1, &s->fence_trace, VK_TRUE, UINT64_MAX);
+	Lap(s, "wait card", 2);
 	vkResetCommandBuffer(s->cmd_trace, 0);
 	VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
 	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -2242,6 +2302,7 @@ void SubmitTrace(RtxBackend *s)
 		RecordUpdates(s, s->cmd_trace);
 	RecordTrace(s, s->cmd_trace);
 	Check(vkEndCommandBuffer(s->cmd_trace), "vkEndCommandBuffer");
+	Lap(s, "record");
 
 	VkCommandBufferSubmitInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
 	cbi.commandBuffer = s->cmd_trace;
@@ -2251,22 +2312,49 @@ void SubmitTrace(RtxBackend *s)
 	vkResetFences(s->device, 1, &s->fence_trace);
 	s->trace_pending = false;
 	Check(vkQueueSubmit2(s->queue, 1, &si, s->fence_trace), "vkQueueSubmit2");
+	Lap(s, "submit");
 }
 
 // the card's own times for the view it traced last, once it has finished it
 void ReadStamps(RtxBackend *s)
 {
-	if (!s->stamps || !s->stamps_asked)
+	if (!s->stamps)
 		return;
-	uint64_t at[kNumStamps];
-	if (vkGetQueryPoolResults(s->device, s->stamps, 0, kNumStamps, sizeof(at), at, sizeof(at[0]),
+#ifdef PT_PERF
+	if (s->show_asked)
+	{	// the frame's own commands, which may not be done yet: then next time
+		uint64_t round[2];
+		if (vkGetQueryPoolResults(s->device, s->stamps, kMaxStamps, 2, sizeof(round), round, sizeof(round[0]),
+			VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+		{
+			s->show_ms = (float)((double)((round[1] - round[0]) & s->stamp_mask) * s->stamp_ms);
+			s->show_asked = false;
+		}
+	}
+#endif
+	if (!s->stamps_asked)
+		return;
+	uint64_t at[kMaxStamps];
+	const uint32_t count = s->stamps_written;
+	if (count < 2 || vkGetQueryPoolResults(s->device, s->stamps, 0, count, sizeof(at[0]) * count, at, sizeof(at[0]),
 		VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
 		return;		// not all there yet
 	s->stamps_asked = false;
 
 	s->stage_ms[0] = s->scene_ms;
-	for (uint32_t i = 0; i + 1 < kNumStamps; i++)
-		s->stage_ms[1 + i] = (float)((double)((at[i + 1] - at[i]) & s->stamp_mask) * s->stamp_ms);
+	for (int i = 1; i < kNumStages; i++)
+		s->stage_ms[i] = 0.0f;
+#ifdef PT_PERF
+	s->num_card = 0;
+#endif
+	for (uint32_t i = 0; i + 1 < count; i++)
+	{
+		const float ms = (float)((double)((at[i + 1] - at[i]) & s->stamp_mask) * s->stamp_ms);
+		s->stage_ms[s->stamp_stage[i]] += ms;
+#ifdef PT_PERF
+		s->card[s->num_card++] = {s->stamp_name[i], ms, 1};
+#endif
+	}
 	s->stages_known = true;
 	s->stages_new = true;
 }
@@ -2274,6 +2362,7 @@ void ReadStamps(RtxBackend *s)
 // what moves this frame, and the view: all the tracer needs to be told
 void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 {
+	LapStart(s);
 	TraceNow(s);
 	s->view = *view;
 	s->has_view = true;
@@ -2289,6 +2378,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	// the card may still be tracing the last view from these buffers
 	vkWaitForFences(s->device, 1, &s->fence_trace, VK_TRUE, UINT64_MAX);
 	ReadStamps(s);		// and once it is done, how long that frame took it is known
+	Lap(s, "wait card", 2);
 	const auto began = std::chrono::steady_clock::now();
 
 	const float scale = view->scale < 0.05f ? 0.05f : (view->scale > 1.0f ? 1.0f : view->scale);
@@ -2318,6 +2408,8 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	}
 	for (uint32_t i = 0; i < num_materials; i++)
 		SetMaterial(s, materials[i], scene->materials[i], [](int handle) { return handle; });
+
+	Lap(s, "materials");
 
 	// solid triangles first, then the glass, then what the eye carries
 	uint32_t hash = 2166136261u;
@@ -2386,6 +2478,8 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	}
 	if (num_lights)
 		hash = HashBytes(scene->lights, num_lights * sizeof(pt_point_light_t), hash);
+
+	Lap(s, "triangles");
 
 	// ---- the instances: the map, its glass, what moves, its glass, what the eye carries
 	VkAccelerationStructureInstanceKHR *inst = static_cast<VkAccelerationStructureInstanceKHR *>(s->instances.ptr);
@@ -2629,6 +2723,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 		s->world.num_solid + s->world.num_glass, n, s->num_world_lights, num_lights,
 		s->exposure_used, still ? " still" : "");
 	s->scene_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - began).count();
+	Lap(s, "view");
 }
 
 // what one step has written, the next may read
@@ -2680,16 +2775,32 @@ void RecordUpdates(RtxBackend *s, VkCommandBuffer cmd)
 // traces the view and makes the picture of it; part of the frame's commands
 void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 {
-	// the card notes the time before each part of the work, and after the last
+	// The card notes the time before each part of the work, and after the
+	// last: stage is the one of kStageNames what follows belongs to. A fine
+	// reading splits a stage, and is only taken in a build with PT_PERF.
 	uint32_t stamp = 0;
-	const auto mark = [&]()
+	const auto mark = [&](int stage, const char *name, bool fine = false)
 	{
-		if (s->stamps)
-			vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, s->stamps, stamp++);
+#ifndef PT_PERF
+		if (fine)
+			return;
+		(void)name;
+#endif
+		if (!s->stamps || stamp >= kMaxStamps)
+			return;
+		s->stamp_stage[stamp] = stage;
+#ifdef PT_PERF
+		s->stamp_name[stamp] = name;
+#endif
+		vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, s->stamps, stamp++);
 	};
 	if (s->stamps)
-		vkCmdResetQueryPool(cmd, s->stamps, 0, kNumStamps);
-	mark();
+		vkCmdResetQueryPool(cmd, s->stamps, 0, kNumQueries);
+#ifdef PT_PERF
+	s->show_free = true;
+	s->show_asked = false;
+#endif
+	mark(1, "build");
 
 	// the acceleration structures of what moves, then the one over everything
 	const struct { const Accel *blas; VkDeviceAddress corners; uint32_t count; } parts[3] = {
@@ -2726,13 +2837,13 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 	};
 
 	// a ray and its paths for every pixel
-	mark();
+	mark(2, "trace");
 	run(s->trace_pipeline, 0, 0, 0);
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
 
 	// gathered with what earlier frames saw, less where the light is found
 	// to have changed since: looked for block by block, see change.comp
-	mark();
+	mark(3, s->react_on ? "change" : "temporal");
 	if (s->react_on)
 	{
 		run(s->change_pipeline, 0, 0, 0);
@@ -2743,22 +2854,27 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 		BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
 		groups_x = gx;
 		groups_y = gy;
+		mark(3, "temporal", true);
 	}
 	run(s->temporal_pipeline, 0, 0, 0);
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
 
 	// filtered, each pass reading what the one before wrote
-	mark();
+	static const char *const kPassNames[] = {"filter 1", "filter 2", "filter 3", "filter 4", "filter 5", "filter 6",
+		"filter 7", "filter 8"};
+	mark(4, kPassNames[0]);
 	int source = 0;
 	for (int i = 0; i < s->filter_passes; i++)
 	{
+		if (i)
+			mark(4, kPassNames[std::min(i, 7)], true);
 		run(s->atrous_pipeline, source, i & 1, 1 << i);
 		BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
 		source = 1 + (i & 1);
 	}
 
 	// put together
-	mark();
+	mark(5, "compose");
 	run(s->compose_pipeline, source, 0, 0);
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
 
@@ -2775,6 +2891,7 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 	// then blurred across and down three times, which comes close to a gaussian
 	if (s->bloom_on)
 	{
+		mark(5, "bloom", true);
 		run(s->bloom_pipeline, 0, 0, 0);
 		BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
 		for (int i = 0; i < 3; i++)
@@ -2787,15 +2904,18 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 	}
 
 	// graded for the screen
+	mark(5, "grade", true);
 	run(s->grade_pipeline, s->bloom_on ? 1 : 0, 0, 0);
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
 
 	// and built up to the size of the view, edges smoothed over frames
 	groups_x = ((uint32_t)s->out_width + 7) / 8;
 	groups_y = ((uint32_t)s->out_height + 7) / 8;
+	mark(5, "resolve", true);
 	run(s->resolve_pipeline, 0, 0, 0);
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-	mark();
+	mark(0, nullptr);
+	s->stamps_written = stamp;
 	s->stamps_asked = s->stamps != VK_NULL_HANDLE;
 
 	s->has_history = true;
@@ -2855,6 +2975,22 @@ int Stages(pt_backend_t *b, pt_stage_t *stages, int max)
 	}
 	return count;
 }
+
+#ifdef PT_PERF
+int Perf(pt_backend_t *b, pt_stage_t *stages, int max)
+{
+	RtxBackend *s = Self(b);
+	int n = 0;
+	for (int i = 0; i < s->num_laps && n < max; i++)
+		stages[n++] = s->laps[i];
+	s->laps_taken = true;
+	for (int i = 0; i < s->num_card && n < max; i++)
+		stages[n++] = s->card[i];
+	if (s->show_ms > 0.0f && n < max)
+		stages[n++] = {"show", s->show_ms, 1};
+	return n;
+}
+#endif
 
 int TextureCreate(pt_backend_t *b, const pt_texture_t *texture)
 {
@@ -3021,6 +3157,13 @@ void Record(RtxBackend *s, uint32_t image_index)
 		RecordTrace(s, cmd);
 		s->trace_pending = false;
 	}
+#ifdef PT_PERF
+	// how long the card takes to put the picture on the screen: once for
+	// each view traced, whose commands made the two readings ready
+	const bool show_timed = s->stamps && s->show_free;
+	if (show_timed)
+		vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, s->stamps, kMaxStamps);
+#endif
 
 	Barrier(cmd, s->swap_images[image_index], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_NONE,
@@ -3062,6 +3205,14 @@ void Record(RtxBackend *s, uint32_t image_index)
 	Barrier(cmd, s->swap_images[image_index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
 		VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE);
+#ifdef PT_PERF
+	if (show_timed)
+	{
+		vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, s->stamps, kMaxStamps + 1);
+		s->show_free = false;
+		s->show_asked = true;
+	}
+#endif
 
 	vkEndCommandBuffer(cmd);
 }
@@ -3080,10 +3231,13 @@ void PresentFrame(RtxBackend *s, const uint32_t *overlay, const pt_rect_t *chang
 			return;
 	}
 
+	LapStart(s);
 	vkWaitForFences(s->device, 1, &s->fence, VK_TRUE, UINT64_MAX);
+	Lap(s, "wait card", 2);
 
 	uint32_t index = 0;
 	VkResult r = vkAcquireNextImageKHR(s->device, s->swapchain, UINT64_MAX, s->sem_acquire, VK_NULL_HANDLE, &index);
+	Lap(s, "acquire", 2);
 	if (r == VK_ERROR_OUT_OF_DATE_KHR)
 	{
 		RecreateSwapchain(s);
@@ -3132,9 +3286,11 @@ void PresentFrame(RtxBackend *s, const uint32_t *overlay, const pt_rect_t *chang
 			s->ov_regions.push_back(region);
 		}
 	}
+	Lap(s, "overlay");
 	vkResetFences(s->device, 1, &s->fence);
 	vkResetCommandBuffer(s->cmd, 0);
 	Record(s, index);
+	Lap(s, "record");
 
 	VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
 	wait.semaphore = s->sem_acquire;
@@ -3152,6 +3308,7 @@ void PresentFrame(RtxBackend *s, const uint32_t *overlay, const pt_rect_t *chang
 	si.signalSemaphoreInfoCount = 1;
 	si.pSignalSemaphoreInfos = &signal;
 	Check(vkQueueSubmit2(s->queue, 1, &si, s->fence), "vkQueueSubmit2");
+	Lap(s, "submit");
 
 	VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
 	pi.waitSemaphoreCount = 1;
@@ -3160,6 +3317,7 @@ void PresentFrame(RtxBackend *s, const uint32_t *overlay, const pt_rect_t *chang
 	pi.pSwapchains = &s->swapchain;
 	pi.pImageIndices = &index;
 	r = vkQueuePresentKHR(s->queue, &pi);
+	Lap(s, "present", 2);
 	if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR)
 		RecreateSwapchain(s);
 	else
@@ -3237,6 +3395,11 @@ extern "C" pt_backend_t *pt_rtx_create(const pt_create_t *ci, char *err, int err
 	s->base.present = Present;
 	s->base.stats = Stats;
 	s->base.stages = Stages;
+#ifdef PT_PERF
+	s->base.perf = Perf;
+#else
+	s->base.perf = nullptr;
+#endif
 	s->base.read_pixels = ReadPixels;
 	s->textures.resize(kMaxTextures);
 	s->log = ci->log;

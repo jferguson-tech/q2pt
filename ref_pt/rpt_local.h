@@ -239,6 +239,21 @@ void	R_BenchView (void);
 void	R_BenchFrame (void);
 
 //
+// rpt_perf.c: only in a build made with PT_PERF
+//
+#ifdef PT_PERF
+void	R_InitPerf (void);
+void	R_ShutdownPerf (void);
+void	R_PerfMark (const char *name);
+void	R_PerfDraw (void);
+void	R_PerfFrame (void);
+// the time since the last of these went on name; on nothing counted here, if NULL
+#define PERF(name)	R_PerfMark (name)
+#else
+#define PERF(name)
+#endif
+
+//
 // rpt_water.c
 //
 void	R_WaterReset (void);
