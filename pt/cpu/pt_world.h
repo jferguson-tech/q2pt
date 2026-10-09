@@ -179,12 +179,29 @@ struct World
 	bool					has_waves = false;
 
 	// a simulated body of liquid: where its surface is, a material that
-	// carries its maps, and whether any of it is seen from above
+	// carries its maps, whether any of it is seen from above, and where the
+	// light on it comes from: the middle of the lights that shine on it,
+	// over each of kLamps by kLamps parts of its extent, row by row from
+	// min_x, min_y
 	struct Water
 	{
+		static const int kLamps = 4;
+
 		float			min_x, min_y, max_x, max_y, z;
 		const Material	*mat;
 		bool			top;
+		Vec3			lamps[kLamps * kLamps];
+
+		// where the light comes from over a point of it
+		Vec3 Lamp(float x, float y) const
+		{
+			const float fx = std::min(std::max((x - min_x) / (max_x - min_x) * (float)kLamps - 0.5f, 0.0f), (float)(kLamps - 1));
+			const float fy = std::min(std::max((y - min_y) / (max_y - min_y) * (float)kLamps - 0.5f, 0.0f), (float)(kLamps - 1));
+			const int x0 = std::min((int)fx, kLamps - 2), y0 = std::min((int)fy, kLamps - 2);
+			const float ax = fx - (float)x0, ay = fy - (float)y0;
+			const Vec3 *row = &lamps[y0 * kLamps + x0];
+			return (row[0] * (1.0f - ax) + row[1] * ax) * (1.0f - ay) + (row[kLamps] * (1.0f - ax) + row[kLamps + 1] * ax) * ay;
+		}
 	};
 	std::vector<Water>		waters;
 
@@ -216,6 +233,10 @@ struct Frame
 
 struct Scene
 {
+	static constexpr float kCausticMax = 4.0f;		// the most that waves may brighten light by
+	static constexpr float kRippleSlope = 0.1f;	// of each train of fine ripples on a liquid, at their most
+	static constexpr float kWaterIndex = 1.33f;
+
 	const World	*world = nullptr;
 	const Frame	*frame = nullptr;
 	const float	*light_styles = nullptr;
@@ -239,6 +260,8 @@ struct Scene
 	float		max_sample = 40.0f;
 	float		wave_strength = 1.0f;
 	float		wave_reach = 0.0f;
+	float		water_shafts = 0.0f;	// how much liquids scatter the light in them
+	float		water_wet = 0.0f;		// how wet the banks of simulated liquids show
 	// simulated liquids are met where their waves stand, not at their triangles
 	bool		swell = false;
 	bool Swells(const Tri &t) const { return swell && t.mat->wave_map && std::fabs(t.n.z) > 0.99f; }
@@ -379,21 +402,58 @@ struct Scene
 		return std::min(std::max((pattern - 1.0f + cover * (1.3f - 0.45f * age)) * 3.0f, 0.0f), 1.0f) * 0.9f;
 	}
 
-	// how much the waves brighten light passing through the surface at p
-	float Caustic(const Material &m, Vec3 p) const
+	// Ripples too fine for a simulated liquid's cells to hold, where it is
+	// as ruffled as can be: a few trains of small waves, each running its
+	// own way at the speed waves of its length do. How sharply they curve
+	// the surface at x, y: along x, along y, and across the two.
+	Vec3 RippleCurve(float x, float y) const
+	{
+		Vec3 c(0.0f, 0.0f, 0.0f);
+		for (int i = 0; i < 6; i++)
+		{
+			const float turn = (float)i * 2.399f + 0.5f;
+			const float dx = std::cos(turn), dy = std::sin(turn);
+			const float k = 0.28f + 0.11f * (float)i;	// from 22 units long down to 7
+			// a wave whose slope is at most kRippleSlope curves by that times k
+			const float bend = std::sin((dx * x + dy * y) * k - std::sqrt(386.0f * k) * time + (float)i * 1.7f) * (kRippleSlope * k);
+			c = c - Vec3(dx * dx, dy * dy, dx * dy) * bend;
+		}
+		return c;
+	}
+
+	// How much the waves of a simulated liquid brighten light that goes
+	// through its surface at q, or dim it: where the surface bulges it
+	// gathers the light, as a lens does, and where it is hollow it spreads
+	// it. m carries its maps; reach is how far the light goes on from
+	// there, times how much the surface turns it for its slope, which is
+	// 1 - 1 / the liquid's index. wet is whether there is liquid at q at all.
+	float Caustic(const Material &m, Vec3 q, float reach, bool &wet) const
 	{
 		const Texture *t = Map(m.caustic_map);
-		if (!t)
-			return 1.0f;
 		float u, v;
-		WaveCoord(m, p, u, v);
-		if (u < 0.0f || v < 0.0f || u > 1.0f || v > 1.0f)
+		WaveCoord(m, q, u, v);
+		wet = t && u >= 0.0f && v >= 0.0f && u <= 1.0f && v <= 1.0f;
+		if (!wet)
 			return 1.0f;
-		uint32_t texel[4];
-		float w[4];
-		t->Corners(u, v, texel, w);
-		return ((texel[0] & 0xff) * w[0] + (texel[1] & 0xff) * w[1] + (texel[2] & 0xff) * w[2] + (texel[3] & 0xff) * w[3])
-			* (4.0f / 255.0f);
+		// clamped at the edges, as the card's sampler is
+		const float fx = std::min(std::max(u * (float)t->width - 0.5f, 0.0f), (float)(t->width - 1));
+		const float fy = std::min(std::max(v * (float)t->height - 0.5f, 0.0f), (float)(t->height - 1));
+		const int x0 = std::min((int)fx, t->width - 2), y0 = std::min((int)fy, t->height - 2);
+		const float ax = fx - (float)x0, ay = fy - (float)y0;
+		const uint32_t *row = &t->pixels[(size_t)y0 * t->width + x0];
+		const uint32_t texel[4] = {row[0], row[1], row[t->width], row[t->width + 1]};
+		const float w[4] = {(1.0f - ax) * (1.0f - ay), ax * (1.0f - ay), (1.0f - ax) * ay, ax * ay};
+		float sum[4] = {};
+		for (int k = 0; k < 4; k++)
+			for (int c = 0; c < 4; c++)
+				sum[c] += (float)((texel[k] >> (8 * c)) & 0xff) * w[k];
+		wet = sum[3] > 0.3f * 255.0f;
+		// how sharply it curves along x and along y, and how ruffled it is: see pt_water_caustics
+		const float sx = (sum[0] - 128.0f) * (1.0f / 127.0f), sy = (sum[1] - 128.0f) * (1.0f / 127.0f);
+		const Vec3 c = (Vec3(sx * std::fabs(sx) * 0.125f, sy * std::fabs(sy) * 0.125f, 0.0f)
+			+ RippleCurve(q.x, q.y) * (sum[2] * (4.0f / 255.0f))) * (reach * wave_strength);
+		const float gain = 1.0f / std::max(std::fabs((1.0f + c.x) * (1.0f + c.y) - c.z * c.z), 0.01f);
+		return std::min(std::max(gain, 0.2f), kCausticMax);
 	}
 
 	float StyleScale(int style) const

@@ -82,6 +82,8 @@ static cvar_t	*pt_water_height;		// how tall the simulated waves are, 1 = normal
 static cvar_t	*pt_water_damping;		// how fast waves die down, 1 = normal
 static cvar_t	*pt_water_foam;			// how readily simulated water froths and sprays, 1 = normal, 0 = never
 static cvar_t	*pt_water_shore;		// how much froth lies along its banks, 0 = none
+static cvar_t	*pt_water_shafts;		// how much liquids scatter the light in them, which shows as shafts; 0 = none
+static cvar_t	*pt_water_wet;			// how wet its banks show where it has stood; 0 = not at all
 static cvar_t	*pt_waves;				// ripple strength on liquids
 
 // materials: scale what rpt_material.c decides
@@ -100,7 +102,7 @@ float	r_detailglow = 1;
 int		r_watermode = 2;
 int		r_normalflip;
 float	r_waterreach;
-float	r_watercell = 8, r_waterwaves = 1, r_watercaustics = 0, r_waterdamping = 1, r_waterfoam = 1, r_watershore = 0.75f;
+float	r_watercell = 8, r_waterwaves = 1, r_watercaustics = 1, r_waterdamping = 1, r_waterfoam = 1, r_watershore = 0.75f;
 float	r_bumpscale = 1, r_roughscale = 1, r_metalscale = 1;
 int		r_materialmaps = 1;
 float	r_materialdelight = 1;
@@ -205,10 +207,12 @@ void R_InitSettings (void)
 	pt_water = ri.Cvar_Get ("pt_water", "2", CVAR_ARCHIVE);
 	pt_normal_flip = ri.Cvar_Get ("pt_normal_flip", "0", CVAR_ARCHIVE);
 	pt_water_cell = ri.Cvar_Get ("pt_water_cell", "8", CVAR_ARCHIVE);
-	pt_water_caustics = ri.Cvar_Get ("pt_water_caustics", "0", CVAR_ARCHIVE);
+	pt_water_caustics = ri.Cvar_Get ("pt_water_caustics", "1", CVAR_ARCHIVE);
 	pt_water_damping = ri.Cvar_Get ("pt_water_damping", "1", CVAR_ARCHIVE);
 	pt_water_foam = ri.Cvar_Get ("pt_water_foam", "1", CVAR_ARCHIVE);
 	pt_water_shore = ri.Cvar_Get ("pt_water_shore", "0.75", CVAR_ARCHIVE);
+	pt_water_shafts = ri.Cvar_Get ("pt_water_shafts", "1", CVAR_ARCHIVE);
+	pt_water_wet = ri.Cvar_Get ("pt_water_wet", "1", CVAR_ARCHIVE);
 	pt_water_height = ri.Cvar_Get ("pt_water_height", "2", CVAR_ARCHIVE);
 
 	pt_bump = ri.Cvar_Get ("pt_bump", "1", CVAR_ARCHIVE);
@@ -418,6 +422,8 @@ void R_ViewSettings (pt_view_t *view)
 	view->refraction = pt_refraction->value != 0;
 	view->wave_strength = pt_waves->value;
 	view->wave_reach = r_waterreach;
+	view->water_shafts = pt_water_shafts->value;
+	view->water_wet = pt_water_wet->value;
 	view->metal_colour = R_MetalColour ();
 
 	view->light_samples = pt_light_samples->value;

@@ -73,7 +73,17 @@ a second.*
   thins and ages; it rides along on the water and is gone in a few seconds.
   A faint line of it comes and goes along the banks. A hard splash throws
   up spray that falls back and leaves rings (`pt_water_foam`,
-  `pt_water_shore`).
+  `pt_water_shore`). Light bends going into simulated water, so shadows
+  under it fall where the bent light is cut off. Its waves, and ripples
+  finer than the simulation holds, gather the light into a moving net of
+  bright lines on whatever lies in the water: faint over still water,
+  strong where it has been stirred, sharper the deeper it goes, and lying
+  as the light from each pool's lamps would throw it. The pattern is worked
+  out for one light, the middle of those over each part of the pool, and
+  laid over all the light a surface in the water gets
+  (`pt_water_caustics`). Water glows a little where light comes down
+  through it (`pt_water_shafts`), and its banks are dark and shiny as far
+  up as it has lately stood, which dries off in a while (`pt_water_wet`).
 * Fog and light shafts from single scattering along the view ray.
 * A ball of light to throw (**F**): a lamp behind six round steel plates. It
   bounces, rolls down slopes, knocks into the others and comes to rest, and
@@ -286,6 +296,9 @@ Some console commands and variables:
 | `pt_water 0`-`2` | classic, realistic, simulated |
 | `pt_water_foam` | simulated water: how readily it froths and throws up spray, `1` = as made, `0` = never. Lava never does |
 | `pt_water_shore` | how much foam lies along the banks of simulated water, coming and going with the waves: `0.75` as made, `0` = none, `1` = a good deal. Needs `pt_water_foam` above 0 |
+| `pt_water_caustics` | simulated water: the net of light its waves throw on what lies in it, `1` = as made, `0` = none, more = stronger. Lava throws none |
+| `pt_water_shafts` | how much water of any kind scatters the light in it towards the eye, which shows as a glow where light comes down through it: `1` as made, `0` = none |
+| `pt_water_wet` | how wet the banks of simulated water show where it has stood: `1` as made, `0` = not at all |
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
 | `pt_react` | RTX: how readily light gathered over frames is let go where the lighting is found to have changed, so that it does not trail behind a light that moves, flashes or goes out: `0` = never (the default), `1` = at once. Such places are noisier for a few frames; `pt_debug 13` shows where it acts |
 | `pt_fog_history`, `pt_fog_samples` | the light in the air: how many frames of it are kept while things change (6; the rest of the lighting keeps `pt_history`, 8), and at how many points along each view ray it is looked for every frame (2). The air has no surface to be followed by, so its light trails what moves: fewer frames trail less and are noisier, more points are less noisy and cost a shadow ray each |

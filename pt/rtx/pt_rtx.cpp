@@ -121,12 +121,12 @@ struct FrameBlock
 	int32_t	output_i[4];
 	float	output_f[4];
 	int32_t	frame_has[4], size[4];
-	float	water_rect[kMaxWaters][4], water_at[kMaxWaters][4], water_wave[kMaxWaters][4];
+	float	water_rect[kMaxWaters][4], water_at[kMaxWaters][4], water_wave[kMaxWaters][4], water_lamp[kMaxWaters * 16][4];
 	int32_t	out_size[4];
 	float	open_origin[4], open_forward[4], open_right[4], open_up[4];	// motion blur: the eye as the shutter opened; open_origin[3]: there is blur
 	int32_t	held[4];		// first triangle of the frame that the eye carries, how many; [2]: reflections are followed where they appear to be
 	float	painted[4];		// [0]: what a metal painted dark reflects, see pt_view_t's metal_colour; [1]: bloom_max; [2]: fog_samples; [3]: fog_history
-	float	liquid[4];		// [0]: wave_reach; [1]: react
+	float	liquid[4];		// [0]: wave_reach; [1]: react; [2]: water_shafts; [3]: water_wet
 	int32_t	table_at3[4];	// in indices: what stands in for each of the map's lights when it is not kept; the cells' lists in order of light
 };
 
@@ -355,7 +355,7 @@ struct RtxBackend
 	float					sky_total = 0.0f, sky_scale = 1.0f;
 	// simulated bodies of liquid: extent, height of the surface, material
 	int						num_waters = 0;
-	float					water_rect[kMaxWaters][4] = {}, water_at[kMaxWaters][4] = {}, water_wave[kMaxWaters][4] = {};
+	float					water_rect[kMaxWaters][4] = {}, water_at[kMaxWaters][4] = {}, water_wave[kMaxWaters][4] = {}, water_lamp[kMaxWaters * 16][4] = {};
 
 	// textures the host has changed, until the next frame takes them
 	Buffer					updates;
@@ -2136,6 +2136,10 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 		at[3] = (float)used(body.mat->caustic_map - 1);
 		for (int i = 0; i < 4; i++)
 			s->water_wave[s->num_waters][i] = body.mat->wave_rect[i];
+		static_assert(pt::World::Water::kLamps == 4, "the shaders take four by four");
+		for (int k = 0; k < 16; k++)
+			for (int i = 0; i < 3; i++)
+				s->water_lamp[s->num_waters * 16 + k][i] = body.lamps[k][i];
 		// whatever shows this body's waves is met where they stand: the
 		// shaders look for that surface in the bodies listed here
 		for (int i = 0; i < in->num_materials; i++)
@@ -2597,7 +2601,10 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	memcpy(f.water_rect, s->water_rect, sizeof(f.water_rect));
 	memcpy(f.water_at, s->water_at, sizeof(f.water_at));
 	memcpy(f.water_wave, s->water_wave, sizeof(f.water_wave));
+	memcpy(f.water_lamp, s->water_lamp, sizeof(f.water_lamp));
 	f.liquid[0] = std::min(std::max(view->wave_reach, 0.0f), 8.0f);
+	f.liquid[2] = std::min(std::max(view->water_shafts, 0.0f), 8.0f);
+	f.liquid[3] = std::min(std::max(view->water_wet, 0.0f), 1.0f);
 	// Looked for while things change and for a few frames after: the frame
 	// a light goes out is the last that differs from the one before, and
 	// what little of it is missed then would fade very slowly from an

@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: MIT */
 /* Copyright (c) 2026 Jonathan Ferguson */
 /*
-A shallow water simulation for one flat body of liquid, and the two pictures
+A shallow water simulation for one flat body of liquid, and the pictures
 a renderer needs from it: where the surface stands and which way it tilts,
-and where the waves gather light on whatever lies below (caustics) and
-where they have beaten the surface to froth.
+how sharply it curves, which is what gathers light on whatever lies below
+(caustics), how far up its banks it has wetted, and where the waves have
+beaten the surface to froth.
 
 Each cell of a grid holds how high the surface stands and how fast the
 liquid flows across to its neighbours. Waves travel as fast as the depth
@@ -31,8 +32,15 @@ typedef struct pt_water_s pt_water_t;
 /* heights are stored as height / (2 * PT_WATER_HEIGHT_MAX) + 0.5, clamped to
    0-1, in sixteen bits: B the upper eight, A the lower */
 #define PT_WATER_HEIGHT_MAX		8.0f
-/* caustic brightness is stored as brightness / PT_WATER_CAUSTIC_MAX */
-#define PT_WATER_CAUSTIC_MAX	4.0f
+/* How sharply the surface curves, the change of slope per unit, is stored
+   as a byte b with (b - 128) / 127 = s, the curvature being
+   s * |s| * PT_WATER_CURVE_MAX: finest where it curves least */
+#define PT_WATER_CURVE_MAX		0.125f
+#define PT_WATER_RIPPLE_MAX		4.0f
+/* The byte that says whether there is liquid: 0 where there is none, and
+   from PT_WATER_WET to 255 where there is, for the liquid having lately
+   stood from level to PT_WATER_HEIGHT_MAX above it */
+#define PT_WATER_WET			160
 
 /* covers the rectangle in cells of about cell_size; at most max_cells a side */
 pt_water_t *pt_water_create(float min_x, float min_y, float max_x, float max_y, float cell_size, int max_cells);
@@ -109,9 +117,17 @@ int pt_water_spray(pt_water_t *w, const float **at);
 /*
 The pictures, width * height pixels of R,G,B,A bytes, row 0 at min_y.
 waves: R and G are the slopes in x and y, B and A the height.
-caustics: R, G and B are how much the waves brighten the light going
-through at that point, 1 meaning unchanged; `strength` scales the effect.
-A is 255 where there is liquid, there or in a cell next to it, and else 0.
+caustics: R and G are how sharply the surface curves along x and along y,
+as in the wave picture made last and times `strength`. Light going
+straight down through the surface and d further is brighter by
+1 / |(1 + k d R)(1 + k d G)|, k being 1 - 1 / the liquid's refractive index.
+B is how ruffled the surface is with ripples too fine for the cells to
+hold, which gather light in the same way and are for whoever draws it to
+make up: 0 none, 1 as much as there can be, times `strength` and divided
+by PT_WATER_RIPPLE_MAX. There are always a few, and more where waves are
+or a stream runs.
+A says whether there is liquid, there or in a cell next to it, and how
+high it has lately stood, which is how far up its banks are wet.
 foam: R is how much of the cell froth covers. G is how old it is, 0 just
 made to 1. B and A are how fast the liquid under it is moving in x and y:
 units per second + 128, from 1 to 255.

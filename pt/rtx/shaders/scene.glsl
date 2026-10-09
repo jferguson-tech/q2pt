@@ -49,7 +49,10 @@ const float LIGHT_SAMPLED_ROUGHNESS = 0.25;	// below this a highlight is found b
 const float MIN_ALPHA = 0.002;				// GGX gets numerically touchy below this
 const float GLOBAL_LIGHT_CHANCE = 0.2;		// how often a light is picked map wide instead of nearby
 const int PER_CELL = 24;					// lights listed per cell of the grid
-const float MIN_DEMODULATE = 0.02;			// reflectance floor when lighting is divided by it
+const float MIN_DEMODULATE = 0.02;
+const float WATER_INDEX = 1.33;
+const float CAUSTIC_MAX = 4.0;				// the most that waves may brighten light by
+const float RIPPLE_SLOPE = 0.1;			// of each train of fine ripples on a liquid, at their most			// reflectance floor when lighting is divided by it
 
 struct Tri
 {
@@ -126,6 +129,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	vec4	water_rect[24];	// each body's extent: min x, min y, max x, max y
 	vec4	water_at[24];	// x: the height of its surface; y: a material that carries its maps, or less than 0: none of it is seen from above; z: its wave picture; w: its caustic picture
 	vec4	water_wave[24];	// where its pictures lie: the material's wave_rect
+	vec4	water_lamp[24 * 16];	// xyz: where the light on it comes from, for the patterns its waves throw, over each of four by four parts of its extent: see Lamp
 	ivec4	out_size;		// xy: of the finished picture, the size of the view
 	vec4	open_origin;	// motion blur: the eye as the shutter opened; w: there is blur
 	vec4	open_forward;
@@ -133,7 +137,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	vec4	open_up;
 	ivec4	held;			// x: first triangle of the frame carried by the eye (the weapon in hand); y: how many; z: reflections are followed where they appear to be
 	vec4	painted;		// x: what a metal painted dark reflects, see pt_view_t's metal_colour; y: the most over white that adds to the glow, 0 = no limit; z: points along a view ray where the air's light is looked for; w: frames of it kept while things change
-	vec4	liquid;			// x: how far from level the waves of simulated liquids reach; y: how readily what was gathered is let go where the light has changed, see change.comp
+	vec4	liquid;			// x: how far from level the waves of simulated liquids reach; y: how readily what was gathered is let go where the light has changed, see change.comp; z: how much liquids scatter the light in them; w: how wet their banks show
 	ivec4	table_at3;		// in indices: x: for each of the map's lights, the one taken in its stead when it is not kept; y: the cells' lists of lights again, in order of light
 } fr;
 
@@ -663,43 +667,137 @@ bool Closest(vec3 origin, vec3 dir, inout float tmin, bool camera, bool cross_th
 	return Closest(origin, dir, tmin, camera, cross_through, MASK_ALL, false, hit, mat);
 }
 
-// how much the waves of a simulated liquid brighten light passing through
-// its surface at p
-float Caustic(Material mat, vec3 p)
+// Ripples too fine for a simulated liquid's cells to hold, where it is as
+// ruffled as can be: a few trains of small waves, each running its own way
+// at the speed waves of its length do. How sharply they curve the surface
+// at p: along x, along y, and across the two.
+vec3 RippleCurve(vec2 p)
 {
-	if (mat.caustic_map < 0)
-		return 1.0;
-	const vec2 at = (p.xy - mat.wave_rect.xy) * mat.wave_rect.zw;
-	if (at.x < 0.0 || at.y < 0.0 || at.x > 1.0 || at.y > 1.0)
-		return 1.0;
-	return Texel(mat.caustic_map, at, true).r * 4.0;
+	vec3 c = vec3(0.0);
+	for (int i = 0; i < 6; i++)
+	{
+		const float turn = float(i) * 2.399 + 0.5;
+		const vec2 d = vec2(cos(turn), sin(turn));
+		const float k = 0.28 + 0.11 * float(i);		// from 22 units long down to 7
+		// a wave whose slope is at most RIPPLE_SLOPE curves by that times k
+		const float bend = sin(dot(d, p) * k - sqrt(386.0 * k) * fr.sky_misc.w + float(i) * 1.7) * (RIPPLE_SLOPE * k);
+		c -= vec3(d.x * d.x, d.y * d.y, d.x * d.y) * bend;
+	}
+	return c;
 }
 
-// How much of the light from target reaches a point: 0 if something is in
-// the way, otherwise 1 times whatever rippling liquid on the way does to
-// it, which gathers the light in some places and thins it in others.
-float Visible(vec3 p, vec3 target)
+// How much the waves of a simulated liquid brighten light that goes
+// through its surface at q, or dim it: where the surface bulges it gathers
+// the light, as a lens does, and where it is hollow it spreads it. map is
+// its picture of that, lying at rect; reach is how far the light goes on
+// from there, times how much the surface turns it for its slope, which is
+// 1 - 1 / the liquid's index. wet is whether there is liquid at q at all.
+float Caustic(int map, vec4 rect, vec3 q, float reach, out bool wet)
 {
-	rays_traced++;
-	const vec3 d = target - p;
+	const vec2 at = (q.xy - rect.xy) * rect.zw;
+	wet = at.x >= 0.0 && at.y >= 0.0 && at.x <= 1.0 && at.y <= 1.0;
+	if (!wet)
+		return 1.0;
+	const vec4 v = Texel(map, at, true);
+	wet = v.a > 0.3;
+	// how sharply it curves along x and along y, and how ruffled it is: see pt_water_caustics
+	const vec2 s = (v.rg * 255.0 - 128.0) * (1.0 / 127.0);
+	const vec3 c = (vec3(s * abs(s) * 0.125, 0.0) + RippleCurve(q.xy) * (v.b * 4.0)) * (reach * fr.settings_f.z);
+	return clamp(1.0 / max(abs((1.0 + c.x) * (1.0 + c.y) - c.z * c.z), 0.01), 0.2, CAUSTIC_MAX);
+}
+
+// Light bends where it goes into a liquid. Of a path with one end in the
+// liquid and the other out of it, whose surface lies level at z: where it
+// crosses, which is nearer over the end in the liquid than a straight line
+// between the two would.
+vec3 BentCrossing(vec3 in_liquid, vec3 out_of_it, float z)
+{
+	const float down = z - in_liquid.z, up = out_of_it.z - z;
+	const vec2 across = out_of_it.xy - in_liquid.xy;
+	const float len = length(across);
+	if (len < 1.0e-4)
+		return vec3(in_liquid.xy, z);
+	// the sines of the two angles at the surface are as the liquid's index:
+	// from where that puts it for small angles, and nearer each step
+	const float straight = len * down / (down + up);
+	float x = len * down / (down + WATER_INDEX * up);
+	for (int i = 0; i < 3; i++)
+	{
+		const float y = len - x;
+		const float a = inversesqrt(x * x + down * down), b = inversesqrt(y * y + up * up);
+		x = clamp(x - (WATER_INDEX * x * a - y * b) / (WATER_INDEX * down * down * a * a * a + up * up * b * b * b), 0.0, straight);
+	}
+	return vec3(in_liquid.xy + across * (x / len), z);
+}
+
+// Whether the way from p to target crosses the surface of a simulated
+// liquid, where it bends: gives where it crosses, and how much of the light
+// gets through there.
+bool Bend(vec3 p, vec3 target, out vec3 q, out float through)
+{
+	q = vec3(0.0);
+	through = 1.0;
+	for (int i = 0; i < fr.size.z; i++)
+	{
+		const float z = fr.water_at[i].x;
+		if ((p.z - z) * (target.z - z) >= 0.0)
+			continue;
+		const int marks = int(fr.water_at[i].w);
+		if (marks < 0)
+			continue;
+		const bool rising = target.z > z;
+		const vec3 above = rising ? target : p;
+		const vec3 at = BentCrossing(rising ? p : target, above, z);
+		// the picture of its curves also says where there is liquid at all
+		const vec2 uv = (at.xy - fr.water_wave[i].xy) * fr.water_wave[i].zw;
+		if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0 || Texel(marks, uv, false).a < 0.5)
+			continue;
+		// less of it gets in at a glancing angle, and what is painted on the
+		// liquid stops its share
+		const float m = 1.0 - (above.z - z) / distance(at, above);
+		through = 0.98 - 0.98 * m * m * m * m * m;
+		if (fr.water_at[i].y >= 0.0)
+			through *= 1.0 - world_materials.m[int(fr.water_at[i].y)].alpha;
+		q = at;
+		return true;
+	}
+	return false;
+}
+
+// Whether light from target reaches a point: 1, or 0 if something is in the
+// way. With bent, the way is not straight but by q, where it crosses the
+// surface of a liquid: see Bend.
+float Visible(vec3 p, vec3 target, bool bent, vec3 q)
+{
+	rays_traced += bent ? 2 : 1;
+	vec3 o = p, d = (bent ? q : target) - p;
 	float tmin = 0.0;
-	float through = 1.0;
 	for (int skips = 0; skips < 16; skips++)
 	{
 		Hit hit;
-		if (!Nearest(p, d, tmin, 0.999, hit))
-			return through;
+		if (!Nearest(o, d, tmin, 0.999, hit))
+		{
+			if (!bent)
+				return 1.0;
+			// nothing in the way as far as the surface: now from there on
+			bent = false;
+			o = q;
+			d = target - q;
+			tmin = 1.0e-3;
+			continue;
+		}
 		const Tri tri = TriOf(hit);
 		const Material mat = MaterialOf(hit.moving, tri.material);
-		if (!IsHole(mat, tri, hit.bary))
-		{
-			if (mat.alpha >= 1.0 || Rand() < mat.alpha)
-				return 0.0;
-			through *= Caustic(mat, p + d * hit.t);
-		}
+		if (!IsHole(mat, tri, hit.bary) && (mat.alpha >= 1.0 || Rand() < mat.alpha))
+			return 0.0;
 		tmin = hit.t + 1.0e-4;
 	}
 	return 0.0;
+}
+
+float Visible(vec3 p, vec3 target)
+{
+	return Visible(p, target, false, vec3(0.0));
 }
 
 // --------------------------------------------------------------- surfaces
@@ -1034,6 +1132,102 @@ void AddFroth(inout Surface s)
 	s.mat.emission_per_texel.rgb = vec3(0.0);
 }
 
+// where the light on a simulated liquid comes from, over a point of it
+vec3 Lamp(int body, vec2 xy)
+{
+	const vec4 rect = fr.water_rect[body];
+	const vec2 f = clamp((xy - rect.xy) / (rect.zw - rect.xy) * 4.0 - 0.5, vec2(0.0), vec2(3.0));
+	const ivec2 at = min(ivec2(f), ivec2(2));
+	const vec2 a = f - vec2(at);
+	const int k = body * 16 + at.y * 4 + at.x;
+	return mix(mix(fr.water_lamp[k].xyz, fr.water_lamp[k + 1].xyz, a.x), mix(fr.water_lamp[k + 4].xyz, fr.water_lamp[k + 5].xyz, a.x), a.y);
+}
+
+// What a simulated liquid does to something solid in it or by it, for the
+// eye's own rays; under is whether the ray is in a liquid where it met the
+// thing.
+//
+// In the liquid, its waves gather the light that comes down through them
+// into bright lines and thin it between. Light is gathered over many
+// frames, in which time the waves have moved on and their pattern would
+// come to nothing, so it is not in the light as it is traced: it is worked
+// out here for the light from where most of the liquid's light comes from,
+// and laid over the surface like paint, which nothing blurs.
+//
+// By it, its banks are wet as far up as it has lately stood and a little
+// further: darker, and shiny.
+void AddWater(inout Surface s, bool under)
+{
+	if (fr.settings_f.z <= 0.0)
+		return;
+	for (int i = 0; i < fr.size.z; i++)
+	{
+		const float level = fr.water_at[i].x, up = s.p.z - level;
+		const vec4 rect = fr.water_rect[i];
+		const int waves = int(fr.water_at[i].z), marks = int(fr.water_at[i].w);
+		if (up > 12.0 || (!under && up < -9.0) || waves < 0 || marks < 0
+			|| s.p.x < rect.x - 8.0 || s.p.y < rect.y - 8.0 || s.p.x > rect.z + 8.0 || s.p.y > rect.w + 8.0)
+			continue;
+
+		// how high it has stood, between the cells that have liquid in or by them
+		const ivec2 size = textureSize(sampler2D(textures[nonuniformEXT(marks)], nearest_sampler), 0);
+		const vec2 f = (s.p.xy - fr.water_wave[i].xy) * fr.water_wave[i].zw * vec2(size) - 0.5;
+		const ivec2 at = ivec2(floor(f));
+		const vec2 a = f - vec2(at);
+		float sum = 0.0, weight = 0.0;
+		for (int k = 0; k < 4; k++)
+		{
+			const ivec2 c = at + ivec2(k & 1, k >> 1);
+			if (c.x < 0 || c.y < 0 || c.x >= size.x || c.y >= size.y)
+				continue;
+			const float v = texelFetch(sampler2D(textures[nonuniformEXT(marks)], nearest_sampler), c, 0).a;
+			const float w = ((k & 1) != 0 ? a.x : 1.0 - a.x) * ((k >> 1) != 0 ? a.y : 1.0 - a.y);
+			if (v > 0.5)
+			{
+				sum += v * w;
+				weight += w;
+			}
+		}
+		if (weight <= 0.0)
+			continue;
+
+		if (up < WaveHeight(waves, fr.water_wave[i], size, s.p.xy))
+		{
+			// in it, if the eye's ray is; something under its bed is not
+			const vec3 lamp = Lamp(i, s.p.xy);
+			if (!under || lamp.z <= level || up >= 0.0)
+				continue;
+			const vec3 q = BentCrossing(s.p, lamp, level);
+			const float down = distance(q, s.p), from = distance(q, lamp);
+			bool wet;
+			const float gain = Caustic(marks, fr.water_wave[i], q, (1.0 - 1.0 / WATER_INDEX) * down * from / (down + from), wet);
+			// what faces away from the light has none of it
+			const float facing = clamp(dot(s.n, q - s.p) / down * 4.0, 0.0, 1.0);
+			if (wet)
+				s.kd *= mix(1.0, gain, facing);
+			return;
+		}
+		if (fr.liquid.w <= 0.0)
+			continue;
+
+		const float mark = (sum / weight * 255.0 - 160.0) * (8.0 / 95.0) * fr.settings_f.z;
+		// it soaks a little higher than it stood, and not to a ruled line
+		const float edge = mark + 0.75 + 1.5 * Lumps(vec2(s.p.x + s.p.y, s.p.z + s.p.x - s.p.y) * 0.45);
+		const float wet = clamp((edge - up) * 1.5, 0.0, 1.0) * min(fr.liquid.w, 1.0);
+		if (wet <= 0.0)
+			continue;
+
+		// water fills what made the surface rough and pale
+		const float dark = 1.0 - 0.45 * wet;
+		s.colour *= dark;
+		s.kd *= dark;
+		s.roughness = min(s.roughness, mix(s.roughness, 0.3, wet));
+		s.alpha = max(s.roughness * s.roughness, MIN_ALPHA);
+		s.light_sampled_spec = s.roughness >= LIGHT_SAMPLED_ROUGHNESS;
+		return;
+	}
+}
+
 // what the surface gives off; seen is for the eye looking straight at it
 vec3 Emitted(Surface s, bool seen)
 {
@@ -1160,11 +1354,11 @@ int GridCell(vec3 p)
 	return (c.z * fr.grid_dims.y + c.y) * fr.grid_dims.x + c.x;
 }
 
-// Light thrown back up by a simulated liquid surface: the dancing patches on
-// walls and ceilings near water. The surface is treated as a mirror for the
+// Light thrown back up by a simulated liquid surface, onto walls and
+// ceilings near water. The surface is treated as a level mirror for the
 // light just sampled, so its image lies as far below the surface as the
-// light is above, and the gathering of light by the waves shapes what comes
-// back. y is the point on the light, e what it would send straight here.
+// light is above. y is the point on the light, e what it would send
+// straight here.
 void WaterBounce(Surface s, vec3 y, vec3 e, inout Lit lit)
 {
 	if (s.medium)
@@ -1201,13 +1395,10 @@ void WaterBounce(Surface s, vec3 y, vec3 e, inout Lit lit)
 	const vec3 wi = d * inversesqrt(len2);
 	const float m = 1.0 + wi.z;	// 1 - cosine of the angle at the water
 	const float fresnel = 0.02 + 0.98 * m * m * m * m * m;
-	const float gain = fresnel * Caustic(world_materials.m[int(fr.water_at[body].y)], q);
-	if (gain <= 0.001)
-		return;
 
 	// e was for the straight path; this one is as long as the way to the image
 	const vec3 straight = y - s.p;
-	const Lit add = Reflect(s, wi, e * (gain * dot(straight, straight) / len2));
+	const Lit add = Reflect(s, wi, e * (fresnel * dot(straight, straight) / len2));
 	if (Importance(s, add) <= 0.0)
 		return;
 
@@ -1354,8 +1545,19 @@ Lit DirectLights(Surface s, bool first_hit)
 		return none;
 	chosen_e *= wsum / (float(candidates) * chosen_phat);
 
+	// Light bends going into a simulated liquid, so a shadow under one
+	// falls where the bent light is cut off. For what the eye sees itself:
+	// light that has bounced takes the liquid for no more than it looks.
+	// (What its waves do to the light is laid over what the eye sees: see
+	// AddWater.)
+	vec3 crossing = vec3(0.0);
+	float gets_in = 1.0;
+	bool bent = false;
+	if (first_hit && fr.size.z > 0)
+		bent = Bend(Leave(s), chosen_y, crossing, gets_in);
+
 	Lit lit = none;
-	const float clear = Visible(Leave(s), chosen_y);
+	const float clear = Visible(Leave(s), chosen_y, bent, crossing) * gets_in;
 	if (clear > 0.0)
 		lit = Reflect(s, chosen_wi, chosen_e * clear);
 	if (fr.size.z > 0)

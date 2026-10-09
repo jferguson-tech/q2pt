@@ -108,6 +108,7 @@ Lit DirectFrameBall(const Scene &sc, const Surface &s, Rng &rng);
 // light arriving at a point in the air from one sampled light and the sky,
 // as irradiance on a surface facing it
 Vec3 DirectMedium(const Scene &sc, Vec3 p, Rng &rng);
+void AddWater(const Scene &sc, Surface &s, bool under);
 
 Vec3 SampleDiffuse(const Surface &s, Rng &rng);
 // returns false if the sample is unusable; weight is what the lobe reflects of it

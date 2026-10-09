@@ -458,7 +458,6 @@ float Dielectric(float cosi, float eta, float &cost)
 }
 
 const float kGlassIndex = 1.5f;
-const float kWaterIndex = 1.33f;
 
 // what is left of light after a distance through something that absorbs it
 Vec3 Fade(Vec3 absorb, float distance)
@@ -557,6 +556,8 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 	float through = 1.0f;		// how much of what is behind still shows
 	Vec3 tint(1, 1, 1);			// what liquid on the way has left of each colour
 	Vec3 absorb(s->view.medium_absorb);	// of the liquid the path is in now; none in air
+	Vec3 shaft;					// what that liquid has scattered towards the eye
+	bool shafted = false;		// whether any of the path was in one that scatters
 	// the view modes that leave part of the light out, or measure something
 	const int view_mode = sc.view_mode;
 	const bool furnace = view_mode == PT_VIEW_FURNACE;
@@ -617,6 +618,21 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 		}
 		MakeSurface(sc, *tri, hit, ray, surf, sc.filter_textures, !view_mode);
 		const Material &mat = *surf.mat;
+		// A liquid scatters a little of the light in it towards the eye: it
+		// glows where light comes down through it, in shafts the waves and
+		// whatever stands in the light's way break up.
+		const float shafts = sc.water_shafts * (absorb.x + absorb.y + absorb.z) * 0.1f;	// what it scatters, per unit: a third of what it soaks up
+		// (looked for one frame in four, and counted four times: it is faint, and gathered)
+		if (shafts > 0.0f && !view_mode && hit.t > entered)
+		{
+			if (rng.Float() < 0.25f)
+			{
+				const float at = entered + (hit.t - entered) * rng.Float();
+				shaft += ClampSample(DirectMedium(sc, ray.o + ray.d * at, rng) * (shafts * kInvPi * (hit.t - entered)), sc.max_sample)
+					* (tint * Fade(absorb, at - entered) * through);
+			}
+			shafted = true;
+		}
 		tint *= Fade(absorb, hit.t - entered);
 		entered = hit.t;
 		if (view_mode >= PT_VIEW_LIGHTING)
@@ -663,7 +679,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 			if (liquid)
 			{
 				// its underside faces down: there the eye is in the water looking out
-				eta = tri->n.z < -0.5f ? kWaterIndex : 1.0f / kWaterIndex;
+				eta = tri->n.z < -0.5f ? Scene::kWaterIndex : 1.0f / Scene::kWaterIndex;
 				fresnel = Dielectric(cosi, eta, cost);
 			}
 			else
@@ -816,10 +832,20 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 			px.albedo[kOver][i] *= kept;
 			px.add[i] *= kept;
 		}
+		if (shafted)
+		{
+			// with the air's: it is the same kind of light
+			px.albedo[kFog][i] = Vec3(1, 1, 1);
+			px.light[kFog][i] += shaft * direct_on;
+			px.m1[kFog][i] = Luminance(px.light[kFog][i]);
+			px.m2[kFog][i] = px.m1[kFog][i] * px.m1[kFog][i];
+		}
 		if (view_mode == PT_VIEW_COST)
 			px.light[kDiffuse][i] = Vec3((float)rng.rays);
 		return;
 	}
+	if (!view_mode)
+		AddWater(sc, surf, MaxComponent(absorb) > 0.0f);
 
 	const Material &mat = *surf.mat;
 	const Vec3 kd = surf.kd * through;
@@ -878,6 +904,14 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 		px.albedo[kSpecular][i] *= kept;
 		px.albedo[kOver][i] *= kept;
 		px.add[i] *= kept;
+	}
+	if (shafted)
+	{
+		// with the air's: it is the same kind of light
+		px.albedo[kFog][i] = Vec3(1, 1, 1);
+		px.light[kFog][i] += shaft * direct_on;
+		px.m1[kFog][i] = Luminance(px.light[kFog][i]);
+		px.m2[kFog][i] = px.m1[kFog][i] * px.m1[kFog][i];
 	}
 	// what the frame's lights put here, to be compared with last frame's
 	px.flash[i] = FrameLightLevel(sc, surf,
@@ -1948,6 +1982,8 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 	sc.max_sample = view->firefly_clamp > 0.0f ? view->firefly_clamp : 40.0f;
 	sc.wave_strength = std::max(0.0f, view->wave_strength);
 	sc.wave_reach = std::min(std::max(view->wave_reach, 0.0f), 8.0f);
+	sc.water_shafts = std::min(std::max(view->water_shafts, 0.0f), 8.0f);
+	sc.water_wet = std::min(std::max(view->water_wet, 0.0f), 1.0f);
 	sc.swell = sc.wave_strength > 0.0f && s->world && !s->world->waters.empty();
 	sc.filter_textures = view->texture_filter != 0;
 	sc.reflections = view->reflections;
@@ -1976,7 +2012,7 @@ void RenderView(pt_backend_t *b, const pt_view_t *view)
 		const float settings[] = {(float)samples, (float)sc.light_samples, sc.max_sample, sc.wave_strength,
 			(float)sc.filter_textures, (float)sc.reflections, (float)sc.reflection_bounces, sc.reflection_rate,
 			(float)sc.refraction, view->exposure, sc.fog_density, (float)sc.view_mode, sc.metal_colour,
-			(float)sc.fog_samples};
+			(float)sc.fog_samples, sc.water_shafts, sc.water_wet};
 		hash = HashBytes(settings, sizeof(settings), hash);
 	}
 	if (s->world->has_waves)
