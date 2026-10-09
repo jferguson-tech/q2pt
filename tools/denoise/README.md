@@ -57,23 +57,29 @@ so they stay as sharp as they were rendered; mixing in the neighbouring
 frames is what stops a film from flickering.
 
 Light is scaled before the network sees it by the exposure the game would
-choose for that stretch of the film, steadied over neighbouring frames.
+choose for that stretch of the film, steadied over neighbouring frames. The
+network is given it twice, once as a logarithm that is nearly linear in the
+dark and once as one that spans six decades, so that a dark frame reads
+much the same however it was scaled.
 
 ## How good it is
 
 `results/` has the measurements of each training run on the six held-out
 maps, against references of 16,384 paths a pixel and against Intel Open
 Image Denoise 2.3.3 given the same frames with their colour and normal
-buffers. As of the fourth run (`results/stage4.md`) it flickers less than
+buffers. As of the eighth run (`results/stage8.md`) it flickers less than
 Open Image Denoise at 4 and 16 paths but is still slightly behind it in
-PSNR and SSIM: 38.79 dB against 38.95 dB at 16 paths, 37.64 against 38.10
+PSNR and SSIM: 38.91 dB against 38.95 dB at 16 paths, 37.75 against 38.10
 at 4. It is ahead on four of the six clips at 4 paths and three at 16; the
 largest loss is where a BFG is fired in a dark room.
 
-A fifth run (`results/stage5.md`) scaled each frame by the exposure the
-game would have reached by then and drew clips with flashes more often. It
-flickered less but was worse overall (38.48 dB at 16 paths), and was taken
-out again; the fourth run's weights are the best so far.
+Runs that did not help and were taken out again: the fifth
+(`results/stage5.md`) scaled each frame by the exposure the game would have
+reached by then, and was worse overall (38.48 dB at 16 paths). The seventh
+(`results/stage7.md`) judged the light by the squared difference of its
+logarithms, and its pictures came out too dark, by 16% in the darkest clip
+(36.85 dB). The eighth went back to errors relative to the answer and added
+the squared error of the picture as shown.
 
 Frames rendered with motion blur denoise far better than sharp frames
 blurred afterwards (33.6 dB against 27.7 dB at 16 paths).
@@ -84,7 +90,11 @@ blurred afterwards (33.6 dB against 27.7 dB at 16 paths).
    with `--split test`. It writes camera tours through every map
    (make_tours.py reads the maps from your own .pak files), runs the game on
    them and saves the buffers. Six maps are held out as the test set and
-   never trained on. This takes hours and a few hundred GB.
+   never trained on. This takes hours and a few hundred GB. With `--dark N`
+   it instead tries N clips a map and renders the dark ones; with `--dim`
+   it renders every map with its lights turned down. Three maps of the
+   mission packs are kept for `--split final`, a last test that nothing
+   has been tuned against.
 2. `train.py --data DATA/train --out RUN`, and `--start OTHER/denoiser.pt`
    to carry on from weights already trained. It needs a GPU with about
    10 GB.
