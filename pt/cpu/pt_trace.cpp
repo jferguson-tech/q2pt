@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Jonathan Ferguson
 
 #include "pt_trace.h"
+#include "../material/pt_material.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -153,6 +154,71 @@ Lit PointLight(const Surface &s, const Light &l, float scale)
 	return Reflect(s, d / std::sqrt(dist2), l.emission * (scale / dist2));
 }
 
+// A point on a ball of light, drawn evenly over as much of the ball as shows
+// from p: y is the point and wi the way to it. Returns what it sends to p
+// over the chance of its being drawn, which comes to the same wherever on
+// the ball it is: the ball's radiance times the solid angle the ball fills.
+// From inside it, nothing.
+Vec3 SampleBall(const Light &l, Vec3 p, Rng &rng, Vec3 &y, Vec3 &wi)
+{
+	const Vec3 d = l.origin - p;
+	const float dist2 = Dot(d, d), r2 = l.radius * l.radius;
+	if (dist2 <= r2)
+		return Vec3();
+	const float dist = std::sqrt(dist2);
+	const float sin2_max = r2 / dist2;
+	// 1 - cos of the angle from its middle to its edge, which far off is too small to take from 1
+	const float cap = sin2_max / (1.0f + std::sqrt(1.0f - sin2_max));
+
+	const float cos_t = 1.0f - rng.Float() * cap, phi = 2.0f * kPi * rng.Float();
+	const float sin2_t = std::max(0.0f, 1.0f - cos_t * cos_t), sin_t = std::sqrt(sin2_t);
+	Vec3 t, b;
+	const Vec3 w = d / dist;
+	Basis(w, t, b);
+	wi = t * (sin_t * std::cos(phi)) + b * (sin_t * std::sin(phi)) + w * cos_t;
+	// where going that way meets the ball
+	y = p + wi * (dist * cos_t - std::sqrt(std::max(0.0f, r2 - dist2 * sin2_t)));
+	return l.emission * (2.0f * cap / r2);		// intensity / (pi r^2) * 2 pi cap
+}
+
+// One of the frame's lights on a surface, with nothing in the way; at is
+// where to look to see whether anything is. A point gives its all, a ball
+// what one point drawn on it stands for.
+Lit FrameLight(const Surface &s, const Light &l, Rng &rng, Vec3 &at)
+{
+	if (l.radius <= 0.0f)
+	{
+		at = l.origin;
+		return PointLight(s, l, 1.0f);
+	}
+	Vec3 wi;
+	const Vec3 e = SampleBall(l, s.p, rng, at, wi);
+	return Reflect(s, wi, e);
+}
+
+// How much one of the frame's lights is worth to a surface beside the
+// others. For a point that is what it gives; a ball is weighed as if it were
+// all at its middle, but for where the middle is under the surface's horizon
+// and some of the ball over it: there it is not to be left out.
+float FrameLightWeight(const Surface &s, const Light &l)
+{
+	if (l.radius <= 0.0f || s.medium)
+		return Importance(s, PointLight(s, l, 1.0f));
+	const Vec3 d = l.origin - s.p;
+	const float dist2 = Dot(d, d);
+	if (dist2 <= l.radius * l.radius)
+		return 0.0f;
+	const float dist = std::sqrt(dist2);
+	const Vec3 wi = d / dist, e = l.emission * (1.0f / dist2);
+	const float rise = l.radius / dist, nol = Dot(s.n, wi);
+	if (nol <= -rise)
+		return 0.0f;
+	float weight = Luminance((s.kd * kInvPi + s.f0 * 0.05f) * e) * std::max(nol, 0.25f * (nol + rise));
+	if (s.light_sampled_spec)
+		weight += Luminance(e * SpecularTimesCos(s, wi));
+	return weight;
+}
+
 } // namespace
 
 bool BackOfGlass(const Tri &tri, Vec3 dir)
@@ -177,12 +243,146 @@ Vec3 ClampSample(Vec3 c, float max_luminance)
 	return lum > max_luminance ? c * (max_luminance / lum) : c;
 }
 
-bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &hit, const Tri *&tri, HeldRays held)
+// how far above its level a simulated liquid stands at x, y
+static float WaveHeight(const Scene &sc, const Texture &map, const Material &m, float x, float y)
 {
+	// between the middles of the cells, and level with the outermost beyond them
+	const float fx = std::min(std::max((x - m.wave_rect[0]) * m.wave_rect[2] * (float)map.width - 0.5f, 0.0f), (float)(map.width - 1));
+	const float fy = std::min(std::max((y - m.wave_rect[1]) * m.wave_rect[3] * (float)map.height - 0.5f, 0.0f), (float)(map.height - 1));
+	const int x0 = std::min((int)fx, map.width - 2), y0 = std::min((int)fy, map.height - 2);
+	const float ax = fx - (float)x0, ay = fy - (float)y0;
+	const uint32_t *row = &map.pixels[(size_t)y0 * map.width + x0];
+	const auto stored = [](uint32_t texel) { return (float)(((texel >> 8) & 0xff00) | (texel >> 24)); };
+	const float h = (stored(row[0]) * (1.0f - ax) + stored(row[1]) * ax) * (1.0f - ay)
+		+ (stored(row[map.width]) * (1.0f - ax) + stored(row[map.width + 1]) * ax) * ay;
+	return (h * (1.0f / 65535.0f) - 0.5f) * 16.0f * sc.wave_strength;
+}
+
+// Where the ray first crosses the surface of a simulated liquid before limit.
+// The surface is not the level triangles the map has for it but stands where
+// the waves do, above and below them: the ray is followed through the band
+// the waves keep to until it is on the other side of the surface. Gives how
+// far along that is, the side the ray came from (1 above, -1 below) and the
+// body.
+static bool WaveCross(const Scene &sc, const Ray &ray, float limit, float &where, float &side, const World::Water *&body)
+{
+	const float reach = sc.wave_reach * sc.wave_strength + 0.1f;
+	const float o[3] = {ray.o.x, ray.o.y, ray.o.z}, d[3] = {ray.d.x, ray.d.y, ray.d.z};
+	float inv[3];
+	for (int a = 0; a < 3; a++)
+		inv[a] = 1.0f / (std::fabs(d[a]) < 1.0e-8f ? 1.0e-8f : d[a]);
+	limit = std::min(limit, 1.0e7f);
+	bool found = false;
+
+	for (const World::Water &b : sc.world->waters)
+	{
+		// the part of the ray within the waves' reach of the level, over the body
+		const float lo[3] = {b.min_x, b.min_y, b.z - reach}, hi[3] = {b.max_x, b.max_y, b.z + reach};
+		float t0 = ray.tmin, t1 = limit;
+		for (int a = 2; a >= 0 && t0 < t1; a--)
+		{
+			const float ta = (lo[a] - o[a]) * inv[a], tb = (hi[a] - o[a]) * inv[a];
+			t0 = std::max(t0, std::min(ta, tb));
+			t1 = std::min(t1, std::max(ta, tb));
+		}
+		if (t0 >= t1)
+			continue;
+		const Texture *map = sc.Map(b.mat->wave_map), *wet = sc.Map(b.mat->caustic_map);
+		if (!map || map->width < 2 || map->height < 2)
+			continue;
+
+		const auto above = [&](float t)
+		{
+			return o[2] + d[2] * t - b.z - WaveHeight(sc, *map, *b.mat, o[0] + d[0] * t, o[1] + d[1] * t);
+		};
+		// Far from the surface the steps are as long as its slope allows,
+		// taken to be no steeper than one in one; near it half a cell. A ray
+		// that skims it for long gets longer steps as it goes, so as to end.
+		const float cell = 1.0f / (b.mat->wave_rect[2] * (float)map->width);
+		const float across = std::sqrt(d[0] * d[0] + d[1] * d[1]);
+		const float closing = 1.0f / (std::fabs(d[2]) + across);
+		float least = 0.5f * cell / std::max(across, 1.0e-6f);
+
+		float ta = t0, fa = above(t0);
+		// a ray that leaves the surface starts on it, and a little further
+		// along shows which side it left on
+		if (std::fabs(fa) < 0.05f)
+			fa = above(std::min(t0 + 0.1f, t1));
+		for (int i = 0; ta < t1; i++)
+		{
+			if (i >= 64)
+				least *= 1.06f;
+			const float tb = std::min(ta + std::max(std::fabs(fa) * closing, least), t1);
+			const float fb = above(tb);
+			if ((fa < 0.0f) != (fb < 0.0f))
+			{
+				// the caustic picture also says where there is liquid at all
+				const float tm = 0.5f * (ta + tb);
+				const int cx = std::min(std::max((int)std::floor((o[0] + d[0] * tm - b.mat->wave_rect[0]) * b.mat->wave_rect[2] * (float)map->width), 0), map->width - 1);
+				const int cy = std::min(std::max((int)std::floor((o[1] + d[1] * tm - b.mat->wave_rect[1]) * b.mat->wave_rect[3] * (float)map->height), 0), map->height - 1);
+				if (!wet || wet->width != map->width || wet->height != map->height || (wet->pixels[(size_t)cy * wet->width + cx] >> 24) >= 128)
+				{
+					float on = ta, past = tb;
+					for (int k = 0; k < 10; k++)
+					{
+						const float mid = 0.5f * (on + past);
+						if ((above(mid) < 0.0f) == (fa < 0.0f))
+							on = mid;
+						else
+							past = mid;
+					}
+					where = on;
+					side = fa < 0.0f ? -1.0f : 1.0f;
+					body = &b;
+					limit = on;
+					found = true;
+					break;
+				}
+			}
+			ta = tb;
+			fa = fb;
+		}
+	}
+	return found;
+}
+
+// A ray that crosses the surface of a simulated liquid before limit meets
+// the triangle that says there is liquid at the crossing and what it is made
+// of: the one straight down from it, or up, from the side the ray came.
+static bool WaveHit(const Scene &sc, const Ray &ray, float limit, Hit &hit)
+{
+	float where, side;
+	const World::Water *body;
+	if (!WaveCross(sc, ray, limit, where, side, body))
+		return false;
+
+	Ray probe;
+	probe.o = Vec3(ray.o.x + ray.d.x * where, ray.o.y + ray.d.y * where, body->z + side * 1.25f);
+	probe.d = Vec3(0.0f, 0.0f, -side);
+	probe.tmin = 0.0f;
+	probe.tmax = 2.5f;
+	Hit at;
+	if (!sc.world->bvh.IntersectIf(probe, at, [&](uint32_t t, float, float)
+	{
+		const Tri &tri = sc.world->tris[t];
+		return tri.mat->wave_map == body->mat->wave_map && tri.n.z * side > 0.99f;
+	}))
+		return false;
+	hit = at;
+	hit.t = where;
+	return true;
+}
+
+bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &hit, const Tri *&tri, HeldRays held, bool waves)
+{
+	waves = waves && sc.swell && held != kHeldOnly;
 	rng.rays++;
 	for (int skips = 0; ; skips++)
 	{
-		const auto in_world = [&](uint32_t t, float, float) { return !BackOfGlass(sc.world->tris[t], ray.d); };
+		const auto in_world = [&](uint32_t t, float, float)
+		{
+			return !BackOfGlass(sc.world->tris[t], ray.d) && !(waves && sc.Swells(sc.world->tris[t]));
+		};
 		const auto in_frame = [&](uint32_t t, float, float)
 		{
 			const Tri &tri = sc.frame->tris[t];
@@ -237,6 +437,9 @@ bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &
 			hit.tri |= kDynamic;
 			found = true;
 		}
+		// a simulated liquid's surface, if that comes first
+		if (waves && WaveHit(sc, ray, found ? hit.t : ray.tmax, hit))
+			found = true;
 		if (!found)
 			return false;
 
@@ -246,7 +449,10 @@ bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &
 			(camera && (m.flags & PT_MAT_CAMERA_INVISIBLE)) ||
 			IsHole(*tri, hit.u, hit.v) ||
 			(cross && m.alpha < 1.0f && rng.Float() >= m.alpha) ||
-			(sc.view_mode == PT_VIEW_FURNACE && (m.flags & PT_MAT_BLACK)));
+			(sc.view_mode == PT_VIEW_FURNACE && (m.flags & PT_MAT_BLACK)) ||
+			// a ray that leaves the liquid where it stands below its level is
+			// behind the level sheet, and must not meet that from the back
+			(!waves && sc.Swells(*tri) && Dot(tri->n, ray.d) > 0.0f));
 		if (!skip)
 			return true;
 		ray.tmin = hit.t + 0.01f;
@@ -301,8 +507,8 @@ void WhiteSurface(Surface &s)
 {
 	if (s.mat->flags & PT_MAT_BLACK)
 		return;
-	s.kd = Vec3(1.0f - s.mat->metallic);
-	s.f0 = Vec3(0.04f * (1.0f - s.mat->metallic) + s.mat->metallic);
+	s.kd = Vec3(1.0f - s.metallic);
+	s.f0 = Vec3(0.04f * (1.0f - s.metallic) + s.metallic);
 }
 
 Vec3 SurfaceChannel(int mode, const Surface &s)
@@ -318,7 +524,7 @@ Vec3 SurfaceChannel(int mode, const Surface &s)
 	case PT_VIEW_ROUGHNESS:
 		return Vec3(plain(s.roughness));
 	case PT_VIEW_METAL:
-		return Vec3(plain(s.mat->metallic));
+		return Vec3(plain(s.metallic));
 	case PT_VIEW_GLOW:
 	{
 		if (!s.mat->emissive || !s.front)
@@ -352,6 +558,15 @@ Vec3 CostColour(float rays)
 	// a colour for each doubling from PT_COST_BLUE up, and a fade to black below it
 	const float at = rays / PT_COST_BLUE;
 	return CountColour(at < 1.0f ? at : 1.0f + std::log2(at));
+}
+
+// what a metal reflects, worked out from the colour it was painted (PT_MAT_METAL_PAINTED)
+static Vec3 MetalColour(Vec3 c, float level)
+{
+	const float painted[3] = {c.x, c.y, c.z};
+	float reflects[3];
+	pt_material_metal_colour(painted, level, reflects);
+	return Vec3(reflects[0], reflects[1], reflects[2]);
 }
 
 void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth)
@@ -391,11 +606,11 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 		{
 			wave_x += (float)(texel[k] & 0xff) * w[k];
 			wave_y += (float)((texel[k] >> 8) & 0xff) * w[k];
-			wave_height += (float)((texel[k] >> 16) & 0xff) * w[k];
+			wave_height += (float)(((texel[k] >> 8) & 0xff00) | (texel[k] >> 24)) * w[k];
 		}
 		wave_x = (wave_x * (1.0f / 255.0f) - 0.5f) * sc.wave_strength;
 		wave_y = (wave_y * (1.0f / 255.0f) - 0.5f) * sc.wave_strength;
-		wave_height = (wave_height * (1.0f / 255.0f) - 0.5f) * 8.0f * sc.wave_strength;
+		wave_height = (wave_height * (1.0f / 65535.0f) - 0.5f) * 16.0f * sc.wave_strength;
 		// what the texture stands for lies below the surface, so a tilted
 		// surface shows it shifted, as through a lens
 		u += wave_x * 0.5f;
@@ -406,6 +621,7 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	if (mat.emission_map)
 		s.glow = smooth ? mat.emission_map->Smooth(u, v) : Decode(mat.emission_map->Texel(u, v));
 	s.roughness = mat.roughness;
+	float metallic = mat.metallic;
 
 	Vec3 n = s.ng;
 	if (tri.smooth)
@@ -435,7 +651,13 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 		}
 		const float tx = c[0] * (2.0f / 255.0f) - 1.0f;
 		const float ty = c[1] * (2.0f / 255.0f) - 1.0f;
-		const float tz = c[2] * (2.0f / 255.0f) - 1.0f;
+		float tz = c[2] * (2.0f / 255.0f) - 1.0f;
+		if (mat.flags & PT_MAT_METAL_TEXTURE)
+		{
+			// the third number is metal: z is what is left of the normal's length
+			tz = std::sqrt(std::max(1.0f - tx * tx - ty * ty, 0.01f));
+			metallic = c[2] * (1.0f / 255.0f);
+		}
 		n = Normalize(tri.tu * tx + tri.tv * ty + n * tz);
 		s.roughness = c[3] * (1.0f / 255.0f);
 	}
@@ -443,6 +665,14 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	{
 		// the surface is level, facing up or (seen from below) down
 		n = Normalize(Vec3(-wave_x, -wave_y, 1.0f)) * (n.z < 0.0f ? -1.0f : 1.0f);
+		if (sc.Swells(tri))
+		{
+			// met where the waves stand (see WaveCross), on the side this
+			// triangle faces: it really is tilted as they are
+			n = Normalize(Vec3(-wave_x, -wave_y, 1.0f)) * (tri.n.z < 0.0f ? -1.0f : 1.0f);
+			s.front = true;
+			s.ng = n;
+		}
 		// crests gather the light in the liquid and troughs spread it
 		s.colour *= std::min(std::max(1.0f + wave_height * 0.35f, 0.6f), 1.8f);
 	}
@@ -463,6 +693,7 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 		n = s.ng;
 	s.n = n;
 
+	s.metallic = metallic;
 	if (mat.flags & PT_MAT_BLACK)
 	{
 		s.kd = Vec3();
@@ -470,8 +701,9 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	}
 	else
 	{
-		s.kd = s.colour * (1.0f - mat.metallic);
-		s.f0 = Vec3(0.04f) * (1.0f - mat.metallic) + s.colour * mat.metallic;
+		s.kd = s.colour * (1.0f - metallic);
+		s.f0 = Vec3(0.04f) * (1.0f - metallic)
+			+ ((mat.flags & PT_MAT_METAL_PAINTED) ? MetalColour(s.colour, sc.metal_colour) : s.colour) * metallic;
 		if (sc.view_mode)
 			ViewMode(sc.view_mode, mat, s);
 	}
@@ -503,44 +735,53 @@ static void WaterBounce(const Scene &sc, const Surface &s, Vec3 y, Vec3 e, Lit &
 {
 	if (s.medium)
 		return;
+	// The body the light would come off: of those whose surface the path
+	// crosses, the one nearest below. Only that one is tried, so that a map
+	// with many bodies costs no more rays than one with few.
+	const World::Water *body = nullptr;
+	Vec3 q;		// where the path meets the surface
 	for (const World::Water &b : sc.world->waters)
 	{
-		if (s.p.z <= b.z + 1.0f || y.z <= b.z + 1.0f || s.p.z - b.z > 512.0f)
+		if (!b.top || s.p.z <= b.z + 1.0f || y.z <= b.z + 1.0f || s.p.z - b.z > 512.0f || (body && b.z <= body->z))
 			continue;
 		const Vec3 image(y.x, y.y, 2.0f * b.z - y.z);
 		const Vec3 d = image - s.p;
-		const Vec3 q = s.p + d * ((b.z - s.p.z) / d.z);		// where the path meets the surface
-		if (q.x < b.min_x || q.x > b.max_x || q.y < b.min_y || q.y > b.max_y)
+		const Vec3 at = s.p + d * ((b.z - s.p.z) / d.z);
+		if (at.x < b.min_x || at.x > b.max_x || at.y < b.min_y || at.y > b.max_y || !sc.Wet(*b.mat, at))
 			continue;
-
-		const float len2 = Dot(d, d);
-		const Vec3 wi = d * (1.0f / std::sqrt(len2));
-		const float m = 1.0f + wi.z;	// 1 - cosine of the angle at the water
-		const float fresnel = 0.02f + 0.98f * m * m * m * m * m;
-		const float gain = fresnel * sc.Caustic(*b.mat, q);
-		if (gain <= 0.001f)
-			continue;
-
-		// e was for the straight path; this one is as long as the way to the image
-		const Vec3 straight = y - s.p;
-		const Lit add = Reflect(s, wi, e * (gain * Dot(straight, straight) / len2));
-		if (Importance(s, add) <= 0.0f)
-			continue;
-
-		// both legs must be clear
-		const Vec3 above = q + Vec3(0.0f, 0.0f, 0.1f);
-		if (Visible(sc, s, above, rng) <= 0.0f)
-			continue;
-		Surface at{};
-		at.medium = true;
-		at.p = above;
-		if (Visible(sc, at, y, rng) <= 0.0f)
-			continue;
-
-		out.diffuse += add.diffuse;
-		out.specular += add.specular;
-		return;		// one body will do
+		body = &b;
+		q = at;
 	}
+	if (!body)
+		return;
+
+	const Vec3 d = Vec3(y.x, y.y, 2.0f * body->z - y.z) - s.p;
+	const float len2 = Dot(d, d);
+	const Vec3 wi = d * (1.0f / std::sqrt(len2));
+	const float m = 1.0f + wi.z;	// 1 - cosine of the angle at the water
+	const float fresnel = 0.02f + 0.98f * m * m * m * m * m;
+	const float gain = fresnel * sc.Caustic(*body->mat, q);
+	if (gain <= 0.001f)
+		return;
+
+	// e was for the straight path; this one is as long as the way to the image
+	const Vec3 straight = y - s.p;
+	const Lit add = Reflect(s, wi, e * (gain * Dot(straight, straight) / len2));
+	if (Importance(s, add) <= 0.0f)
+		return;
+
+	// both legs must be clear
+	const Vec3 above = q + Vec3(0.0f, 0.0f, 0.1f);
+	if (Visible(sc, s, above, rng) <= 0.0f)
+		return;
+	Surface at{};
+	at.medium = true;
+	at.p = above;
+	if (Visible(sc, at, y, rng) <= 0.0f)
+		return;
+
+	out.diffuse += add.diffuse;
+	out.specular += add.specular;
 }
 
 #ifdef PT_AVX2_KERNELS
@@ -782,7 +1023,8 @@ Vec3 DirectMedium(const Scene &sc, Vec3 p, Rng &rng)
 	return world.diffuse + frame.diffuse;
 }
 
-Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng)
+// one of the frame's lights, or of its balls of light only
+static Lit FrameOne(const Scene &sc, const Surface &s, Rng &rng, bool balls)
 {
 
 	const std::vector<Light> &lights = sc.frame->lights;
@@ -790,22 +1032,28 @@ Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng)
 	if (lights.empty() || sc.view_mode == PT_VIEW_FURNACE)
 		return none;
 
-	// picked exactly in proportion to its unoccluded contribution
+	// picked in proportion to its unoccluded contribution: exactly, if a point
 	float total = 0.0f;
 	for (const Light &l : lights)
-		total += Importance(s, PointLight(s, l, 1.0f));
+		if (!balls || l.radius > 0.0f)
+			total += FrameLightWeight(s, l);
 	if (total <= 0.0f)
 		return none;
 
 	float pick = rng.Float() * total;
 	for (const Light &l : lights)
 	{
-		Lit f = PointLight(s, l, 1.0f);
-		const float imp = Importance(s, f);
+		if (balls && l.radius <= 0.0f)
+			continue;
+		const float imp = FrameLightWeight(s, l);
 		pick -= imp;
 		if (pick <= 0.0f && imp > 0.0f)
 		{
-			const float clear = Visible(sc, s, l.origin, rng);
+			Vec3 at;
+			Lit f = FrameLight(s, l, rng, at);
+			if (Importance(s, f) <= 0.0f)
+				return none;
+			const float clear = Visible(sc, s, at, rng);
 			if (clear <= 0.0f)
 				return none;
 			f.diffuse *= clear * total / imp;
@@ -816,6 +1064,16 @@ Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng)
 	return none;
 }
 
+Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng)
+{
+	return FrameOne(sc, s, rng, false);
+}
+
+Lit DirectFrameBall(const Scene &sc, const Surface &s, Rng &rng)
+{
+	return FrameOne(sc, s, rng, true);
+}
+
 Lit DirectFrameAll(const Scene &sc, const Surface &s, Rng &rng)
 {
 	Lit sum;
@@ -823,6 +1081,8 @@ Lit DirectFrameAll(const Scene &sc, const Surface &s, Rng &rng)
 		return sum;
 	for (const Light &l : sc.frame->lights)
 	{
+		if (l.radius > 0.0f)
+			continue;
 		const Lit f = PointLight(s, l, 1.0f);
 		const float clear = Importance(s, f) > 0.0f ? Visible(sc, s, l.origin, rng) : 0.0f;
 		if (clear > 0.0f)
@@ -832,6 +1092,25 @@ Lit DirectFrameAll(const Scene &sc, const Surface &s, Rng &rng)
 		}
 	}
 	return sum;
+}
+
+float FrameLightLevel(const Scene &sc, const Surface &s, Vec3 flash_light, Vec3 eye, Vec3 dir, float reach)
+{
+	float level = Luminance(flash_light);
+	for (const Light &l : sc.frame->lights)
+	{
+		if (l.radius > 0.0f)
+			level += Importance(s, PointLight(s, l, 1.0f));
+		if (sc.fog_density > 0.0f)
+		{
+			const Vec3 d = l.origin - eye;
+			const float t0 = Dot(d, dir);
+			const float h = std::max(std::sqrt(std::max(Dot(d, d) - t0 * t0, 0.0f)), 1.0f);
+			level += Luminance(l.emission) * sc.fog_density * (0.25f * kInvPi)
+				* (std::atan((reach - t0) / h) + std::atan(t0 / h)) / h;
+		}
+	}
+	return level;
 }
 
 // keeps a sampled direction on the outside of the real surface
@@ -932,39 +1211,52 @@ Vec3 Radiance(const Scene &sc, Ray ray, Rng &rng, bool camera, bool count_emitte
 		if (ld + ls <= 0.0f)
 			return radiance;		// reflects nothing
 
+		// The shine takes its share of the light first and the matte part
+		// has what is left, so the two together never reflect more than
+		// falls on them. The share is that of one way the light could be
+		// mirrored, drawn here and followed below if the path goes that way.
+		Vec3 mirrored, shine;
+		if (ls <= 0.0f || !SampleSpecular(s, rng, mirrored, shine))
+			shine = Vec3();
+		const Vec3 matte = s.kd * (Vec3(1, 1, 1) - shine);
+
 		const Lit world = DirectWorld(sc, s, rng, false), frame = DirectFrameOne(sc, s, rng);
-		radiance += throughput * (s.kd * (world.diffuse + frame.diffuse) * kInvPi + world.specular + frame.specular);
+		radiance += throughput * (matte * (world.diffuse + frame.diffuse) * kInvPi + world.specular + frame.specular);
 
 		if (depth >= max_bounces)
 			return furnace ? radiance + throughput * PT_FURNACE_LIGHT : radiance;
 
-		// continue through one lobe, chosen by how much each reflects
-		float pick_spec = ls / (ld + ls);
-		if (ld > 0.0f && ls > 0.0f)
-			pick_spec = std::min(0.95f, std::max(0.05f, pick_spec));
+		Vec3 wi;
 		if (sc.reflections < 2)
 		{
-			// shiny surfaces still show highlights from lights, but nothing is
-			// followed off them
+			// Shiny surfaces still show highlights from lights, but nothing
+			// is followed off them: the matte part stands in for the shine,
+			// and carries its share too.
 			if (ld <= 0.0f)
 				return radiance;
-			pick_spec = 0.0f;
-		}
-
-		Vec3 wi;
-		if (rng.Float() < pick_spec)
-		{
-			Vec3 weight;
-			if (!SampleSpecular(s, rng, wi, weight))
-				return radiance;
-			throughput *= weight * (1.0f / pick_spec);
-			count_emitters = !s.light_sampled_spec;
+			wi = SampleDiffuse(s, rng);
+			throughput *= s.kd;
+			count_emitters = false;
 		}
 		else
 		{
-			wi = SampleDiffuse(s, rng);
-			throughput *= s.kd * (1.0f / (1.0f - pick_spec));
-			count_emitters = false;
+			// continue through one lobe, chosen by how much each reflects
+			const float lm = Luminance(matte), lh = Luminance(shine);
+			if (lm + lh <= 0.0f)
+				return radiance;
+			const float pick_spec = lh / (lm + lh);
+			if (rng.Float() < pick_spec)
+			{
+				wi = mirrored;
+				throughput *= shine * (1.0f / pick_spec);
+				count_emitters = !s.light_sampled_spec;
+			}
+			else
+			{
+				wi = SampleDiffuse(s, rng);
+				throughput *= matte * (1.0f / (1.0f - pick_spec));
+				count_emitters = false;
+			}
 		}
 
 		// paths that carry little are ended at random, the rest made to count for them

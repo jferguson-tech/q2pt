@@ -42,6 +42,18 @@ vertices appear counter clockwise.
 #define PT_MAT_HELD				256u	/* carried by the eye, as a weapon in hand is: with
 									   motion blur it is seen from where the eye is when
 									   the shutter closes, however the eye moved */
+#define PT_MAT_METAL_TEXTURE	512u	/* the blue of normal_texture is how metallic the
+									   surface is there, in place of metallic; the
+									   normal's z is worked out from its x and y */
+#define PT_MAT_METAL_PAINTED	1024u	/* the texture was painted to be looked at, and
+									   shows metal as dark as it looks in a dim room:
+									   where the surface is metal, what it reflects
+									   is worked out from the colour, see pt_view_t's
+									   metal_colour. What it emits is not changed. */
+#define PT_MAT_SAMPLED			2048u	/* scene only: what this emits is also given as a
+									   light in lights, so a path that comes upon it
+									   counts its glow only where lights are not looked
+									   for: from the eye and in a sharp reflection */
 
 typedef struct pt_texture_s
 {
@@ -70,14 +82,21 @@ typedef struct pt_material_s
 								   Found by paths only, not sampled as a light. */
 	int			normal_texture;	/* -1 for none; same numbering as texture. RGB is a
 								   tangent space normal (x along u, y along v),
-								   alpha replaces roughness */
+								   alpha replaces roughness. See also
+								   PT_MAT_METAL_TEXTURE */
 	int			anim_next;		/* world only: the material shown one animation
 								   step later, or -1 */
 	int			wave_map;		/* liquids: texture_create handle + 1 of a wave
-								   picture (R, G slopes in x and y about 0.5),
-								   0 = none; replaces the PT_MAT_WAVES ripples */
+								   picture (R, G slopes in x and y about 0.5; B, A
+								   the height above the triangle in sixteen bits,
+								   B the upper, 16 units from 0 to 65535 and level
+								   half way), 0 = none; replaces the PT_MAT_WAVES
+								   ripples. Level triangles with one are drawn
+								   where the waves stand, see wave_reach */
 	int			caustic_map;	/* handle + 1 of how much the waves brighten the
-								   light going through, R / 255 * 4; 0 = none */
+								   light going through, R / 255 * 4; 0 = none. A
+								   is 0 where the picture covers no liquid, and
+								   the waves' surface is not looked for there */
 	float		wave_rect[4];	/* the maps cover world x, y from [0], [1] and are
 								   1 / [2], 1 / [3] across */
 	float		absorb[3];		/* liquids: share of light lost per unit of
@@ -94,6 +113,13 @@ typedef struct pt_point_light_s
 	float		direction[3];	/* world only: a spotlight shines along this (unit) ... */
 	float		cone_cos;		/* ... within the cone with this cosine of its half
 								   angle; 0 = shines all round */
+	float		radius;			/* scene only: above 0 the light is a ball of this
+								   size, as bright all over, which gives off the
+								   same light in all as the point would: its
+								   radiance is intensity / (pi * radius^2). Its
+								   shadows are soft. Nothing is drawn of it: for
+								   that, triangles that emit the same
+								   (PT_MAT_SAMPLED), no larger than it is. */
 } pt_point_light_t;
 
 typedef struct pt_world_s
@@ -127,7 +153,7 @@ typedef struct pt_world_s
 /*
 What moves: rebuilt by the host every frame, in world space. Its emitting
 triangles light the scene but are found by chance, so anything that should
-light well also belongs in lights.
+light well also belongs in lights (see PT_MAT_SAMPLED).
 */
 typedef struct pt_scene_s
 {
@@ -258,6 +284,14 @@ typedef struct pt_view_s
 								   reflection path; 1 = the backend's own choice */
 	int		refraction;			/* liquids bend the view */
 	float	wave_strength;		/* ripples on liquids; 0 = flat, 1 = normal */
+	float	wave_reach;			/* no wave picture holds a height further than this
+								   from level this frame, in units */
+	float	metal_colour;		/* PT_MAT_METAL_PAINTED: how much of the light a
+								   metal painted mid dark (1.2% of white, as old
+								   game art paints steel) reflects. One painted
+								   four times as bright reflects twice that, none
+								   less than it was painted, and the hue is kept.
+								   0 = the colour as it is. */
 
 	/* lighting */
 	int		light_samples;		/* lights weighed per point the eye sees; half
@@ -278,7 +312,24 @@ typedef struct pt_view_s
 	float	contrast;			/* 1 = unchanged */
 	int		fog;				/* light scattering in the air: haze and light shafts */
 	float	fog_density;		/* share of light scattered per unit of distance */
+	int		fog_samples;		/* points along each view ray at which the air's
+								   light is looked for, a frame; below 1 = 1 */
+	int		fog_history;		/* frames of the air's light kept while things
+								   change, in place of history: the air has no
+								   surface to be followed by, so its light
+								   trails what moves; fewer frames trail less
+								   and are noisier. Below 1 = as history */
+	float	react;				/* how readily what was gathered is let go where
+								   the light is found to have changed, so that it
+								   does not trail a light that moves, flashes or
+								   goes out: 0 = never, 1 = at once. Such places
+								   are noisier for a few frames. RTX only */
 	float	bloom;				/* glow around what is brighter than white; 0 = none */
+	float	bloom_max;			/* the most over white that anything adds to the
+								   glow, in whites: up to half of this it adds
+								   all it has, then less and less. Keeps a lamp
+								   hundreds of times white from drowning the
+								   picture. 0 = no limit */
 } pt_view_t;
 
 /* one part of the work on a view, and how long it took */

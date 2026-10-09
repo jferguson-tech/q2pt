@@ -173,7 +173,7 @@ static int W_AddMaterial (texinfo_t *tex, int body)
 	if ((flags & SURF_WARP) && r_watermode == 0)
 	{	// classic: a flat sheet whose texture swims, lit by nothing but itself
 		info.roughness = 1;
-		info.metallic = 0;
+		info.metallic = info.metallic_unread = 0;
 		info.bump = 0;
 		mat->flags |= PT_MAT_WARP;
 		classic = true;
@@ -181,7 +181,7 @@ static int W_AddMaterial (texinfo_t *tex, int body)
 	else if (flags & SURF_WARP)
 	{	// water, slime, lava: a smooth, rippling surface that soaks up light
 		info.roughness = 0.05f;
-		info.metallic = 0;
+		info.metallic = info.metallic_unread = 0;
 		info.bump = 0;
 		mat->flags |= PT_MAT_WAVES;
 		R_WaterAbsorb (image, name, mat->absorb);
@@ -189,7 +189,7 @@ static int W_AddMaterial (texinfo_t *tex, int body)
 	else if (flags & (SURF_TRANS33|SURF_TRANS66))
 	{	// glass and force fields
 		info.roughness = 0.05f;
-		info.metallic = 0;
+		info.metallic = info.metallic_unread = 0;
 		info.bump = 0;
 	}
 	mat->roughness = info.roughness;
@@ -202,7 +202,7 @@ static int W_AddMaterial (texinfo_t *tex, int body)
 		mat->flags |= PT_MAT_EMIT_BRIGHT;
 		mat->emission[0] = mat->emission[1] = mat->emission[2] = info.glow * r_detailglow;
 	}
-	mat->metallic = info.metallic;
+	mat->metallic = info.metallic_unread;
 	if (image && !(flags & SURF_SKY))
 	{
 		uint32_t	*detail;
@@ -211,7 +211,13 @@ static int W_AddMaterial (texinfo_t *tex, int body)
 
 		detail = R_ImageNormalMap (image, &info, &detail_width, &detail_height);
 		if (detail)
+		{
 			mat->normal_texture = W_AddTexture (detail_width, detail_height, detail, &image->normalmap);
+			if (image->normal_metal)
+				mat->flags |= PT_MAT_METAL_TEXTURE | PT_MAT_METAL_PAINTED;
+		}
+		// reading the detail map may have taken the painted light out of the colours
+		w_textures[mat->texture].pixels = R_ImageColours (image);
 
 		// a picture of what glows beats guessing it from what is bright
 		glowmap = R_ImageGlowMap (image);
@@ -430,11 +436,21 @@ static int W_LoadFaces (byte *base, int filelen, int modelnum)
 			&& fabs (normal[2]) > 0.99f)
 		{
 			char	texname[40];
+			float	stream[2], len;
 			int		body;
 
 			Com_sprintf (texname, sizeof(texname), "%.32s", tex->texture);
 			strlwr (texname);
-			body = R_WaterBody (w_matkeys[material].image, texname, points[0][2], points, numedgesface);
+			// a flowing liquid runs the way its picture slides: along the
+			// texture's first axis
+			stream[0] = stream[1] = 0;
+			len = sqrt (tex->vecs[0][0]*tex->vecs[0][0] + tex->vecs[0][1]*tex->vecs[0][1]);
+			if ((LittleLong (tex->flags) & SURF_FLOWING) && len > 0)
+			{
+				stream[0] = tex->vecs[0][0] / len;
+				stream[1] = tex->vecs[0][1] / len;
+			}
+			body = R_WaterBody (w_matkeys[material].image, texname, points[0][2], points, numedgesface, stream);
 			if (body >= 0)
 			{
 				material = W_AddMaterial (tex, body);
@@ -844,4 +860,11 @@ void R_WorldMaterial (int index, pt_material_t *material, image_t **image)
 pt_material_t *R_WorldMaterialPtr (int index)
 {
 	return &w_materials[index];
+}
+
+// the triangles of the map itself, nine numbers each; valid until the next map is loaded
+int R_WorldTriangles (const float **positions)
+{
+	*positions = w_world.positions;
+	return w_world.num;
 }

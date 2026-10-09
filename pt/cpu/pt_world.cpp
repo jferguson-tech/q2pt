@@ -215,8 +215,8 @@ std::vector<uint8_t> Marks(const std::vector<Tri> &tris)
 		const Material &m = *tris[i].mat;
 		if (m.alpha < 1.0f)
 			marks[i] = Bvh::kAsk | Bvh::kChancy;
-		else
-			marks[i] = ((m.flags & PT_MAT_ALPHA_TEST) && m.texture) ? Bvh::kAsk : 0;
+		else	// a simulated liquid is not met at its triangles: see Scene::Swells
+			marks[i] = (((m.flags & PT_MAT_ALPHA_TEST) && m.texture) || m.wave_map) ? Bvh::kAsk : 0;
 	}
 #else
 	(void)tris;
@@ -386,20 +386,24 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 	}
 	w->bvh.Build(soup.data(), (uint32_t)in->num_triangles, Marks(w->tris).data());
 
-	// the simulated liquid surfaces, for the light they throw back up
+	// The simulated bodies of liquid, for finding where their waves stand
+	// and for the light they throw back up. A body is whatever shows one
+	// wave picture, of however many materials its faces are made.
 	for (const Tri &t : w->tris)
 	{
-		if (!t.mat->caustic_map || t.n.z < 0.99f)
+		if (!t.mat->wave_map || std::fabs(t.n.z) < 0.99f)
 			continue;
 		World::Water *body = nullptr;
 		for (World::Water &b : w->waters)
-			if (b.mat == t.mat)
+			if (b.mat->wave_map == t.mat->wave_map && std::fabs(b.z - t.p0.z) <= 1.0f)
 				body = &b;
 		if (!body)
 		{
-			w->waters.push_back({FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX, t.p0.z, t.mat});
+			w->waters.push_back({FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX, t.p0.z, t.mat, false});
 			body = &w->waters.back();
 		}
+		if (t.n.z > 0.0f)
+			body->top = true;
 		const Vec3 corner[3] = {t.p0, t.p0 + t.e1, t.p0 + t.e2};
 		for (const Vec3 &c : corner)
 		{
@@ -494,8 +498,12 @@ void BuildFrame(Frame &f, const pt_scene_t *in, const std::vector<std::unique_pt
 
 		f.materials.resize(std::max(1, in->num_materials));
 		for (int i = 0; i < in->num_materials; i++)
-			f.materials[i].Set(in->materials[i], texture(in->materials[i].texture), texture(in->materials[i].normal_texture),
+		{
+			Material &m = f.materials[i];
+			m.Set(in->materials[i], texture(in->materials[i].texture), texture(in->materials[i].normal_texture),
 				texture(in->materials[i].emission_texture - 1));
+			m.sampled = m.emissive && (m.flags & PT_MAT_SAMPLED);
+		}
 
 		f.tris.resize(in->num_triangles);
 		soup.resize((size_t)in->num_triangles * 3);
@@ -530,7 +538,7 @@ void BuildFrame(Frame &f, const pt_scene_t *in, const std::vector<std::unique_pt
 			l.pdf = 0;
 			l.style = 0;
 			l.cone_cos = 0.0f;
-		l.cone_cos = 0.0f;
+			l.radius = in->lights[i].radius > 0.0f ? in->lights[i].radius : 0.0f;
 			if (Luminance(l.emission) > 0.0f)
 				f.lights.push_back(l);
 		}

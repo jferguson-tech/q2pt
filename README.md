@@ -23,24 +23,49 @@ a second.*
   Lights are importance sampled; indirect light comes from further bounces.
 * Physically based materials: GGX specular with roughness and metallic, normal
   maps and smooth shading on models. What kind of thing a surface is is guessed
-  from its texture's name and can be set per texture in `pt_materials.txt`.
-* Normal and roughness maps made from the game's own textures, on your machine,
-  the first time a level shows them. The artists painted a highlight on the
-  edges that face the top left of a texture and a shadow on the others; that
-  painted light is read back as shape, so panels, seams, rivets and vents
+  from its texture's name, which says that it is metal, that it is not, or
+  nothing; it can be set per texture in `pt_materials.txt`.
+* Normal, roughness and metal maps made from the game's own textures, on your
+  machine, the first time a level shows them. The artists painted a highlight
+  on the edges that face the top left of a texture and a shadow on the others;
+  that painted light is read back as shape, so panels, seams, rivets and vents
   catch real light the way they were drawn to. Where nothing was painted, dark
   is taken to be deep, and rust and grooves are made rougher than bare metal.
-  The maps are twice as fine as the textures. They are kept in
-  `baseq2\pt_cache`, about 100 KB a texture, which can be deleted at any time;
-  nothing made from the game's art is part of this repository. **F11** switches
-  between these maps and the plain ones made before them. Hand-made maps
-  beside a texture are used instead where there are any: `<name>_n.tga`
-  (normals), `<name>_r.tga` (roughness) and `<name>_e.tga` (emission).
+  A surface is metal or it is not, texel by texel, on walls and on the skins
+  of models alike: bare steel was painted grey, and rust, paint, wood, cloth
+  and skin vivid, so a rusted plate shines only where its steel shows through
+  and a soldier's armour where his arms do not. Dull metal is rough metal,
+  never half metal, and where metal meets what covers it the edge is
+  dithered: the patch thins out into flecks, each of them still metal or
+  not. The art shows steel as dark as it looks in a dim room, a
+  small part of what steel reflects, so metal reflects more than it was
+  painted, in its own hue; `pt_metal_colour` says how much. The painted
+  light, once read, is taken out of the texture's colours, where it would
+  otherwise light each raised edge a second time. The maps are twice as fine
+  as the textures. They are
+  kept in `baseq2\pt_cache`, about 110 KB a texture, which can be deleted at
+  any time; nothing made from the game's art is part of this repository.
+  **F11** switches between these maps and the plain ones made before them.
+  Hand-made maps beside a texture are used instead where there are any:
+  `<name>_n.tga` (normals), `<name>_r.tga` (roughness) and `<name>_e.tga`
+  (emission).
 * Glass and liquids reflect and refract with a Fresnel term.
 * Three ways to draw water: classic (the original swimming texture), realistic
-  (rippled, reflecting and refracting) and simulated (a wave simulation per
-  pool, with wakes from the player and whatever moves at the surface).
+  (rippled, reflecting and refracting) and simulated (a shallow water
+  simulation per pool: waves run as fast as the depth under them allows, so
+  they slow and bunch up over a shallow bed, pass round what stands in the
+  water and slosh between its banks; the player and whatever moves at the
+  surface push a wave ahead of them and leave a wake, and water the map
+  calls flowing carries its waves downstream). A simulated surface is drawn
+  where its waves stand, not as a level sheet with a pattern of tilts on
+  it: crests show in outline and hide what is behind them, and the water
+  rises and falls against walls and whatever stands in it.
 * Fog and light shafts from single scattering along the view ray.
+* A ball of light to throw (**F**): a lamp behind six round steel plates. It
+  bounces, rolls down slopes, knocks into the others and comes to rest, and
+  lights wherever it is. The lamp itself is the light, as large and as bright
+  as it looks, so the shadows it casts are soft. Walk into one to kick it
+  along.
 * A denoiser (reprojected history and an edge-stopping spatial filter),
   temporal anti-aliasing that also upscales from a lower internal resolution,
   auto exposure, bloom and a choice of tone mapping.
@@ -126,8 +151,13 @@ frames a second, where the CPU renderer manages 10. Offline rendering is
 about four times faster than on a 32 core, 64 thread CPU; the figures are
 under *Offline demo rendering*.
 
-Not yet on the GPU: its denoiser decides how far to smooth from how long a
-pixel has been in view rather than from measured noise.
+Its denoiser works as the CPU renderer's does: how far a pixel is smoothed
+follows from the noise measured in it, gathered over frames beside the light,
+not from how long it has been in view, and a pixel whose noise has settled is
+left as it is. Light that comes and goes, a muzzle flash, an explosion, a
+bolt flying past, does not trail: what the frame's lights put on a pixel is
+known exactly, and where that changes from one frame to the next the
+gathered light starts afresh to the same degree, in both renderers.
 
 Like the CPU renderer it can trace a smaller picture than the window and
 build the full size one from it over a few frames (`pt_scale`). The same
@@ -245,15 +275,18 @@ Some console commands and variables:
 | `pt_reflections 0`-`2` | none, glass and water, every shiny surface |
 | `pt_water 0`-`2` | classic, realistic, simulated |
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
-| `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time |
+| `pt_react` | RTX: how readily light gathered over frames is let go where the lighting is found to have changed, so that it does not trail behind a light that moves, flashes or goes out: `0` = never (the default), `1` = at once. Such places are noisier for a few frames; `pt_debug 13` shows where it acts |
+| `pt_fog_history`, `pt_fog_samples` | the light in the air: how many frames of it are kept while things change (6; the rest of the lighting keeps `pt_history`, 8), and at how many points along each view ray it is looked for every frame (2). The air has no surface to be followed by, so its light trails what moves: fewer frames trail less and are noisier, more points are less noisy and cost a shadow ray each |
+| `pt_bloom_max` | the most that anything adds to the glow, in times white over white (4): up to half of it a bright thing adds all it has, then less and less, so that a lamp hundreds of times white glows like a strong lamp and does not drown the picture. `0` = no limit |
+| `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time. `pt_history` is how many frames of lighting are blended while things change (8): more is smoother, and leaves light behind what moves for longer. A flash or an explosion is not held back by it: where the light the frame's lights put on a pixel changes by a quarter of its whole light or more, its history starts afresh, and by less, it is cut back in proportion |
 | `pt_reflection_history 0`-`1` | what mirrors and glass show is followed from frame to frame where it appears to be, behind the surface, rather than where the surface is; on unless set, for comparison |
 | `pt_filter 0`-`2`, `pt_filter_cycle` (**F7**) | the picture as the paths alone make it, noise and all: `0` every frame on its own, `1` the same but frames add up while you stand still, `2` (the default) blended over time and filtered |
 | `pt_view 0`-`13`, `pt_view_cycle` (number pad **+**, and **-** to step back) | the scene drawn some other way than as it is, for checking the renderer and for pictures; each means the same in both path tracers. The keys and the menu's row step through all of them but `3`, which is typed in the console. Not kept in the config; offline rendering and screenshots honour it, and changing it starts the picture afresh |
 | `pt_view 1`, `2` | materials overridden: `1` clay, every surface matte mid grey whatever its textures say, `2` mirror, every surface as smooth as can be, keeping its colour and whether it is metal. Lights are unchanged and what glows keeps its glow; the sky, glass, and sparks and beams are left alone. In clay, liquids are solid to the eye. Mirror turns reflections on, and is best judged in the raw picture (**F7**): filtered, reflections smear while the view moves |
-| `pt_view 3` | console only. The white furnace, a test of whether paths keep the light they carry: every surface, glass and liquids too, is matte and reflects everything, no light or glow is lit, sparks and beams are not there, and a path that reaches the sky or runs out of bounces brings back a half. A tracer that neither makes nor loses light draws every pixel at 186; brighter is light made, darker light lost. As it stands the picture comes out a few percent bright, more with more bounces: a white surface reflects all the light in its matte part and some more in its shine. With `pt_reflections 1` it is 186 everywhere |
+| `pt_view 3` | console only. The white furnace, a test of whether paths keep the light they carry: every surface, glass and liquids too, is matte and reflects everything, no light or glow is lit, sparks and beams are not there, and a path that reaches the sky or runs out of bounces brings back a half. A tracer that neither makes nor loses light draws every pixel at 186; brighter is light made, darker light lost. Both path tracers read 186 at every `pt_bounces` and `pt_reflections` setting: a surface's shine takes its share of the light first and the matte part has what is left, so the two never reflect more than falls on them. A screenshot of few paths from the RTX renderer can read 185 in places, its filter leaning a little dark until more frames are gathered (`pt_screenshot 256` is clear of it) |
 | `pt_view 4` | lighting only: what the eye sees is white, of the material it is, lit by the scene as it is |
 | `pt_view 5`, `6` | direct only: light that comes straight from a light, the sky or the air's glow, and what glows seen directly. Indirect only: all the rest, which has bounced or been mirrored on the way. The two add up to the picture, though each is exposed for itself unless `pt_auto_exposure` is `0` |
-| `pt_view 7`-`11` | one thing known of the first surface the eye meets, glass included, unlit: `7` base colour, `8` normals (the shading normal in the world, 0.5 + 0.5 n), `9` roughness, `10` metal, `11` glow (held to 1). The sky is black. But for the base colour a pixel is the number times 255 |
+| `pt_view 7`-`11` | one thing known of the first surface the eye meets, glass included, unlit: `7` base colour, `8` normals (the shading normal in the world, 0.5 + 0.5 n), `9` roughness, `10` metal (white where it is metal, black where it is not), `11` glow (held to 1). The sky is black. But for the base colour a pixel is the number times 255 |
 | `pt_view 12` | bounce count: how many times the paths from each pixel bounced after the first surface, on average. The scale is the same on every preset: black none, blue 1, green 2 (cyan between), yellow 3, red 4 or more. A room is mostly blue, and that is the true answer: a path that carries little light is ended at random after its first bounce, and most carry little, so most paths end there whatever `pt_bounces` allows. A blue darker than blue is under 1: a pixel some of whose paths did not bounce at all, which is what reflects nothing (a light, for one) mixed by the filter or the edge smoothing with what does. Lights do not show here; their cost is in `13` |
 | `pt_view 13` | cost: every ray traced for the pixel this frame, the eye's, the bounces' and the ones sent towards lights to see whether they are in shadow, all `pt_samples` together. The scale is the same on every preset and each colour is twice the one before: black none, blue 4, green 8 (cyan between, at about 6), yellow 16, red 32 or more. Glass and water are brighter than what is around them, each layer the eye looks through being lit and traced on from. A light fitting is darker: it reflects nothing, so nothing is traced on from it |
 | `pt_view 3`, `7`-`13` | shown as traced, to be read off the picture: exposure 1, no auto exposure, no tone curve, no bloom, no fog (but `13` keeps the fog, whose rays are part of the cost) |
@@ -261,11 +294,16 @@ Some console commands and variables:
 | `cl_maxfps` | the most frames a second the game runs at: 200 unless set (the game's own setting, which was 90 and in effect 83) |
 | `pt_stats 0` | hide the performance info, which is on by default (never shown in offline renders) |
 | `pt_simd 0`-`1` | CPU renderer: the build for AVX2 where the processor has it, or the one for any processor, to compare the two |
-| `pt_debug 1`-`11` | one part of the picture on its own |
-| `pt_bump`, `pt_roughness`, `pt_metallic` | scale how deep, how rough and how metallic every surface is taken to be; 1 unless set |
-| `pt_material_maps 0`-`1`, `pt_material_toggle` (**F11**) | normal and roughness maps read from each texture's painted light (`1`, the default), or the plain ones of before, which take brightness for height. The key switches between the two while playing; the level's surfaces are made again, which takes a moment |
+| `pt_debug 1`-`13` | one part of the picture on its own; `12` is the noise the filter measured in the diffuse light, as it stands after filtering (the standard deviation, times 4) |
+| `pt_bump`, `pt_roughness`, `pt_metallic` | scale how deep, how rough and how metallic every surface is taken to be; 1 unless set. Below 1, `pt_metallic` makes what is metal less than metal |
+| `pt_material_maps 0`-`1`, `pt_material_toggle` (**F11**) | normal, roughness and metal maps read from each texture's painted light and colours (`1`, the default), or the plain ones of before, which take brightness for height and give the whole of a texture one number for metal: half for what its name says is metal, less for what the name says nothing of. The key switches between the two while playing; the level's surfaces are made again, which takes a moment |
+| `pt_metal_edge` | how many texels of a texture the edge between its metal and the rest is dithered over: `3` unless set, `0` for a hard edge. Every texel is metal or not whatever this is; a wider edge only scatters them further. The maps are made again when it changes |
+| `pt_metal_colour` | how much of the light metal reflects where it was read from a picture: what a metal painted as dark as the game's steel reflects, `0.05` unless set. Brighter painted metal reflects more, none less than it was painted, and the hue is kept. Steel reflects ten times that, but the game's art is that much darker than the things it shows all over, and at `0.5` metal is white beside everything else. `0` leaves metal the colour it was painted, which is next to black. Takes effect at once |
+| `pt_material_delight 0`-`1` | how much of the light painted into a wall texture is taken out of its colours once it has been read as shape: `1` (the default) is all that was read, `0` leaves the colours as they are. Screens and lamps keep theirs |
 | `pt_material_cache 0`-`1` | keep the maps that were made in `baseq2\pt_cache`, so that a texture is read once only; on by default |
-| `pt_material_show <image>` | write a texture beside the height, normals and roughness read from it, as a PNG in `baseq2\scrnshot`: for example `pt_material_show textures/e1u1/metal1_1` |
+| `pt_material_show <image>` | write a texture beside what was read from it, as a PNG in `baseq2\scrnshot`: its colours without the painted light, its height, normals, roughness, metal, and what it reflects head on. For example `pt_material_show textures/e1u1/metal1_1` or `pt_material_show models/monsters/soldier/skin` |
+| `throwlight [colour]` (**F**), `throwlight clear` | throw a ball of light: `warm`, `white`, `red`, `orange`, `yellow`, `green`, `cyan`, `blue` or `purple`, or the next of them in turn if none is named; `clear` takes back the ones you threw |
+| `lightball_max`, `lightball_brightness` | how many balls there may be at once before the oldest goes (6 unless set, at most 24), and how bright the next one thrown is (300; a rocket's light is 200) |
 | `screenshot`, `pt_screenshot [paths]` | the frame as shown, or rendered again at high quality |
 | `record <name>`, `stop` | record a demo (the game's own commands) |
 | `pt_render <demo> [fps] [paths] [start] [length]` | render a demo offline into `baseq2\render\<demo>\`; start and length, in seconds, pick a part of it |
@@ -287,7 +325,7 @@ flowchart TD
         api(["pt/include/pt.h<br/>the C interface"])
         cpu["pt/cpu<br/>BVH, path tracer, denoiser<br/>SSE and AVX2"]
         rtx["pt/rtx<br/>Vulkan compute shaders,<br/>ray queries"]
-        water["pt/water<br/>wave simulation"]
+        water["pt/water<br/>shallow water simulation"]
         material["pt/material<br/>normal and roughness maps<br/>from a texture's colours"]
         png["pt/png<br/>PNG writer"]
     end
@@ -306,8 +344,8 @@ pt/         the path tracing core (MIT): knows nothing about Quake 2
   include/pt.h    the C interface a host program uses
   cpu/            CPU backend: BVH, path tracer, denoiser, output
   rtx/            Vulkan backend: the same tracer as compute shaders
-  water/          height field wave simulation
-  material/       normal and roughness maps from a texture's colours
+  water/          shallow water simulation
+  material/       normal, roughness and metal maps from a texture's colours
   png/            PNG writer
 ref_pt/     the renderer DLLs (GPL): turns Quake 2's maps, models and
             per-frame scene into what pt.h asks for
@@ -375,12 +413,14 @@ were changed in 2026:
 | `client/console.c` | the console on a picture more than 2048 pixels wide |
 | `client/cl_main.c`, `client/client.h`, `client/keys.c`, `client/keys.h`, `client/vid.h` | mouse look by default; W, A, S and D do what the arrow keys do; hooks for offline demo rendering; `cl_maxfps` is 200 unless set, and is kept in the config |
 | `client/menu.c` | menu pages for the path tracing options and for rendering a demo; "reset defaults" keeps the WASD keys; the commands behind **F7**, **F11** and the number pad |
+| `game/g_cmds.c`, `g_local.h`, `g_phys.c`, `q_shared.h`; `client/cl_ents.c`, `client.h`, `menu.c` | the ball of light: the `throwlight` command and its key, a way of moving for what bounces and then rolls, and the turning and the light of a ball as the client draws it |
 | `client/snd_dma.c`, `snd_loc.h`, `snd_mem.c`, `snd_mix.c`, `sound.h` | 64-bit port; mixing the sound to a file in step with offline rendering |
 | `game/m_*.c`, `game/g_save.c` | braces round each row of the monster animation tables, the flash offsets and the save tables |
 | `game/g_ai.c`, `g_chase.c`, `g_combat.c`, `g_monster.c`, `g_spawn.c`, `g_target.c`, `p_hud.c`; `qcommon/cmd.c`, `cmodel.c`, `files.c`; `server/sv_ccmds.c`, `sv_ents.c`, `sv_main.c`, `sv_world.c`; `client/cl_cin.c`, `cl_ents.c`, `cl_fx.c`, `cl_parse.c`, `cl_tent.c`, `qmenu.c`; `ref_gl/gl_image.c`, `gl_light.c`, `gl_local.h`, `gl_mesh.c`, `gl_model.h`, `gl_rsurf.c`; `linux/glob.c`, `net_udp.c`, `q_shlinux.c`, `qgl_linux.c` | what gcc's `-Wall -Wextra` points out, so that the Linux build can treat every warning as an error: casts between signednesses, dead variables, missing returns, defaults and braces, checked reads of save and pak files |
 
 New beside them: `CMakeLists.txt` and `build.bat` (the build), `win32/quake2.manifest`
 (what the program tells Windows about itself), `client/cl_render.c`,
+`game/g_lightball.c` (the ball of light),
 `ref_pt/` and `pt/`, and for Linux `linux/linux.cmake`, `linux/spv_inc.cmake`,
 `linux/sys_sdl.c`, `linux/vid_sdl.c`, `linux/snd_sdl.c` and `linux/gl_sdl.c`. The full list is `git diff --name-status` between the first
 commit and `main`.

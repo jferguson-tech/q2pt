@@ -19,6 +19,17 @@ layout(push_constant) uniform Pass
 	int		unused0, unused1, unused2;
 } pass;
 
+// How far over white a pixel counts as being for the glow, x being how far
+// it is: all of it up to half of most, and from there less and less of what
+// is left, never reaching most. No limit if most is not above 0.
+float BloomExcess(float x, float most)
+{
+	const float knee = most * 0.5;
+	if (most <= 0.0 || x <= knee)
+		return x;
+	return knee + (most - knee) * (1.0 - exp(-(x - knee) / (most - knee)));
+}
+
 void main()
 {
 	const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -36,7 +47,7 @@ void main()
 			const vec3 c = imageLoad(img_hdr, q).rgb;
 			const float lum = Luminance(c);
 			if (lum > 1.0)
-				sum += c * ((lum - 1.0) / lum);
+				sum += c * (BloomExcess(lum - 1.0, fr.painted.y) / lum);
 		}
 		imageStore(img_bloom[0], pixel, vec4(sum * 0.25, 1.0));
 		return;

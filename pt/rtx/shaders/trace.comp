@@ -52,6 +52,22 @@ vec3 EyeDir(vec3 forward, vec3 right, vec3 up, vec2 at)
 		+ up * ((1.0 - 2.0 * at.y / fr.size.y) * fr.forward.w));
 }
 
+// The light the air scatters to the eye from the first reach of a view ray:
+// the reach is cut into as many lengths as there are samples, and a point
+// drawn in each.
+vec3 FogGlow(vec3 from, vec3 dir, float reach, float fog, float max_sample)
+{
+	const int count = max(1, int(fr.painted.z));
+	vec3 sum = vec3(0.0);
+	for (int k = 0; k < count; k++)
+	{
+		const float at = (float(k) + Rand()) * reach / float(count);
+		const vec3 lit = DirectMedium(from + dir * at);
+		sum += ClampSample(lit * (fog * (0.25 * INV_PI) * exp(-fog * at) * reach), max_sample);
+	}
+	return sum / float(count);
+}
+
 void main()
 {
 	const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -88,7 +104,7 @@ void main()
 	if (held_apart)
 	{
 		float held_tmin = 0.0;
-		have_held = Closest(fr.origin.xyz, frame_dir, held_tmin, true, false, MASK_HELD, held_hit, held_mat);
+		have_held = Closest(fr.origin.xyz, frame_dir, held_tmin, true, false, MASK_HELD, false, held_hit, held_mat);
 	}
 
 	const float max_sample = fr.settings_f.x;
@@ -131,7 +147,7 @@ void main()
 
 	for (int layer = 0; through > 0.001; layer++)
 	{
-		bool found = Closest(origin, dir, tmin, true, false, held_apart ? MASK_SCENE : MASK_ALL, hit, base);
+		bool found = Closest(origin, dir, tmin, true, false, held_apart ? MASK_SCENE : MASK_ALL, true, hit, base);
 		if (have_held && travelled <= 0.0 && (!found || held_hit.t < hit.t))
 		{
 			// the weapon is the nearest thing: from here on this is the
@@ -178,11 +194,12 @@ void main()
 				imageStore(img_mirror[now], pixel, vec4(0.0, 0.0, 0.0, 3.0));
 				imageStore(img_over, pixel, vec4(0.0));
 				imageStore(img_albedo[0], pixel, vec4(0.0));
-				imageStore(img_albedo[1], pixel, vec4(0.0));
+				imageStore(img_albedo[1], pixel, vec4(0.0, 0.0, 0.0, surf.roughness));
 				imageStore(img_noisy[0], pixel, vec4(0.0));
 				imageStore(img_noisy[1], pixel, vec4(0.0));
-				imageStore(img_noisy[2], pixel, vec4(0.0, 0.0, 0.0, 1.0));
+				imageStore(img_noisy[2], pixel, vec4(0.0));
 				imageStore(img_extra, pixel, vec4(SurfaceChannel(view_mode, surf), 1.0));
+				imageStore(img_flash[now], pixel, vec4(0.0));
 				return;
 			}
 		}
@@ -297,9 +314,7 @@ void main()
 		// sky is dimmed by it and the shafts in it show
 		if (fog > 0.0 && stand_in)
 		{
-			const float at = Rand() * stand_depth;
-			const vec3 lit = DirectMedium(eye + eye_dir * at);
-			over += ClampSample(lit * (fog * (0.25 * INV_PI) * exp(-fog * at) * stand_depth), max_sample) * direct_on;
+			over += FogGlow(eye, eye_dir, stand_depth, fog, max_sample) * direct_on;
 			beyond *= exp(-fog * (sky_hit ? sky_depth : layer_depth));
 		}
 
@@ -309,11 +324,12 @@ void main()
 		imageStore(img_mirror[now], pixel, vec4(0.0, 0.0, 0.0, (have_layer ? layer_roughness : 1.0) + 2.0));
 		imageStore(img_over, pixel, vec4(over_pos, have_layer ? 1.0 : 0.0));
 		imageStore(img_albedo[0], pixel, vec4(0.0));
-		imageStore(img_albedo[1], pixel, vec4(0.0));
-		imageStore(img_noisy[0], pixel, view_mode == VIEW_COST ? vec4(vec3(float(rays_traced)), 1.0) : vec4(0.0));
+		imageStore(img_albedo[1], pixel, vec4(0.0, 0.0, 0.0, have_layer ? layer_roughness : 1.0));
+		imageStore(img_noisy[0], pixel, view_mode == VIEW_COST ? vec4(vec3(float(rays_traced)), 0.0) : vec4(0.0));
 		imageStore(img_noisy[1], pixel, vec4(0.0));
-		imageStore(img_noisy[2], pixel, vec4(over, 1.0));
+		imageStore(img_noisy[2], pixel, vec4(over, 0.0));
 		imageStore(img_extra, pixel, vec4(beyond, 1.0));
+		imageStore(img_flash[now], pixel, vec4(0.0));
 		return;
 	}
 
@@ -338,28 +354,33 @@ void main()
 		seen = q0 * (1.0 - hit.bary.x - hit.bary.y) + q1 * hit.bary.x + q2 * hit.bary.y;
 	}
 
-	// exact, so it skips the filters
+	// exact, so it skips the filters; the balls of light come with the map's lights below
 	const Lit flash = DirectFrameAll(surf);
-	vec3 extra = front_add + (surf.kd * flash.diffuse * INV_PI + flash.specular) * tint * through;
+	// (the matte part has what the shine leaves here too, by the shine's
+	// share on the whole, which has no noise in it)
+	vec3 flash_light = (surf.kd * (1.0 - SpecularAlbedo(surf)) * flash.diffuse * INV_PI + flash.specular) * tint * through;
+	vec3 extra = front_add + flash_light;
 	if ((surf.mat.bits & BIT_EMISSIVE) != 0u && surf.front)
 		extra += Emitted(surf, true) * tint * through;
 	extra *= direct_on;
 
 	// Air that scatters light: some of what the surface sends is lost on the
 	// way, and the air itself glows where light falls through it, which is
-	// what shows as shafts. One point along the way is sampled per frame.
+	// what shows as shafts. A few points along the way are sampled per frame.
 	if (fog > 0.0)
 	{
 		const float reach = have_layer ? layer_depth : hit.t;		// the straight part of the view
-		const float at = Rand() * reach;
-		const vec3 lit = DirectMedium(eye + eye_dir * at);
-		over += ClampSample(lit * (fog * (0.25 * INV_PI) * exp(-fog * at) * reach), max_sample) * direct_on;
+		over += FogGlow(eye, eye_dir, reach, fog, max_sample) * direct_on;
 
 		const float kept = exp(-fog * depth);
 		kd *= kept;
 		ks *= kept;
 		extra *= kept;
+		flash_light *= kept;
 	}
+	// what the frame's lights put here, to be compared with last frame's
+	imageStore(img_flash[now], pixel, vec4(FrameLightLevel(surf, flash_light * direct_on, eye, eye_dir,
+		have_layer ? layer_depth : hit.t, fog)));
 
 	// a specular path costs as much as a diffuse one; where the lobe reflects
 	// little, take it only some of the time
@@ -369,35 +390,48 @@ void main()
 	const int bounces = fr.settings.x;
 	const int paths = max(1, fr.settings2.z);
 	vec3 sum_d = vec3(0.0), sum_s = vec3(0.0);
+	vec2 moments_d = vec2(0.0), moments_s = vec2(0.0);	// the paths' luminance and its square, summed
 	float spec_reach = -1.0;		// how far the last specular path went before its first hit
 	for (int k = 0; k < paths; k++)
 	{
-		const Lit direct = DirectWorld(surf, true);
-		vec3 d = direct.diffuse * (INV_PI * direct_on);
-		vec3 sp = direct.specular / spec_albedo * direct_on;
+		// The shine takes its share of the light first and the matte part
+		// has what is left, so the two together never reflect more than
+		// falls on them: see Radiance. The share is that of one way the
+		// light could be mirrored, which is the way followed below.
+		vec3 mirrored, shine;
+		if (!has_specular || !SampleSpecular(surf, mirrored, shine))
+			shine = vec3(0.0);
+
+		const Lit direct = DirectWorld(surf, true), ball = DirectFrameBall(surf);
+		vec3 d = (1.0 - shine) * (direct.diffuse + ball.diffuse) * (INV_PI * direct_on);
+		vec3 sp = (direct.specular + ball.specular) / spec_albedo * direct_on;
 		int followed_d = 0, followed_s = 0;		// rays the diffuse and the specular path were made of
 
 		if (bounces > 0 && indirect_on > 0.0)
 		{
 			const vec3 from = surf.p + surf.ng * RAY_OFFSET;
 			float reached;
+			// The reflection is followed only some of the time, and counts
+			// for more when it is. The matte part gives up as much as the
+			// reflection counts for, and nothing when it is not followed, so
+			// that the two still add up; the chance is never less than the
+			// share, or the matte part would have to give up more than it has.
+			const float chance = spec_chance > 0.0 ? min(1.0, max(spec_chance, MaxComponent(shine))) : 0.0;
+			const bool follow = chance > 0.0 && Rand() < chance && MaxComponent(shine) > 0.0;
 			if (has_diffuse)
 			{
+				const vec3 kept = follow ? 1.0 - shine * (1.0 / chance) : vec3(1.0);
 				rays_followed = 0;
-				d += Radiance(from, SampleDiffuse(surf), false, 1, bounces, reached);
+				d += kept * Radiance(from, SampleDiffuse(surf), false, 1, bounces, reached);
 				followed_d = rays_followed;
 			}
-			if (spec_chance > 0.0 && Rand() < spec_chance)
+			if (follow)
 			{
-				vec3 wi, weight;
-				if (SampleSpecular(surf, wi, weight))
-				{
-					rays_followed = 0;
-					sp += weight * Radiance(from, wi, !surf.light_sampled_spec, 1, fr.settings.w, reached)
-						/ spec_albedo * (1.0 / spec_chance);
-					followed_s = rays_followed;
-					spec_reach = reached;
-				}
+				rays_followed = 0;
+				sp += shine * Radiance(from, mirrored, !surf.light_sampled_spec, 1, fr.settings.w, reached)
+					/ spec_albedo * (1.0 / chance);
+				followed_s = rays_followed;
+				spec_reach = reached;
 			}
 		}
 		else if (furnace)
@@ -408,8 +442,13 @@ void main()
 			d = vec3(float(max(followed_d, followed_s)));
 			sp = vec3(0.0);
 		}
-		sum_d += ClampSample(d, max_sample);
-		sum_s += ClampSample(sp, max_sample);
+		d = ClampSample(d, max_sample);
+		sp = ClampSample(sp, max_sample);
+		sum_d += d;
+		sum_s += sp;
+		const float ld = Luminance(d), ls = Luminance(sp);
+		moments_d += vec2(ld, ld * ld);
+		moments_s += vec2(ls, ls * ls);
 	}
 
 	// A reflection in something close to a mirror appears to sit behind the
@@ -423,15 +462,21 @@ void main()
 	imageStore(img_mirror[now], pixel, vec4(spec_pos, surf.roughness + (spec_ok ? 0.0 : 2.0)));
 	imageStore(img_over, pixel, vec4(over_pos, have_layer ? 1.0 : 0.0));
 	imageStore(img_albedo[0], pixel, vec4(kd, 1.0));
-	imageStore(img_albedo[1], pixel, vec4(ks, 1.0));
+	imageStore(img_albedo[1], pixel, vec4(ks, surf.roughness));
+	// how much the paths disagreed among themselves, the first measure of
+	// the noise in this pixel; one path alone can say nothing
+	const float inv_paths = 1.0 / float(paths);
+	float var_d = max(moments_d.y * inv_paths - moments_d.x * moments_d.x * inv_paths * inv_paths, 0.0);
+	float var_s = max(moments_s.y * inv_paths - moments_s.x * moments_s.x * inv_paths * inv_paths, 0.0);
 	if (view_mode == VIEW_COST)
 	{
 		// the rays in place of the light, to be gathered and filtered as light is
 		sum_d = vec3(float(rays_traced * paths));
 		sum_s = vec3(0.0);
+		var_d = var_s = 0.0;
 	}
-	imageStore(img_noisy[0], pixel, vec4(sum_d / float(paths), 1.0));
-	imageStore(img_noisy[1], pixel, vec4(sum_s / float(paths), 1.0));
-	imageStore(img_noisy[2], pixel, vec4(over, 1.0));
+	imageStore(img_noisy[0], pixel, vec4(sum_d * inv_paths, var_d));
+	imageStore(img_noisy[1], pixel, vec4(sum_s * inv_paths, var_s));
+	imageStore(img_noisy[2], pixel, vec4(over, 0.0));
 	imageStore(img_extra, pixel, vec4(extra, 1.0));
 }

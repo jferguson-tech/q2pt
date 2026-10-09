@@ -29,6 +29,7 @@ struct Surface
 	Vec3			kd;			// diffuse reflectance
 	Vec3			f0;			// specular reflectance head on
 	float			roughness;
+	float			metallic;	// here: the material's, or its texture's
 	float			alpha;		// GGX width, roughness squared
 	bool			light_sampled_spec;
 	bool			medium;		// not a surface at all but a point in the air: no facing, scatters evenly
@@ -59,10 +60,13 @@ bool BackOfGlass(const Tri &tri, Vec3 dir);
 // random in proportion to how much they pass. ray.tmin moves past what was
 // skipped. held says what is done with the frame's triangles that the eye
 // carries (PT_MAT_HELD): taken like any other, passed by, or the only ones
-// met, for a ray that is cast at them alone.
+// met, for a ray that is cast at them alone. waves: a simulated liquid is met
+// where its waves stand, as the eye must see it; without, it is the level
+// sheet the map has for it, which is all that light finding its way about
+// needs and costs every such ray less to look for.
 enum HeldRays { kHeldToo, kNotHeld, kHeldOnly };
 bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &hit, const Tri *&tri,
-	HeldRays held = kHeldToo);
+	HeldRays held = kHeldToo, bool waves = false);
 
 // smooth: filter the textures, for surfaces the eye sees directly. Further
 // along a path the nearest texel is as good and cheaper.
@@ -85,9 +89,18 @@ Vec3 Emitted(const Surface &s, bool seen);
 
 // one of the world's lights, chosen by resampling
 Lit DirectWorld(const Scene &sc, const Surface &s, Rng &rng, bool first_hit);
-// the frame's point lights: one chosen, or all of them
+// The frame's lights. One chosen from them all; or all of its point lights,
+// which is exact, and with it one of its balls of light, which is not: a
+// point is drawn on the ball, and what comes of it is as noisy as the rest.
 Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng);
 Lit DirectFrameAll(const Scene &sc, const Surface &s, Rng &rng);
+// How much the frame's lights put on a pixel, with no noise in it: what the
+// point lights put on the surface (flash_light, as lit), what the balls
+// would with nothing in the way, and what all of them light the air in front
+// of it by, along the view ray to reach. Compared from frame to frame, it
+// says where light has changed and by how much.
+float FrameLightLevel(const Scene &sc, const Surface &s, Vec3 flash_light, Vec3 eye, Vec3 dir, float reach);
+Lit DirectFrameBall(const Scene &sc, const Surface &s, Rng &rng);
 
 // light arriving at a point in the air from one sampled light and the sky,
 // as irradiance on a surface facing it
