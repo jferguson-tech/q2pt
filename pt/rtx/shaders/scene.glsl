@@ -81,16 +81,16 @@ struct Material
 
 struct Light
 {
-	vec3	origin;		// point lights; centroid for triangles
-	uint	tri;		// or 0xffffffff for a point light
+	vec3	origin;		// point lights; a triangle's first corner
+	uint	tri;		// the triangle, or for a point light POINT_LIGHT plus its light style
 	vec3	emission;	// radiance for triangles, intensity for points
 	float	pdf;		// chance of being picked map wide
-	vec3	dir;		// spotlights: where it points
+	vec3	dir;		// spotlights: where it points; triangles: from the first corner to the second
 	float	cone_cos;	// and how wide; 0 = all round
-	int		style;
+	vec3	edge;		// triangles: from the first corner to the third
 	float	radius;		// the frame's: above 0 a ball of light, not a point
-	int		pad0, pad1;
 };
+const uint POINT_LIGHT = 0xffffff00u;
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 
@@ -112,7 +112,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	ivec4	bases;			// y, w: first triangle of the map's glass and of the frame's; x: the view mode; z: what is done about noise, see pt_view_t
 	ivec4	grid_dims;		// xyz; w: there is a grid
 	vec4	grid_origin;	// xyz; w: one over the cell size
-	ivec4	table_at;		// in tables: map wide light cdf, grid pdf, grid cdf, sky chance
+	ivec4	table_at;		// in tables: how often each of the map's lights is kept when its place is drawn (see DirectLights); for each cell's list, each light's chance of being picked, then how often each is kept; sky chance
 	ivec4	table_at2;		// in tables: sky cdf; sky resolution; in indices: grid lights, grid counts
 	ivec4	settings;		// bounces, light samples, reflections, reflection bounces
 	vec4	settings_f;		// brightest a path may be, reflection rate, wave strength, fog density
@@ -133,6 +133,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	ivec4	held;			// x: first triangle of the frame carried by the eye (the weapon in hand); y: how many; z: reflections are followed where they appear to be
 	vec4	painted;		// x: what a metal painted dark reflects, see pt_view_t's metal_colour; y: the most over white that adds to the glow, 0 = no limit; z: points along a view ray where the air's light is looked for; w: frames of it kept while things change
 	vec4	liquid;			// x: how far from level the waves of simulated liquids reach; y: how readily what was gathered is let go where the light has changed, see change.comp
+	ivec4	table_at3;		// in indices: x: for each of the map's lights, the one taken in its stead when it is not kept; y: the cells' lists of lights again, in order of light
 } fr;
 
 // the map and what moves, each as three corners per triangle, what goes with
@@ -323,6 +324,27 @@ int UpperBound(int base, int count, float x)
 			hi = mid;
 	}
 	return lo;
+}
+
+// Where in a cell's list light li is, or -1 if it is not there. sorted is
+// where the list begins in indices as it is kept for this: in order of light,
+// each with its place in the list as the tables have it in its low five bits.
+int PlaceInCell(int sorted, int count, uint li)
+{
+	// the first that is of a later light
+	int lo = 0, hi = count;
+	while (lo < hi)
+	{
+		const int mid = (lo + hi) >> 1;
+		if ((indices.v[sorted + mid] >> 5) <= li)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	if (lo == 0)
+		return -1;
+	const uint before = indices.v[sorted + lo - 1];
+	return (before >> 5) == li ? int(before & 31u) : -1;
 }
 
 // ------------------------------------------------------------ the scene
@@ -1213,35 +1235,56 @@ Lit DirectLights(Surface s, bool first_hit)
 	const float use_global = in_cell > 0 ? GLOBAL_LIGHT_CHANCE : 1.0;
 	const int cell_lights = fr.table_at2.z + cell * PER_CELL;
 	const int cell_pdfs = fr.table_at.y + cell * PER_CELL;
-	const int cell_cdf = fr.table_at.z + cell * PER_CELL;
+	const int cell_keep = fr.table_at.z + cell * PER_CELL;
+	const int cell_sorted = fr.table_at3.y + cell * PER_CELL;
+
+	// Mostly from the list for this cell, sometimes from the whole map so
+	// nothing is missed: use_global of the candidates on average. Which ones
+	// goes by turn, the first so many, and by chance only for the one that
+	// stands for what is left over of that number. Drawn by chance each,
+	// pixels traced side by side took different ways through here at every
+	// candidate, and the card, which runs them in step, had all of them wait
+	// out the longer way, the search of the cell's list below, nearly every
+	// time. Each light still has the chance it had of being a candidate, taken
+	// over them all, which is what the weights go by.
+	const float want_global = use_global * float(candidates);
+	const int sure_global = int(want_global);
+	const float last_global = want_global - float(sure_global);
 
 	for (int i = 0; i < candidates; i++)
 	{
-		// mostly from the list for this cell, sometimes from the whole map so nothing is missed
+		// Either way with no search: a place is drawn evenly, and the light
+		// there is kept as often as the tables say, or else the one they
+		// name is taken in its stead, which gives each light the chance it
+		// should have (see PickingTable in pt_rtx.cpp).
 		uint li;
 		float cell_pdf = 0.0;
-		if (Rand() < use_global)
+		if (i < sure_global || (i == sure_global && Rand() < last_global))
 		{
-			li = uint(min(UpperBound(fr.table_at.x, num_lights, Rand()), num_lights - 1));
-			for (int j = 0; j < in_cell; j++)
-				if (indices.v[cell_lights + j] == li)
-					cell_pdf = tables.v[cell_pdfs + j];
+			const int at = min(int(Rand() * float(num_lights)), num_lights - 1);
+			li = Rand() < tables.v[fr.table_at.x + at] ? uint(at) : indices.v[fr.table_at3.x + at];
+			// it may be in the cell's list as well, with a chance of being picked from there
+			const int j = PlaceInCell(cell_sorted, in_cell, li);
+			if (j >= 0)
+				cell_pdf = tables.v[cell_pdfs + j];
 		}
 		else
 		{
-			const int j = min(UpperBound(cell_cdf, in_cell, Rand()), in_cell - 1);
-			li = indices.v[cell_lights + j];
+			// (a light of the list, and in its low five bits the place of its stand-in)
+			const int at = min(int(Rand() * float(in_cell)), in_cell - 1);
+			const int j = Rand() < tables.v[cell_keep + at] ? at : int(indices.v[cell_lights + at] & 31u);
+			li = indices.v[cell_lights + j] >> 5;
 			cell_pdf = tables.v[cell_pdfs + j];
 		}
 		const Light l = world_lights.l[li];
 		float pdf = use_global * l.pdf + (1.0 - use_global) * cell_pdf;
 
 		vec3 y, e, light_n = vec3(0.0);
-		const bool area = l.tri != 0xffffffffu;
+		const bool area = l.tri < POINT_LIGHT;
 		if (area)
 		{
-			const vec3 p0 = Corner(false, int(l.tri), 0);
-			const vec3 e1 = Corner(false, int(l.tri), 1) - p0, e2 = Corner(false, int(l.tri), 2) - p0;
+			const vec3 p0 = l.origin;
+			const vec3 e1 = l.dir, e2 = l.edge;
 			float a = Rand(), b = Rand();
 			if (a + b > 1.0)
 			{
@@ -1260,7 +1303,8 @@ Lit DirectLights(Surface s, bool first_hit)
 		else
 		{
 			y = l.origin;
-			const float scale = (l.style > 0 && l.style < 256) ? tables.v[l.style] : 1.0;
+			const int style = int(l.tri - POINT_LIGHT);
+			const float scale = style > 0 ? tables.v[style] : 1.0;
 			if (scale <= 0.0)
 				continue;
 			e = l.emission * scale;
@@ -1635,111 +1679,191 @@ bool SampleSpecular(Surface s, out vec3 wi, out vec3 weight)
 	return true;
 }
 
-// The light a ray brings back, following it from surface to surface.
-// count_emitters: lights it runs into count, because nothing has sampled
-// them for it. reached: how far off the first thing it met was.
-// rays_followed is raised by the number of rays the path was made of.
+// A path of light followed back from surface to surface, a step at a time:
+// PathMeet takes it to the next surface, the light falling there is found,
+// and PathGoOn adds what that surface sends back and picks the way on.
+// Radiance does the whole of one; a pixel with several to follow takes a step
+// of whichever it is on at each turn of one loop (see trace.comp), which is
+// why they come apart like this.
+struct Path
+{
+	vec3	origin, dir;		// the ray to follow next
+	vec3	radiance;			// the light brought back so far
+	vec3	throughput;			// how much of what is found from here on gets back
+	bool	count_emitters;		// lights it runs into count, because nothing has sampled them for it
+	int		depth, max_bounces;
+	float	reached;			// how far off the first thing it met was
+	bool	first;
+	bool	ended;
+};
+
+// rays_followed is raised by the number of rays a path was made of
 int rays_followed = 0;
 
-vec3 Radiance(vec3 origin, vec3 dir, bool count_emitters, int depth, int max_bounces, out float reached)
+Path PathFrom(vec3 origin, vec3 dir, bool count_emitters, int depth, int max_bounces)
 {
-	vec3 radiance = vec3(0.0), throughput = vec3(1.0);
-	reached = 1.0e30;
-	bool first = true;
+	Path p;
+	p.origin = origin;
+	p.dir = dir;
+	p.radiance = vec3(0.0);
+	p.throughput = vec3(1.0);
+	p.count_emitters = count_emitters;
+	p.depth = depth;
+	p.max_bounces = max_bounces;
+	p.reached = 1.0e30;
+	p.first = true;
+	p.ended = false;
+	return p;
+}
+
+// Follows the path's ray to the surface it meets, s. False if the path ends
+// there with nothing to light: it met nothing, or the sky, or something that
+// reflects nothing. shiny: the surface has a shine to it.
+bool PathMeet(inout Path p, out Surface s, out bool shiny)
+{
 	// in the white furnace every path ends in the same light
 	const bool furnace = fr.bases.x == VIEW_FURNACE;
+	shiny = false;
 
-	for (;; depth++)
+	Hit hit;
+	Material base;
+	float tmin = 0.0;
+	rays_followed++;
+	if (!Closest(p.origin, p.dir, tmin, false, true, hit, base))
 	{
-		Hit hit;
-		Material base;
-		float tmin = 0.0;
-		rays_followed++;
-		if (!Closest(origin, dir, tmin, false, true, hit, base))
-			return furnace ? radiance + throughput * FURNACE_LIGHT : radiance;
-		if (first)
+		if (furnace)
+			p.radiance += p.throughput * FURNACE_LIGHT;
+		p.ended = true;
+		return false;
+	}
+	if (p.first)
+	{
+		p.reached = hit.t;
+		p.first = false;
+	}
+	if ((base.flags & MAT_SKY) != 0u)
+	{
+		if (furnace)
+			p.radiance += p.throughput * FURNACE_LIGHT;
+		else if (p.count_emitters || fr.table_at2.y <= 0)
+			p.radiance += p.throughput * Sky(p.dir);
+		p.ended = true;
+		return false;
+	}
+
+	MakeSurface(hit, base, p.origin, p.dir, false, s);
+
+	if ((s.mat.bits & BIT_EMISSIVE) != 0u && s.front && (p.count_emitters || (s.mat.bits & BIT_SAMPLED) == 0u))
+		p.radiance += p.throughput * Emitted(s, false);
+
+	const float ld = Luminance(s.kd), ls = Luminance(SpecularAlbedo(s));
+	if (ld + ls <= 0.0)
+	{
+		p.ended = true;		// reflects nothing
+		return false;
+	}
+	shiny = ls > 0.0;
+	return true;
+}
+
+// What the surface the path has met sends back along it, given the light
+// that falls there, and the way the path goes on from it, if it does.
+// mirrored and shine are as SampleSpecular drew them for the surface, shine
+// nothing if it drew none: the shine takes its share of the light first and
+// the matte part has what is left, so the two together never reflect more
+// than falls on them. The share is that of one way the light could be
+// mirrored, which is followed if the path goes that way.
+void PathGoOn(inout Path p, Surface s, vec3 mirrored, vec3 shine, Lit world, Lit frame)
+{
+	const bool furnace = fr.bases.x == VIEW_FURNACE;
+	const vec3 matte = s.kd * (1.0 - shine);
+
+	p.radiance += p.throughput * (matte * (world.diffuse + frame.diffuse) * INV_PI + world.specular + frame.specular);
+
+	if (p.depth >= p.max_bounces)
+	{
+		if (furnace)
+			p.radiance += p.throughput * FURNACE_LIGHT;
+		p.ended = true;
+		return;
+	}
+
+	vec3 wi;
+	if (fr.settings.z < 2)
+	{
+		// Shiny surfaces still show highlights from lights, but nothing
+		// is followed off them: the matte part stands in for the shine,
+		// and carries its share too.
+		if (Luminance(s.kd) <= 0.0)
 		{
-			reached = hit.t;
-			first = false;
+			p.ended = true;
+			return;
 		}
-		if ((base.flags & MAT_SKY) != 0u)
+		wi = SampleDiffuse(s);
+		p.throughput *= s.kd;
+		p.count_emitters = false;
+	}
+	else
+	{
+		// continue through one lobe, chosen by how much each reflects
+		const float lm = Luminance(matte), lh = Luminance(shine);
+		if (lm + lh <= 0.0)
 		{
-			if (furnace)
-				return radiance + throughput * FURNACE_LIGHT;
-			return (count_emitters || fr.table_at2.y <= 0) ? radiance + throughput * Sky(dir) : radiance;
+			p.ended = true;
+			return;
 		}
-
-		Surface s;
-		MakeSurface(hit, base, origin, dir, false, s);
-
-		if ((s.mat.bits & BIT_EMISSIVE) != 0u && s.front && (count_emitters || (s.mat.bits & BIT_SAMPLED) == 0u))
-			radiance += throughput * Emitted(s, false);
-
-		const vec3 ks = SpecularAlbedo(s);
-		const float ld = Luminance(s.kd), ls = Luminance(ks);
-		if (ld + ls <= 0.0)
-			return radiance;		// reflects nothing
-
-		// The shine takes its share of the light first and the matte part
-		// has what is left, so the two together never reflect more than
-		// falls on them. The share is that of one way the light could be
-		// mirrored, drawn here and followed below if the path goes that way.
-		vec3 mirrored, shine;
-		if (ls <= 0.0 || !SampleSpecular(s, mirrored, shine))
-			shine = vec3(0.0);
-		const vec3 matte = s.kd * (1.0 - shine);
-
-		const Lit world = DirectWorld(s, false), frame = DirectFrameOne(s);
-		radiance += throughput * (matte * (world.diffuse + frame.diffuse) * INV_PI + world.specular + frame.specular);
-
-		if (depth >= max_bounces)
-			return furnace ? radiance + throughput * FURNACE_LIGHT : radiance;
-
-		vec3 wi;
-		if (fr.settings.z < 2)
+		const float pick_spec = lh / (lm + lh);
+		if (Rand() < pick_spec)
 		{
-			// Shiny surfaces still show highlights from lights, but nothing
-			// is followed off them: the matte part stands in for the shine,
-			// and carries its share too.
-			if (ld <= 0.0)
-				return radiance;
-			wi = SampleDiffuse(s);
-			throughput *= s.kd;
-			count_emitters = false;
+			wi = mirrored;
+			p.throughput *= shine * (1.0 / pick_spec);
+			p.count_emitters = !s.light_sampled_spec;
 		}
 		else
 		{
-			// continue through one lobe, chosen by how much each reflects
-			const float lm = Luminance(matte), lh = Luminance(shine);
-			if (lm + lh <= 0.0)
-				return radiance;
-			const float pick_spec = lh / (lm + lh);
-			if (Rand() < pick_spec)
-			{
-				wi = mirrored;
-				throughput *= shine * (1.0 / pick_spec);
-				count_emitters = !s.light_sampled_spec;
-			}
-			else
-			{
-				wi = SampleDiffuse(s);
-				throughput *= matte * (1.0 / (1.0 - pick_spec));
-				count_emitters = false;
-			}
+			wi = SampleDiffuse(s);
+			p.throughput *= matte * (1.0 / (1.0 - pick_spec));
+			p.count_emitters = false;
 		}
-
-		// paths that carry little are ended at random, the rest made to count for them
-		if (depth >= 1)
-		{
-			const float survive = clamp(MaxComponent(throughput), 0.1, 1.0);
-			if (Rand() >= survive)
-				return radiance;
-			throughput *= 1.0 / survive;
-		}
-
-		origin = s.p + s.ng * RAY_OFFSET;
-		dir = wi;
 	}
+
+	// paths that carry little are ended at random, the rest made to count for them
+	if (p.depth >= 1)
+	{
+		const float survive = clamp(MaxComponent(p.throughput), 0.1, 1.0);
+		if (Rand() >= survive)
+		{
+			p.ended = true;
+			return;
+		}
+		p.throughput *= 1.0 / survive;
+	}
+
+	p.origin = s.p + s.ng * RAY_OFFSET;
+	p.dir = wi;
+	p.depth++;
+}
+
+// The light a ray brings back, following it from surface to surface.
+// count_emitters: lights it runs into count, because nothing has sampled
+// them for it. reached: how far off the first thing it met was.
+vec3 Radiance(vec3 origin, vec3 dir, bool count_emitters, int depth, int max_bounces, out float reached)
+{
+	Path p = PathFrom(origin, dir, count_emitters, depth, max_bounces);
+	while (!p.ended)
+	{
+		Surface s;
+		bool shiny;
+		if (!PathMeet(p, s, shiny))
+			break;
+		vec3 mirrored, shine;
+		if (!shiny || !SampleSpecular(s, mirrored, shine))
+			shine = vec3(0.0);
+		const Lit world = DirectWorld(s, false), frame = DirectFrameOne(s);
+		PathGoOn(p, s, mirrored, shine, world, frame);
+	}
+	reached = p.reached;
+	return p.radiance;
 }
 
 #endif

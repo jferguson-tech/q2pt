@@ -140,7 +140,11 @@ compute shaders that trace with ray queries. The map and everything that moves
 are held in acceleration structures, the moving part rebuilt every frame. The
 shaders follow the CPU tracer function for function, and the lights and the
 tables for finding them are built by the CPU tracer's own code, so the two
-light a map the same way. It has the lighting, materials, glass and liquids,
+light a map the same way. Where the shaders go about it differently it is
+for the card's sake, which runs the pixels of a tile in step, each waiting
+while any other has work to do: lights are picked from tables that need no
+search, and the paths of a pixel are followed in one loop. The light a pixel
+gets is the same. It has the lighting, materials, glass and liquids,
 fog, the three water modes, the denoiser, anti-aliasing, auto exposure, bloom,
 tone mapping, screenshots and offline rendering.
 
@@ -148,7 +152,9 @@ Measured with `pt_bench demo1` on an RTX 4090 beside a 16 core Ryzen 7950X,
 at 800x600 with one path per pixel, three bounces and the filter on: 176
 frames a second, where the CPU renderer manages 10. Offline rendering is
 about four times faster than on a 32 core, 64 thread CPU; the figures are
-under *Offline demo rendering*.
+under *Offline demo rendering*. (The RTX figures here and below are from
+before its tracing was made about twice as fast, as measured on an RTX 4060
+Laptop, and have not been taken again on the RTX 4090.)
 
 Its denoiser works as the CPU renderer's does: how far a pixel is smoothed
 follows from the noise measured in it, gathered over frames beside the light,
