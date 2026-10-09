@@ -187,7 +187,7 @@ void R_InitSettings (void)
 	pt_fog_density = ri.Cvar_Get ("pt_fog_density", "0.0004", CVAR_ARCHIVE);
 	pt_fog_samples = ri.Cvar_Get ("pt_fog_samples", "2", CVAR_ARCHIVE);
 	pt_fog_history = ri.Cvar_Get ("pt_fog_history", "6", CVAR_ARCHIVE);
-	pt_react = ri.Cvar_Get ("pt_react", "1", CVAR_ARCHIVE);
+	pt_react = ri.Cvar_Get ("pt_react", "0", CVAR_ARCHIVE);
 	pt_sky = ri.Cvar_Get ("pt_sky", "2", CVAR_ARCHIVE);
 	pt_lamp_glow = ri.Cvar_Get ("pt_lamp_glow", "1.5", CVAR_ARCHIVE);
 	pt_surface_light = ri.Cvar_Get ("pt_surface_light", "1", CVAR_ARCHIVE);
