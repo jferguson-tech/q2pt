@@ -132,6 +132,27 @@ int Sys_Milliseconds (void)
 	return curtime;
 }
 
+#ifdef PT_PERF
+/*
+================
+Sys_PerfMs
+================
+*/
+double Sys_PerfMs (void)
+{
+	static double	scale;
+	LARGE_INTEGER	now;
+
+	if (!scale)
+	{
+		QueryPerformanceFrequency (&now);
+		scale = 1000.0 / (double)now.QuadPart;
+	}
+	QueryPerformanceCounter (&now);
+	return (double)now.QuadPart * scale;
+}
+#endif
+
 void Sys_Mkdir (char *path)
 {
 	_mkdir (path);

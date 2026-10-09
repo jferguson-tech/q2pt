@@ -1562,7 +1562,7 @@ void Qcommon_Frame (volatile int msec)
 	if (host_speeds->value)
 		time_before = Sys_Milliseconds ();
 
-	SV_Frame (msec);
+	PERF_TIMED ("pt_perf_server", SV_Frame (msec));
 
 	if (host_speeds->value)
 		time_between = Sys_Milliseconds ();		

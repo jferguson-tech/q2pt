@@ -1757,7 +1757,7 @@ void CL_Frame (int msec)
 		time_after_ref = Sys_Milliseconds ();
 
 	// update audio
-	S_Update (cl.refdef.vieworg, cl.v_forward, cl.v_right, cl.v_up);
+	PERF_TIMED ("pt_perf_sound", S_Update (cl.refdef.vieworg, cl.v_forward, cl.v_right, cl.v_up));
 	
 	CDAudio_Update();
 
