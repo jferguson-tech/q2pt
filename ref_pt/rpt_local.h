@@ -231,14 +231,15 @@ void	R_BenchFrame (void);
 //
 void	R_WaterReset (void);
 void	R_WaterAbsorb (image_t *image, const char *name, float *absorb);
-int		R_WaterBody (image_t *image, const char *name, float z, float points[][3], int numpoints);
+int		R_WaterBody (image_t *image, const char *name, float z, float points[][3], int numpoints, const float *stream);
 void	R_WaterSetMaterial (int body, int material);
 void	R_WaterFinish (void);
 void	R_WaterFrame (refdef_t *fd);
 qboolean	R_WaterEyeUnder (const float *eye, float strength, qboolean under);
 void	R_WaterAround (const float *eye, float *absorb);
 pt_material_t *R_WorldMaterialPtr (int index);
-float	R_EntityMoved (int index, entity_t *e);
+int		R_WorldTriangles (const float **positions);
+float	R_EntityMoved (int index, entity_t *e, float *by);
 
 //
 // rpt_model.c

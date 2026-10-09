@@ -51,12 +51,15 @@ a second.*
   (emission).
 * Glass and liquids reflect and refract with a Fresnel term.
 * Three ways to draw water: classic (the original swimming texture), realistic
-  (rippled, reflecting and refracting) and simulated (a wave simulation per
-  pool, with wakes from the player and whatever moves at the surface). A
-  simulated surface is drawn where its waves stand, not as a level sheet
-  with a pattern of tilts on it: crests show in outline and hide what is
-  behind them, and the water rises and falls against walls and whatever
-  stands in it.
+  (rippled, reflecting and refracting) and simulated (a shallow water
+  simulation per pool: waves run as fast as the depth under them allows, so
+  they slow and bunch up over a shallow bed, pass round what stands in the
+  water and slosh between its banks; the player and whatever moves at the
+  surface push a wave ahead of them and leave a wake, and water the map
+  calls flowing carries its waves downstream). A simulated surface is drawn
+  where its waves stand, not as a level sheet with a pattern of tilts on
+  it: crests show in outline and hide what is behind them, and the water
+  rises and falls against walls and whatever stands in it.
 * Fog and light shafts from single scattering along the view ray.
 * A ball of light to throw (**F**): a lamp behind six round steel plates. It
   bounces, rolls down slopes, knocks into the others and comes to rest, and
@@ -308,7 +311,7 @@ flowchart TD
         api(["pt/include/pt.h<br/>the C interface"])
         cpu["pt/cpu<br/>BVH, path tracer, denoiser<br/>SSE and AVX2"]
         rtx["pt/rtx<br/>Vulkan compute shaders,<br/>ray queries"]
-        water["pt/water<br/>wave simulation"]
+        water["pt/water<br/>shallow water simulation"]
         material["pt/material<br/>normal and roughness maps<br/>from a texture's colours"]
         png["pt/png<br/>PNG writer"]
     end
@@ -327,7 +330,7 @@ pt/         the path tracing core (MIT): knows nothing about Quake 2
   include/pt.h    the C interface a host program uses
   cpu/            CPU backend: BVH, path tracer, denoiser, output
   rtx/            Vulkan backend: the same tracer as compute shaders
-  water/          height field wave simulation
+  water/          shallow water simulation
   material/       normal, roughness and metal maps from a texture's colours
   png/            PNG writer
 ref_pt/     the renderer DLLs (GPL): turns Quake 2's maps, models and

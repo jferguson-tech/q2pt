@@ -1,12 +1,18 @@
 /* SPDX-License-Identifier: MIT */
 /* Copyright (c) 2026 Jonathan Ferguson */
 /*
-A height field wave simulation for one flat body of liquid, and the two
-pictures a renderer needs from it: which way the surface tilts, and where
-the waves gather light on whatever lies below (caustics).
+A shallow water simulation for one flat body of liquid, and the two pictures
+a renderer needs from it: where the surface stands and which way it tilts,
+and where the waves gather light on whatever lies below (caustics).
 
-It knows nothing about any renderer. The host steps it, pokes it where
-things touch the surface, and hands the pictures on as textures.
+Each cell of a grid holds how high the surface stands and how fast the
+liquid flows across to its neighbours. Waves travel as fast as the depth
+under them lets them, so they slow, bunch up and turn over a shallow bed,
+pass round whatever stands in the liquid, and slosh between its banks.
+
+It knows nothing about any renderer. The host says where there is liquid
+and how deep, steps it, pokes it where things touch the surface, and hands
+the pictures on as textures.
 */
 #ifndef PT_WATER_H
 #define PT_WATER_H
@@ -42,14 +48,38 @@ off the rest as off a bank.
 */
 void pt_water_cover(pt_water_t *w, const float a[2], const float b[2], const float c[2]);
 
+/*
+Says how deep the liquid is: a triangle of whatever lies under the surface,
+x, y and z, with z counted from the level of the liquid, so negative below
+it. The shallowest thing under each cell is its bed. Until the first call
+the liquid is taken to be 96 units deep everywhere; after that, wherever no
+triangle was given.
+*/
+void pt_water_bed(pt_water_t *w, const float a[3], const float b[3], const float c[3]);
+
+/*
+The liquid over this triangle is in a stream running at vx, vy units per
+second, which carries the shape of the surface along with it.
+*/
+void pt_water_current(pt_water_t *w, const float a[2], const float b[2], const float c[2], float vx, float vy);
+
 /* push the surface down around a point: amount is in units of height */
 void pt_water_disturb(pt_water_t *w, float x, float y, float radius, float amount);
 
 /*
-Advance by dt seconds. speed is how fast waves travel, in units per second;
-damping is the share of a wave's motion lost per second (0-1).
+Something of this radius at the surface has been moving at vx, vy for dt
+seconds: the surface rises ahead of it and sinks behind, and the liquid it
+passes through is dragged along. amount is how much of it is in the liquid,
+in units of height.
 */
-void pt_water_step(pt_water_t *w, float dt, float speed, float damping);
+void pt_water_move(pt_water_t *w, float x, float y, float radius, float vx, float vy, float amount, float dt);
+
+/*
+Advance by dt seconds. Waves travel at the square root of gravity times the
+depth, in units per second; damping is the share of the liquid's motion
+lost per second (0-1).
+*/
+void pt_water_step(pt_water_t *w, float dt, float gravity, float damping);
 
 /*
 The pictures, width * height pixels of R,G,B,A bytes, row 0 at min_y.
