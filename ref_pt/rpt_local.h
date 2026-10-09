@@ -201,6 +201,7 @@ extern	int		r_normalflip;
 extern	int		r_watermode;		// 0 classic, 1 realistic, 2 simulated
 extern	float	r_waterreach;
 extern	float	r_watercell, r_waterwaves, r_watercaustics, r_waterdamping, r_waterfoam, r_watershore;
+extern	float	r_waterrate, r_waterspray;
 extern	float	r_bumpscale, r_roughscale, r_metalscale;
 extern	int		r_materialmaps;		// detail maps are read from the pictures' painted light
 extern	float	r_materialdelight;
