@@ -39,6 +39,12 @@ TRAIN_JOBS += [('d', 0.0, 1, 4, 12, 30, 512, MORE), ('e', 0.5, 1, 2, 12, 30, 512
 # brighten at least DARK times: at most DARK_MOST a map, the darkest first.
 DARK, DARK_MOST = 2.0, 6
 DARK_JOB = ('f', 0.0, 1, 12, 30, 512, dict(fire_chance=0.7, fire_kinds=(1, 2, 3, 4, 5, 6, 6)))
+# With --flash the same dark clips are rendered as job i with a BFG fired in
+# each: its flash in a dark room is the hardest frame there is at few paths.
+# Light through fog in the dark is still spiky in a 512 path reference, and
+# a network taught by spiky references leaves that light out: these want
+# --paths 4096.
+FLASH_TAG = 'i'
 TYPICAL_TARGET = 0.0054      # pt/cpu/pt_cpu.cpp
 # --dim renders every map with its own lights and sky turned down, so that
 # every map gives dark clips. What is fired is as bright as ever: a flash in
@@ -51,8 +57,9 @@ DIM_JOBS = [('g', 0.0, 1, 1, 8, 30, 512, MORE), ('h', 0.0, 1, 1, 8, 30, 512, MOR
 TEST_JOBS = [('s', 0.0, 1, 1, 12, 30, 16384), ('m', 0.5, 1, 1, 12, 30, 4096)]
 
 
-def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed, more, keep=None, mode=None, dim=1.0):
-    """keep: of the tour's clips, the ones to render (numbered from 1), in that order"""
+def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed, more, keep=None, mode=None, dim=1.0, flash=False):
+    """keep: of the tour's clips, the ones to render (numbered from 1), in that order.
+    flash: whatever the tour fires in those clips, a BFG is fired in each instead"""
     name = '%s_%s' % (m, tag)
     out = os.path.join(args.out, args.split, name)
     if os.path.exists(os.path.join(out, 'done')):
@@ -69,9 +76,15 @@ def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed, 
     if keep is not None:
         each = len(lines) // clips               # a clip's lines: those to arrive in, then its own
         chosen = []
+        rng = random.Random('%s/flash/%d' % (name, seed))
         for new, old in enumerate(keep, 1):
-            for line in lines[(old - 1) * each:old * each]:
+            # the six lines to arrive in come first: from two before the clip to its last
+            # line, so that some clips open in the flash and most have the dark before it
+            at = 6 + rng.choice([-2, -1, 0, 0, 1, 1, 2, 3])
+            for n, line in enumerate(lines[(old - 1) * each:old * each]):
                 head, mark = line.rsplit(' ', 1)
+                if flash:
+                    head = '%s %d' % (head.rsplit(' ', 1)[0], 6 if n == min(at, each - 1) else 0)
                 chosen.append('%s %d' % (head, new if int(mark) else 0))
         lines, clips = chosen, len(keep)
     for c in range(1, clips + 1):
@@ -166,6 +179,7 @@ def main():
     ap.add_argument('--timeout', type=int, default=7200)
     ap.add_argument('--renderer', default='ptrtx', help='ptrtx or ptcpu')
     ap.add_argument('--dim', action='store_true', help="instead of the usual jobs: every map with its lights turned down")
+    ap.add_argument('--flash', action='store_true', help='with --dark: a BFG is fired in every dark clip')
     ap.add_argument('--dark', type=int, default=0, help='instead of the usual jobs: try this many clips a map and render the dark ones')
     args = ap.parse_args()
     args.game = os.path.abspath(args.game)
@@ -197,7 +211,8 @@ def main():
                 keep = dark_clips(args, m, args.dark)
                 print('%s: %d dark of %d' % (m, len(keep), args.dark), flush=True)
                 if keep:
-                    run_job(args, m, tag, blur, fog, args.dark, frames, fps, args.paths or paths, tag, args.seed, more, keep=keep)
+                    run_job(args, m, FLASH_TAG if args.flash else tag, blur, fog, args.dark, frames, fps, args.paths or paths, tag, args.seed,
+                            more, keep=keep, flash=args.flash)
             jobs = []
         elif args.dim:
             jobs = DIM_JOBS

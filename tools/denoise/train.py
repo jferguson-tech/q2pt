@@ -19,22 +19,29 @@ KEYS = ('light', 'variance', 'exact', 'albedo', 'specular', 'normal', 'depth', '
 class Clips(torch.utils.data.Dataset):
     """Stretches of consecutive frames, cut to a square, at 4, 8 or 16 paths a pixel."""
 
-    def __init__(self, root, length=8, size=256, epoch=4000):
-        self.clips = []
+    def __init__(self, root, length=8, size=256, epoch=4000, favour=(), favour_share=0.0, low=1 / 3):
+        """favour: tags of jobs (the letter a job's folder ends in) whose clips
+        are drawn favour_share of the time, whatever their number.
+        low: how often a clip is given at 4 paths; 8 and 16 share the rest."""
+        self.clips, self.favoured = [], []
         for d in sorted(glob.glob(os.path.join(root, '*', 'c*'))):
             frames = sorted(glob.glob(os.path.join(d, '*.ptx')))
             if len(frames) >= 2:
-                self.clips.append(frames)
+                tag = os.path.basename(os.path.dirname(d)).rsplit('_', 1)[-1]
+                (self.favoured if tag in favour else self.clips).append(frames)
+        if not self.favoured or favour_share <= 0.0:
+            self.clips, self.favoured, favour_share = self.clips + self.favoured, [], 0.0
         if not self.clips:
             raise SystemExit('no clips under %s' % root)
         self.length, self.size, self.epoch = length, size, epoch
+        self.favour_share, self.low = favour_share, low
 
     def __len__(self):
         return self.epoch
 
     def __getitem__(self, index):
         rng = random.Random()        # from the system: every pass over the data is different
-        frames = rng.choice(self.clips)
+        frames = rng.choice(self.favoured if rng.random() < self.favour_share else self.clips)
         n = min(self.length, len(frames))
         first = rng.randrange(0, len(frames) - n + 1)
         opened = [ptx.Frame(p) for p in frames[first:first + n]]
@@ -42,7 +49,7 @@ class Clips(torch.utils.data.Dataset):
         s = self.size
         y0, x0 = rng.randrange(0, h - s + 1), rng.randrange(0, w - s + 1)
         box = (y0, y0 + s, x0, x0 + s)
-        paths = rng.choice([4, 8, 16])
+        paths = 4 if rng.random() < self.low else rng.choice([8, 16])
         flip = rng.random() < 0.5
 
         out = {k: [] for k in KEYS + ('ref_light', 'ref_picture')}
@@ -85,13 +92,16 @@ def gradients(x):
     return x[..., :, 1:] - x[..., :, :-1], x[..., 1:, :] - x[..., :-1, :]
 
 
+SPIKE = 25.0     # --spike
+
+
 def relative(x, y):
     """Squared error against the size of the answer. Unlike an absolute
     difference it is not pulled towards the middle of a noisy target, so a
     reference that still has noise in it teaches the right brightness. A
     target that is many times off (a stray very bright path) counts only so
     far."""
-    return torch.clamp((x - y) ** 2 / (x.detach() + 0.02) ** 2, max=25.0).mean()
+    return torch.clamp((x - y) ** 2 / (x.detach() + 0.02) ** 2, max=SPIKE).mean()
 
 
 def haze(item, scale, paths, length):
@@ -156,8 +166,14 @@ def main():
     ap.add_argument('--lr', type=float, default=3e-4)
     ap.add_argument('--workers', type=int, default=12)
     ap.add_argument('--resume', default='')
+    ap.add_argument('--favour', default='', help='tags of jobs to draw clips from more often, as f,g,h')
+    ap.add_argument('--favour-share', type=float, default=0.0, help='how often a clip is drawn from those jobs')
+    ap.add_argument('--low', type=float, default=1 / 3, help='how often a clip is given at 4 paths a pixel')
+    ap.add_argument('--spike', type=float, default=25.0, help='the most a pixel\'s relative error counts for')
     ap.add_argument('--start', default='', help='weights to begin from, of this network or of the one that only looked back')
     args = ap.parse_args()
+    global SPIKE
+    SPIKE = args.spike
 
     os.makedirs(args.out, exist_ok=True)
     device = torch.device('cuda')
@@ -176,8 +192,9 @@ def main():
         sched.load_state_dict(ck['sched'])
         step = ck['step']
 
-    data = Clips(args.data, args.length, args.size, epoch=args.batch * 1000)
-    print('%d clips, %.2fM weights' % (len(data.clips), sum(p.numel() for p in model.parameters()) / 1e6), flush=True)
+    data = Clips(args.data, args.length, args.size, epoch=args.batch * 1000,
+                 favour=tuple(t for t in args.favour.split(',') if t), favour_share=args.favour_share, low=args.low)
+    print('%d clips, %.2fM weights' % (len(data.clips) + len(data.favoured), sum(p.numel() for p in model.parameters()) / 1e6), flush=True)
     loader = torch.utils.data.DataLoader(data, batch_size=args.batch, num_workers=args.workers, drop_last=True,
                                          persistent_workers=True, prefetch_factor=4)
     log = open(os.path.join(args.out, 'log.txt'), 'a')
