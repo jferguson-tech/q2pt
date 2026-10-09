@@ -94,9 +94,12 @@ typedef struct pt_material_s
 								   ripples. Level triangles with one are drawn
 								   where the waves stand, see wave_reach */
 	int			caustic_map;	/* handle + 1 of how much the waves brighten the
-								   light going through, R / 255 * 4; 0 = none. A
-								   is 0 where the picture covers no liquid, and
-								   the waves' surface is not looked for there */
+								   light going through, R / 255 * 4; 0 = none. G
+								   is how much of the surface froth covers, which
+								   is drawn white, matt and solid to the eye in
+								   clumps that close up as G rises. A is 0 where
+								   the picture covers no liquid, and the waves'
+								   surface is not looked for there */
 	float		wave_rect[4];	/* the maps cover world x, y from [0], [1] and are
 								   1 / [2], 1 / [3] across */
 	float		absorb[3];		/* liquids: share of light lost per unit of

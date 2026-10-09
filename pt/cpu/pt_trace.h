@@ -33,6 +33,7 @@ struct Surface
 	float			alpha;		// GGX width, roughness squared
 	bool			light_sampled_spec;
 	bool			medium;		// not a surface at all but a point in the air: no facing, scatters evenly
+	bool			foam = false;	// froth on a liquid: solid and matt, whatever the material is
 
 	// how much the specular lobe reflects in total towards wo, roughly
 	Vec3 SpecularAlbedo() const;

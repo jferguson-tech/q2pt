@@ -575,6 +575,7 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	s.tri = &tri;
 	s.mat = &mat;
 	s.medium = false;
+	s.foam = false;
 	s.p = ray.o + ray.d * hit.t;
 	s.wo = -ray.d;
 	s.front = Dot(tri.n, ray.d) < 0.0f;
@@ -675,6 +676,19 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 		}
 		// crests gather the light in the liquid and troughs spread it
 		s.colour *= std::min(std::max(1.0f + wave_height * 0.35f, 0.6f), 1.8f);
+
+		// Froth is air and liquid so finely mixed that light is scattered
+		// every way before it gets through: white, matt and solid to the eye.
+		// Where it lies thin the dark of the liquid shows through it.
+		const float froth = sc.Froth(mat, s.p);
+		if (froth > 0.0f)
+		{
+			s.foam = true;
+			s.colour = (s.colour * 0.2f + Vec3(0.8f)) * ((0.1f + 0.4f * froth) * (0.65f + 0.35f * Scene::Lumps(s.p.x * 2.3f, s.p.y * 2.3f)));
+			s.glow = Vec3();
+			s.roughness = 1.0f;
+			metallic = 0.0f;
+		}
 	}
 	else if ((mat.flags & PT_MAT_WAVES) && sc.wave_strength > 0.0f)
 	{
@@ -694,7 +708,7 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	s.n = n;
 
 	s.metallic = metallic;
-	if (mat.flags & PT_MAT_BLACK)
+	if ((mat.flags & PT_MAT_BLACK) && !s.foam)
 	{
 		s.kd = Vec3();
 		s.f0 = Vec3();
@@ -714,6 +728,8 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 Vec3 Emitted(const Surface &s, bool seen)
 {
 	const Material &m = *s.mat;
+	if (s.foam)
+		return Vec3();
 	if (m.emission_map)
 		return m.emission * s.glow;
 	if (m.flags & PT_MAT_EMIT_BRIGHT)

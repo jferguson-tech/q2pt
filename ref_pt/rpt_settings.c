@@ -80,6 +80,7 @@ static cvar_t	*pt_water_cell;			// size of a simulation cell, in map units
 static cvar_t	*pt_water_caustics;		// strength of the light patterns waves throw under and beside water; 0 = none
 static cvar_t	*pt_water_height;		// how tall the simulated waves are, 1 = normal
 static cvar_t	*pt_water_damping;		// how fast waves die down, 1 = normal
+static cvar_t	*pt_water_foam;			// how readily simulated water froths and sprays, 1 = normal, 0 = never
 static cvar_t	*pt_waves;				// ripple strength on liquids
 
 // materials: scale what rpt_material.c decides
@@ -98,7 +99,7 @@ float	r_detailglow = 1;
 int		r_watermode = 2;
 int		r_normalflip;
 float	r_waterreach;
-float	r_watercell = 8, r_waterwaves = 1, r_watercaustics = 0, r_waterdamping = 1;
+float	r_watercell = 8, r_waterwaves = 1, r_watercaustics = 0, r_waterdamping = 1, r_waterfoam = 1;
 float	r_bumpscale = 1, r_roughscale = 1, r_metalscale = 1;
 int		r_materialmaps = 1;
 float	r_materialdelight = 1;
@@ -205,6 +206,7 @@ void R_InitSettings (void)
 	pt_water_cell = ri.Cvar_Get ("pt_water_cell", "8", CVAR_ARCHIVE);
 	pt_water_caustics = ri.Cvar_Get ("pt_water_caustics", "0", CVAR_ARCHIVE);
 	pt_water_damping = ri.Cvar_Get ("pt_water_damping", "1", CVAR_ARCHIVE);
+	pt_water_foam = ri.Cvar_Get ("pt_water_foam", "1", CVAR_ARCHIVE);
 	pt_water_height = ri.Cvar_Get ("pt_water_height", "2", CVAR_ARCHIVE);
 
 	pt_bump = ri.Cvar_Get ("pt_bump", "1", CVAR_ARCHIVE);
@@ -297,6 +299,7 @@ qboolean R_UpdateSettings (void)
 	r_normalflip = pt_normal_flip->value != 0;	// takes effect when the materials are next made
 	r_watercaustics = pt_water_caustics->value;
 	r_waterdamping = pt_water_damping->value;
+	r_waterfoam = pt_water_foam->value;
 
 	// these change what the map's liquids are made of
 	if ((int)pt_water->value != r_watermode || (pt_water_cell->value >= 2 && pt_water_cell->value != r_watercell))

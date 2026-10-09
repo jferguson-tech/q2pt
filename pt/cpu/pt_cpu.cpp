@@ -633,7 +633,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 				return;
 			}
 		}
-		if (mat.alpha >= 1.0f || layer >= 8 || (view_mode && ViewSolid(view_mode, mat)))
+		if (mat.alpha >= 1.0f || surf.foam || layer >= 8 || (view_mode && ViewSolid(view_mode, mat)))
 		{
 			solid = true;
 			break;

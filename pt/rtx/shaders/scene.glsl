@@ -698,6 +698,29 @@ struct Surface
 	Material mat;		// after animation
 };
 
+// lumps of about one unit across, 0 to 1, the same wherever it is asked
+float Lumps(vec2 p)
+{
+	const vec2 f = floor(p);
+	vec2 a = p - f;
+	const ivec2 i = ivec2(f);
+	a = a * a * (3.0 - 2.0 * a);
+	const float c00 = float(Hash(uint(i.x), uint(i.y)) >> 8), c10 = float(Hash(uint(i.x + 1), uint(i.y)) >> 8);
+	const float c01 = float(Hash(uint(i.x), uint(i.y + 1)) >> 8), c11 = float(Hash(uint(i.x + 1), uint(i.y + 1)) >> 8);
+	return mix(mix(c00, c10, a.x), mix(c01, c11, a.x), a.y) * (1.0 / 16777216.0);
+}
+
+// How thick the froth on a liquid lies at p, 0 for none to 1, where froth of
+// it covers the surface thereabouts: it lies in clumps and strings, which
+// close up as it thickens. Scene::Froth in pt/cpu/pt_world.h is the same and
+// is to be kept so.
+float Froth(vec2 p, float froth)
+{
+	if (froth <= 0.004)
+		return 0.0;
+	return clamp((froth * 1.2 - 0.6 * Lumps(p * 0.19) - 0.4 * Lumps(p * 0.83)) * 5.0, 0.0, 1.0);
+}
+
 // What a metal reflects, worked out from the colour it was painted
 // (MAT_METAL_PAINTED): pt_material_metal_colour in pt/material/pt_material.h,
 // which says why, written again here. The two are to be kept the same.
@@ -846,6 +869,24 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 		}
 		// crests gather the light in the liquid and troughs spread it
 		s.colour *= clamp(1.0 + wave_height * 0.35, 0.6, 1.8);
+
+		// Froth is air and liquid so finely mixed that light is scattered
+		// every way before it gets through: white, matt and solid to the eye.
+		// Where it lies thin the dark of the liquid shows through it.
+		const float froth = mat.caustic_map < 0 ? 0.0
+			: Froth(s.p.xy, Texel(mat.caustic_map, (s.p.xy - mat.wave_rect.xy) * mat.wave_rect.zw, true).g);
+		if (froth > 0.0)
+		{
+			s.colour = mix(s.colour, vec3(1.0), 0.8) * ((0.1 + 0.4 * froth) * (0.65 + 0.35 * Lumps(s.p.xy * 2.3)));
+			s.glow = vec3(0.0);
+			s.roughness = 1.0;
+			metallic = 0.0;
+			s.mat.alpha = 1.0;
+			s.mat.flags &= ~(MAT_EMIT_BRIGHT | MAT_BLACK);
+			s.mat.bits &= ~BIT_EMISSIVE;
+			s.mat.emission = vec4(0.0);
+			s.mat.emission_per_texel.rgb = vec3(0.0);
+		}
 	}
 	else if ((mat.flags & MAT_WAVES) != 0u && wave_strength > 0.0)
 	{

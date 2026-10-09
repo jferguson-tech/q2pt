@@ -34,7 +34,48 @@ struct pt_water_s
 	float		deepest;		/* the largest depth, for the size of a step */
 	float		leftover;		/* time not yet simulated */
 	float		reach;			/* furthest from level in the last wave picture */
+	float		tall;			/* the same before wave_scale, or a great deal if no picture was made yet */
+	float		*foam;			/* how much of each cell froth covers, 0 to FOAM_MAX; NULL until asked for */
+	float		foaming, foam_life;
+	int			foamy;			/* is there any froth anywhere */
+	float		spray[PT_WATER_SPRAY_MAX * 3];
+	int			sprays;
+	unsigned	seed;
 };
+
+/* froth may pile up past what covers a cell, and then lasts the longer */
+#define FOAM_MAX		1.5f
+/* a face of liquid steeper than this, as a slope, turns white */
+#define FOAM_STEEP		0.12f
+
+/* froth made in one cell: enough of it at once throws up spray */
+static void froth(pt_water_t *w, size_t i, float amount)
+{
+	amount *= w->foaming;
+	if (amount <= 0.0f)
+		return;
+	w->foam[i] += amount;
+	if (w->foam[i] > FOAM_MAX)
+		w->foam[i] = FOAM_MAX;
+	w->foamy = 1;
+	if (amount > 0.2f)
+	{
+		/* the list is short: when it is full, any of them may give way */
+		int slot = w->sprays;
+		if (slot == PT_WATER_SPRAY_MAX)
+		{
+			w->seed = w->seed * 1664525u + 1013904223u;
+			slot = (int)((w->seed >> 16) % PT_WATER_SPRAY_MAX);
+			if (w->spray[slot * 3 + 2] >= amount)
+				return;
+		}
+		else
+			w->sprays++;
+		w->spray[slot * 3] = w->min_x + ((float)(i % (size_t)w->width) + 0.5f) * w->cell;
+		w->spray[slot * 3 + 1] = w->min_y + ((float)(i / (size_t)w->width) + 0.5f) * w->cell;
+		w->spray[slot * 3 + 2] = amount;
+	}
+}
 
 pt_water_t *pt_water_create(float min_x, float min_y, float max_x, float max_y, float cell_size, int max_cells)
 {
@@ -82,6 +123,7 @@ pt_water_t *pt_water_create(float min_x, float min_y, float max_x, float max_y, 
 	for (count = 0; count < (size_t)w->width * w->height; count++)
 		w->depth[count] = DEPTH_UNKNOWN;
 	w->deepest = DEPTH_UNKNOWN;
+	w->tall = 1.0e9f;
 	return w;
 }
 
@@ -100,6 +142,7 @@ void pt_water_destroy(pt_water_t *w)
 	free(w->waves);
 	free(w->caustics);
 	free(w->open);
+	free(w->foam);
 	free(w);
 }
 
@@ -134,6 +177,50 @@ void pt_water_disturb(pt_water_t *w, float x, float y, float radius, float amoun
 				const float fall = 0.5f * (1.0f + cosf(d * 3.14159265f));
 				w->h[(size_t)iy * w->width + ix] -= amount * fall;
 			}
+		}
+	}
+}
+
+void pt_water_foaming(pt_water_t *w, float amount, float life)
+{
+	if (amount > 0.0f && !w->foam)
+		w->foam = (float *)calloc((size_t)w->width * w->height, sizeof(float));
+	if (w->foam && amount <= 0.0f && w->foaming > 0.0f)
+	{
+		/* turned off: what there was goes at once */
+		memset(w->foam, 0, (size_t)w->width * w->height * sizeof(float));
+		w->foamy = 0;
+		w->sprays = 0;
+	}
+	w->foaming = w->foam && amount > 0.0f ? amount : 0.0f;
+	w->foam_life = life > 0.05f ? life : 0.05f;
+}
+
+void pt_water_churn(pt_water_t *w, float x, float y, float radius, float amount)
+{
+	const float cx = (x - w->min_x) / w->cell, cy = (y - w->min_y) / w->cell;
+	float r = radius / w->cell;
+	int x0, y0, x1, y1, ix, iy;
+
+	if (w->foaming <= 0.0f)
+		return;
+	if (r < 1.5f)
+		r = 1.5f;
+	x0 = (int)floorf(cx - r); x1 = (int)ceilf(cx + r);
+	y0 = (int)floorf(cy - r); y1 = (int)ceilf(cy + r);
+	if (x0 < 0) x0 = 0;
+	if (y0 < 0) y0 = 0;
+	if (x1 > w->width - 1) x1 = w->width - 1;
+	if (y1 > w->height - 1) y1 = w->height - 1;
+
+	for (iy = y0; iy <= y1; iy++)
+	{
+		for (ix = x0; ix <= x1; ix++)
+		{
+			const float dx = ix + 0.5f - cx, dy = iy + 0.5f - cy;
+			const float d = sqrtf(dx * dx + dy * dy) / r;
+			if (d < 1.0f && w->open[(size_t)iy * w->width + ix])
+				froth(w, (size_t)iy * w->width + ix, amount * 0.5f * (1.0f + cosf(d * 3.14159265f)));
 		}
 	}
 }
@@ -474,6 +561,8 @@ static void step_once(pt_water_t *w, float dt, float gravity, float damping)
 				over = over > steepest ? over - steepest : (over < -steepest ? over + steepest : 0.0f);
 				w->h[i] -= 0.25f * over;
 				w->h[i - 1] += 0.25f * over;
+				if (over != 0.0f && w->foaming > 0.0f)
+					froth(w, over > 0.0f ? i : i - 1, fabsf(over) * 0.5f);
 			}
 			if (y > 0 && w->open[i - width])
 			{
@@ -481,6 +570,8 @@ static void step_once(pt_water_t *w, float dt, float gravity, float damping)
 				over = over > steepest ? over - steepest : (over < -steepest ? over + steepest : 0.0f);
 				w->h[i] -= 0.25f * over;
 				w->h[i - width] += 0.25f * over;
+				if (over != 0.0f && w->foaming > 0.0f)
+					froth(w, over > 0.0f ? i : i - width, fabsf(over) * 0.5f);
 			}
 		}
 	}
@@ -530,6 +621,87 @@ static void step_once(pt_water_t *w, float dt, float gravity, float damping)
 	}
 }
 
+/*
+Froth: it forms where the surface stands too steep to hold together and
+where a stream runs into something, rides along on the liquid under it, and
+dies away. Once a call of pt_water_step is enough: it is slow next to waves.
+*/
+static void foam_step(pt_water_t *w, float dt)
+{
+	const int width = w->width, height = w->height;
+	const float keep = powf(0.5f, dt / w->foam_life), share = dt / w->cell;
+	int x, y, any = 0;
+
+	/* a surface that nowhere stands half a step from level has no step in
+	   it worth looking for: most pools, most of the time */
+	for (y = w->current || w->tall >= 0.5f * FOAM_STEEP * w->cell ? 0 : height; y < height; y++)
+	{
+		for (x = 0; x < width; x++)
+		{
+			const size_t i = (size_t)y * width + x;
+			float steep = 0.0f, d;
+			if (!w->open[i])
+				continue;
+			if (x > 0 && w->open[i - 1] && (d = fabsf(w->h[i] - w->h[i - 1])) > steep) steep = d;
+			if (y > 0 && w->open[i - width] && (d = fabsf(w->h[i] - w->h[i - width])) > steep) steep = d;
+			steep = steep / w->cell - FOAM_STEEP;
+			if (steep > 0.0f)
+				froth(w, i, steep * 40.0f * dt);
+			if (w->current)
+			{
+				/* a stream that ends, at a bank or in still water, piles up there */
+				const float cx = w->current[i * 2], cy = w->current[i * 2 + 1];
+				const int nx = x + (cx > 0.0f) - (cx < 0.0f), ny = y + (cy > 0.0f) - (cy < 0.0f);
+				if (cx != 0.0f || cy != 0.0f)
+				{
+					/* against a bank it stays where it is made, see below; in
+					   still water it is left where the stream lets go of it */
+					const size_t n = (size_t)ny * width + nx;
+					if (nx < 0 || ny < 0 || nx >= width || ny >= height || !w->open[n])
+						froth(w, i, sqrtf(cx * cx + cy * cy) * 0.005f * dt);
+					else if (w->current[n * 2] == 0.0f && w->current[n * 2 + 1] == 0.0f)
+						froth(w, n, sqrtf(cx * cx + cy * cy) * 0.005f * dt);
+				}
+			}
+		}
+	}
+	if (!w->foamy)
+		return;
+
+	/* what is here now was upstream a moment ago */
+	memcpy(w->tmp, w->foam, (size_t)width * height * sizeof(float));
+	for (y = 0; y < height; y++)
+	{
+		for (x = 0; x < width; x++)
+		{
+			const size_t i = (size_t)y * width + x, f = (size_t)y * (width + 1) + x;
+			float vx, vy;
+			if (!w->open[i])
+				continue;
+			vx = 0.5f * (w->u[f] + w->u[f + 1]);
+			vy = 0.5f * (w->v[i] + w->v[i + width]);
+			if (w->current)
+			{
+				/* a stream takes it as far as the bank and no further */
+				const float cx = w->current[i * 2], cy = w->current[i * 2 + 1];
+				const int nx = x + (cx > 0.0f) - (cx < 0.0f), ny = y + (cy > 0.0f) - (cy < 0.0f);
+				if (cx != 0.0f && nx >= 0 && nx < width && w->open[(size_t)y * width + nx])
+					vx += cx;
+				if (cy != 0.0f && ny >= 0 && ny < height && w->open[(size_t)ny * width + x])
+					vy += cy;
+			}
+			if (vx != 0.0f || vy != 0.0f)
+				w->foam[i] = upstream(w->tmp, width, height, x - vx * share, y - vy * share);
+			w->foam[i] *= keep;
+			if (w->foam[i] > 1.0f / 512.0f)
+				any = 1;
+			else
+				w->foam[i] = 0.0f;
+		}
+	}
+	w->foamy = any;
+}
+
 void pt_water_step(pt_water_t *w, float dt, float gravity, float damping)
 {
 	/* The scheme is stable while a wave crosses less than about 0.7 of a
@@ -572,6 +744,17 @@ void pt_water_step(pt_water_t *w, float dt, float gravity, float damping)
 	}
 	if (guard >= 32)
 		w->leftover = 0.0f;
+	if (w->foaming > 0.0f)
+		foam_step(w, dt);
+}
+
+int pt_water_spray(pt_water_t *w, const float **at)
+{
+	const int count = w->sprays;
+
+	*at = w->spray;
+	w->sprays = 0;
+	return count;
 }
 
 static uint32_t byte_of(float v)
@@ -610,6 +793,7 @@ const uint32_t *pt_water_waves(pt_water_t *w, float wave_scale)
 		}
 	}
 	w->reach = reach;
+	w->tall = wave_scale > 0.0f ? reach / wave_scale : 1.0e9f;
 	return w->waves;
 }
 
@@ -694,7 +878,8 @@ const uint32_t *pt_water_caustics(pt_water_t *w, float strength)
 				const uint32_t b = byte_of(blurred / PT_WATER_CAUSTIC_MAX);
 				/* A says whether there is liquid here or in a cell next to this one */
 				const int wet = here_or_near(w, x, y);
-				w->caustics[(size_t)y * w->width + x] = b | (b << 8) | (b << 16) | (wet ? 0xff000000u : 0);
+				const uint32_t white = w->foam && w->foaming > 0.0f ? byte_of(w->foam[(size_t)y * w->width + x]) : 0;
+				w->caustics[(size_t)y * w->width + x] = b | (white << 8) | (b << 16) | (wet ? 0xff000000u : 0);
 			}
 		}
 	}

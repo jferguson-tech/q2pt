@@ -287,6 +287,42 @@ struct Scene
 		return (t->pixels[(size_t)(v * (float)t->height) * t->width + (size_t)(u * (float)t->width)] >> 24) >= 128;
 	}
 
+	// lumps of about one unit across, 0 to 1, the same wherever it is asked
+	static float Lumps(float x, float y)
+	{
+		const float fx = std::floor(x), fy = std::floor(y);
+		float ax = x - fx, ay = y - fy;
+		const int ix = (int)fx, iy = (int)fy;
+		ax = ax * ax * (3.0f - 2.0f * ax);
+		ay = ay * ay * (3.0f - 2.0f * ay);
+		const float c00 = (float)(Hash((uint32_t)ix, (uint32_t)iy) >> 8), c10 = (float)(Hash((uint32_t)(ix + 1), (uint32_t)iy) >> 8);
+		const float c01 = (float)(Hash((uint32_t)ix, (uint32_t)(iy + 1)) >> 8), c11 = (float)(Hash((uint32_t)(ix + 1), (uint32_t)(iy + 1)) >> 8);
+		return ((c00 * (1.0f - ax) + c10 * ax) * (1.0f - ay) + (c01 * (1.0f - ax) + c11 * ax) * ay) * (1.0f / 16777216.0f);
+	}
+
+	// How thick the froth lies at p on the liquid whose maps the material
+	// carries, 0 for none to 1: it lies in clumps and strings, which close up
+	// as it thickens. Froth in pt/rtx/shaders/scene.glsl is the same and is
+	// to be kept so.
+	float Froth(const Material &m, Vec3 p) const
+	{
+		const Texture *t = Map(m.caustic_map);
+		if (!t)
+			return 0.0f;
+		float u, v;
+		WaveCoord(m, p, u, v);
+		if (u < 0.0f || v < 0.0f || u > 1.0f || v > 1.0f)
+			return 0.0f;
+		uint32_t texel[4];
+		float w[4];
+		t->Corners(u, v, texel, w);
+		const float froth = (((texel[0] >> 8) & 0xff) * w[0] + ((texel[1] >> 8) & 0xff) * w[1]
+			+ ((texel[2] >> 8) & 0xff) * w[2] + ((texel[3] >> 8) & 0xff) * w[3]) * (1.0f / 255.0f);
+		if (froth <= 0.004f)
+			return 0.0f;
+		return std::min(std::max((froth * 1.2f - 0.6f * Lumps(p.x * 0.19f, p.y * 0.19f) - 0.4f * Lumps(p.x * 0.83f, p.y * 0.83f)) * 5.0f, 0.0f), 1.0f);
+	}
+
 	// how much the waves brighten light passing through the surface at p
 	float Caustic(const Material &m, Vec3 p) const
 	{
