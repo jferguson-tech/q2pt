@@ -59,7 +59,16 @@ a second.*
   calls flowing carries its waves downstream). A simulated surface is drawn
   where its waves stand, not as a level sheet with a pattern of tilts on
   it: crests show in outline and hide what is behind them, and the water
-  rises and falls against walls and whatever stands in it.
+  rises and falls against walls and whatever stands in it. Where it is
+  beaten it froths: foam lies in the wake of whatever moves through it
+  fast, where something falls in, where waves stand steep or break and
+  where a stream runs up against a bank. It is a pale layer of bubbles
+  that the water shows through and still shines through a little, closed
+  where it is thick and fresh and opening into rings and strings as it
+  thins and ages; it rides along on the water and is gone in a few seconds.
+  A faint line of it comes and goes along the banks. A hard splash throws
+  up spray that falls back and leaves rings (`pt_water_foam`,
+  `pt_water_shore`).
 * Fog and light shafts from single scattering along the view ray.
 * A ball of light to throw (**F**): a lamp behind six round steel plates. It
   bounces, rolls down slopes, knocks into the others and comes to rest, and
@@ -274,6 +283,8 @@ Some console commands and variables:
 | `pt_bounces`, `pt_samples`, `pt_light_samples` | path length, paths per pixel per frame (also a slider in the menu, 1 to 16), lights weighed per point |
 | `pt_reflections 0`-`2` | none, glass and water, every shiny surface |
 | `pt_water 0`-`2` | classic, realistic, simulated |
+| `pt_water_foam` | simulated water: how readily it froths and throws up spray, `1` = as made, `0` = never. Lava never does |
+| `pt_water_shore` | how much foam lies along the banks of simulated water, coming and going with the waves: `0.75` as made, `0` = none, `1` = a good deal. Needs `pt_water_foam` above 0 |
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
 | `pt_react` | RTX: how readily light gathered over frames is let go where the lighting is found to have changed, so that it does not trail behind a light that moves, flashes or goes out: `0` = never (the default), `1` = at once. Such places are noisier for a few frames; `pt_debug 13` shows where it acts |
 | `pt_fog_history`, `pt_fog_samples` | the light in the air: how many frames of it are kept while things change (6; the rest of the lighting keeps `pt_history`, 8), and at how many points along each view ray it is looked for every frame (2). The air has no surface to be followed by, so its light trails what moves: fewer frames trail less and are noisier, more points are less noisy and cost a shadow ray each |
