@@ -47,6 +47,10 @@ typedef struct
 	int			parent;				// the body this one turned out to be part of, or itself
 	pt_water_t	*sim;				// only bodies that are their own parent have one
 	int			wave_texture, caustic_texture, foam_texture;		// backend handles, -1 = none
+	const uint32_t	*waves, *caustics, *foam;	// its pictures as last made, for the next frame; NULL = not yet
+	float		reach;				// how far from level its waves stood in them
+	qboolean	fresh;				// the pictures were made since the backend last had them
+	qboolean	inrange;				// near enough to the eye to be worth moving
 } waterbody_t;
 
 // the shape of the liquid, kept until the simulations are made
@@ -75,12 +79,21 @@ typedef struct
 #define	MAX_WATER_DROPS	768
 #define	DROP_GRAVITY	800.0f
 
+// A body further from the eye than this, across or up and down, stands as
+// it is: nothing pokes it and it is not stepped. Few places in the game's
+// maps let the eye see as far, and waves that far off are a pixel tall.
+#define	WATER_RANGE			2048.0f
+#define	WATER_RANGE_HEIGHT	1024.0f
+#define	WATER_MAX_RATE		240.0f	// steps a second at most, whatever the frame rate
+
 static waterbody_t	w_bodies[MAX_WATER_BODIES];
 static int			w_numbodies;
 static watertri_t	*w_tris;
 static int			w_numtris, w_maxtris;
 static float		w_lasttime;
 static vec3_t		w_lasteye;
+static float		w_wait;			// the time gone by since the bodies were last stepped
+static float		w_made[4];		// the settings the pictures were last made with
 static waterdrop_t	w_drops[MAX_WATER_DROPS];
 static int			w_numdrops;
 
@@ -133,6 +146,8 @@ static void W_Spray (int body, float x, float y, float hard, float spread)
 	float		angle, out;
 	int			i, count;
 
+	if (r_waterspray <= 0)
+		return;
 	if (hard > 2)
 		hard = 2;
 	count = (int)(hard * 14) + 1;
@@ -477,13 +492,39 @@ static qboolean W_Over (waterbody_t *b, const float *p)
 	return p[0] >= b->mins[0] && p[0] <= b->maxs[0] && p[1] >= b->mins[1] && p[1] <= b->maxs[1];
 }
 
+// a body's pictures, of its surface as it stands now
+static void W_Pictures (waterbody_t *b)
+{
+	b->waves = pt_water_waves (b->sim, r_waterwaves);
+	b->reach = pt_water_reach (b->sim);
+	b->caustics = pt_water_caustics (b->sim, b->lava ? 0 : r_watercaustics);
+	b->foam = b->foam_texture >= 0 ? pt_water_foam (b->sim) : NULL;
+	b->fresh = true;
+}
+
+// is the eye near enough to a body for it to be worth moving
+static qboolean W_InRange (waterbody_t *b, const float *eye)
+{
+	float	dx, dy;
+
+	dx = eye[0] < b->mins[0] ? b->mins[0] - eye[0] : (eye[0] > b->maxs[0] ? eye[0] - b->maxs[0] : 0);
+	dy = eye[1] < b->mins[1] ? b->mins[1] - eye[1] : (eye[1] > b->maxs[1] ? eye[1] - b->maxs[1] : 0);
+	return dx*dx + dy*dy <= WATER_RANGE*WATER_RANGE && fabs (eye[2] - b->z) <= WATER_RANGE_HEIGHT;
+}
+
 /*
 ===============
 R_WaterFrame
 
-Pokes each body where things touch its surface, steps it and hands the
-backend the new pictures. Called before the scene is built, while
-R_EntityMoved still has last frame to compare with.
+Hands the backend each body's pictures, and pokes it where things touch its
+surface. Called before the scene is built, while R_EntityMoved still has
+last frame to compare with.
+
+The pictures are those R_WaterStep made once the last frame had been sent
+to be traced: what is shown is the surface a frame behind what pokes it,
+which nobody can see, and stepping it costs the frame nothing. They are
+handed on only when they have been made anew: a body at rest, or too far
+off to be moved, costs nothing at all.
 ===============
 */
 void R_WaterFrame (refdef_t *fd)
@@ -494,7 +535,6 @@ void R_WaterFrame (refdef_t *fd)
 	vec3_t		eye;
 	vec3_t		by;
 	waterdrop_t	*drop;
-	const float	*sprays;
 	float		dt, speed, amount, moved, feet, fell, d[2];
 	int			i, j, splashes;
 
@@ -504,6 +544,7 @@ void R_WaterFrame (refdef_t *fd)
 	dt = fd->time - w_lasttime;
 	if (dt < 0 || dt > 0.25f)
 		dt = 0;		// a new map, a load or a long pause: nothing sensible to do
+	w_wait += dt;
 	if (!dt || r_waterfoam <= 0)
 		w_numdrops = 0;
 	VectorCopy (fd->vieworg, eye);
@@ -516,8 +557,21 @@ void R_WaterFrame (refdef_t *fd)
 			continue;
 
 		pt_water_foaming (b->sim, b->lava ? 0 : r_waterfoam, FOAM_LIFE, r_watershore);
+		if (!b->waves)
+			W_Pictures (b);		// a new map: as it lies
+		if (b->fresh)
+		{
+			rpt.backend->texture_update (rpt.backend, b->wave_texture, b->waves);
+			rpt.backend->texture_update (rpt.backend, b->caustic_texture, b->caustics);
+			if (b->foam_texture >= 0 && b->foam)
+				rpt.backend->texture_update (rpt.backend, b->foam_texture, b->foam);
+			b->fresh = false;
+		}
+		if (b->reach > r_waterreach)
+			r_waterreach = b->reach;
+		b->inrange = W_InRange (b, eye);
 
-		if (dt > 0)
+		if (dt > 0 && b->inrange)
 		{
 			// the player, jumping or falling in
 			fell = (w_lasteye[2] - eye[2]) / dt;
@@ -597,23 +651,7 @@ void R_WaterFrame (refdef_t *fd)
 					b->mins[0] + (b->maxs[0] - b->mins[0]) * (rand () & 0x7fff) / 32767.0f,
 					b->mins[1] + (b->maxs[1] - b->mins[1]) * (rand () & 0x7fff) / 32767.0f,
 					10 + (rand () & 7), b->lava ? 0.5f : 0.25f);
-
-			// heavy liquids move slowly and settle fast
-			pt_water_step (b->sim, dt, b->lava ? LAVA_GRAVITY : WATER_GRAVITY, r_waterdamping * (b->lava ? 0.9f : 0.45f));
-
-			// where a wave broke
-			splashes = pt_water_spray (b->sim, &sprays);
-			for (j=0 ; j<splashes ; j++)
-				W_Spray (i, sprays[j*3], sprays[j*3+1], sprays[j*3+2], pt_water_cell (b->sim) * 0.5f);
 		}
-
-		rpt.backend->texture_update (rpt.backend, b->wave_texture, pt_water_waves (b->sim, r_waterwaves));
-		if (pt_water_reach (b->sim) > r_waterreach)
-			r_waterreach = pt_water_reach (b->sim);
-		rpt.backend->texture_update (rpt.backend, b->caustic_texture,
-			pt_water_caustics (b->sim, b->lava ? 0 : r_watercaustics));
-		if (b->foam_texture >= 0)
-			rpt.backend->texture_update (rpt.backend, b->foam_texture, pt_water_foam (b->sim));
 	}
 
 	// the spray in the air rises, falls and is gone where it lands, leaving a ring
@@ -635,6 +673,65 @@ void R_WaterFrame (refdef_t *fd)
 
 	w_lasttime = fd->time;
 	VectorCopy (eye, w_lasteye);
+}
+
+/*
+===============
+R_WaterStep
+
+Moves each body on by the time gone by and makes its pictures, for the
+next frame to show. Called once the frame's view has been sent to be
+traced. A body of some size takes a couple of milliseconds, and the RTX
+renderer's card has nothing to do while the frame that follows is being put
+together: done at the start of the frame, as it was, that was a couple of
+milliseconds of every frame with the card idle. Here it is busy tracing.
+
+Not every frame: pt_water_rate times a second at most, and once a frame
+where frames come slower than that. A body at rest that nothing has touched
+is left alone, and so is one too far from the eye.
+===============
+*/
+void R_WaterStep (void)
+{
+	waterbody_t	*b;
+	const float	*sprays;
+	float		made[4], rate;
+	qboolean	changed;
+	int			i, j, splashes;
+
+	// pictures made with other settings than these are not what they should be
+	made[0] = r_waterwaves;
+	made[1] = r_watercaustics;
+	made[2] = r_waterfoam;
+	made[3] = r_watershore;
+	changed = memcmp (made, w_made, sizeof(made)) != 0;
+	memcpy (w_made, made, sizeof(made));
+
+	// frames never come quite evenly: a little short of the time is time enough
+	rate = r_waterrate > 0 && r_waterrate < WATER_MAX_RATE ? r_waterrate : WATER_MAX_RATE;
+	if (w_wait < 0.9f / rate && !changed)
+		return;
+
+	for (i=0, b=w_bodies ; i<w_numbodies ; i++, b++)
+	{
+		if (!b->sim)
+			continue;
+		if (w_wait > 0 && b->inrange && !pt_water_still (b->sim))
+		{
+			// heavy liquids move slowly and settle fast
+			pt_water_step (b->sim, w_wait, b->lava ? LAVA_GRAVITY : WATER_GRAVITY, r_waterdamping * (b->lava ? 0.9f : 0.45f));
+
+			// where a wave broke
+			splashes = pt_water_spray (b->sim, &sprays);
+			for (j=0 ; j<splashes ; j++)
+				W_Spray (i, sprays[j*3], sprays[j*3+1], sprays[j*3+2], pt_water_cell (b->sim) * 0.5f);
+			W_Pictures (b);
+		}
+		else if (changed)
+			W_Pictures (b);
+	}
+	if (w_wait >= 0.9f / rate)
+		w_wait = 0;
 }
 
 /*

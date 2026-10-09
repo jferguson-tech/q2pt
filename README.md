@@ -41,8 +41,13 @@ a second.*
   small part of what steel reflects, so metal reflects more than it was
   painted, in its own hue; `pt_metal_colour` says how much. The painted
   light, once read, is taken out of the texture's colours, where it would
-  otherwise light each raised edge a second time. The maps are twice as fine
-  as the textures. They are
+  otherwise light each raised edge a second time. A lamp gives off its light
+  and its frame does not: where a map makes a texture a light, or its name
+  says it is a lamp, a screen or a sign, the part of the picture that is lit
+  is told from the rest by how far it stands out from it. All of a light's
+  light comes from there, and its frame and rivets are lit by the room like
+  any wall; a sign whose picture shows it switched off does not glow. The
+  maps are twice as fine as the textures. They are
   kept in `baseq2\pt_cache`, about 110 KB a texture, which can be deleted at
   any time; nothing made from the game's art is part of this repository.
   **F11** switches between these maps and the plain ones made before them.
@@ -68,7 +73,17 @@ a second.*
   thins and ages; it rides along on the water and is gone in a few seconds.
   A faint line of it comes and goes along the banks. A hard splash throws
   up spray that falls back and leaves rings (`pt_water_foam`,
-  `pt_water_shore`).
+  `pt_water_shore`). Light bends going into simulated water, so shadows
+  under it fall where the bent light is cut off. Its waves, and ripples
+  finer than the simulation holds, gather the light into a moving net of
+  bright lines on whatever lies in the water: faint over still water,
+  strong where it has been stirred, sharper the deeper it goes, and lying
+  as the light from each pool's lamps would throw it. The pattern is worked
+  out for one light, the middle of those over each part of the pool, and
+  laid over all the light a surface in the water gets
+  (`pt_water_caustics`). Water glows a little where light comes down
+  through it (`pt_water_shafts`), and its banks are dark and shiny as far
+  up as it has lately stood, which dries off in a while (`pt_water_wet`).
 * Fog and light shafts from single scattering along the view ray.
 * A ball of light to throw (**F**): a lamp behind six round steel plates. It
   bounces, rolls down slopes, knocks into the others and comes to rest, and
@@ -150,7 +165,11 @@ compute shaders that trace with ray queries. The map and everything that moves
 are held in acceleration structures, the moving part rebuilt every frame. The
 shaders follow the CPU tracer function for function, and the lights and the
 tables for finding them are built by the CPU tracer's own code, so the two
-light a map the same way. It has the lighting, materials, glass and liquids,
+light a map the same way. Where the shaders go about it differently it is
+for the card's sake, which runs the pixels of a tile in step, each waiting
+while any other has work to do: lights are picked from tables that need no
+search, and the paths of a pixel are followed in one loop. The light a pixel
+gets is the same. It has the lighting, materials, glass and liquids,
 fog, the three water modes, the denoiser, anti-aliasing, auto exposure, bloom,
 tone mapping, screenshots and offline rendering.
 
@@ -158,7 +177,9 @@ Measured with `pt_bench demo1` on an RTX 4090 beside a 16 core Ryzen 7950X,
 at 800x600 with one path per pixel, three bounces and the filter on: 176
 frames a second, where the CPU renderer manages 10. Offline rendering is
 about four times faster than on a 32 core, 64 thread CPU; the figures are
-under *Offline demo rendering*.
+under *Offline demo rendering*. (The RTX figures here and below are from
+before its tracing was made about twice as fast, as measured on an RTX 4060
+Laptop, and have not been taken again on the RTX 4090.)
 
 Its denoiser works as the CPU renderer's does: how far a pixel is smoothed
 follows from the noise measured in it, gathered over frames beside the light,
@@ -283,8 +304,14 @@ Some console commands and variables:
 | `pt_bounces`, `pt_samples`, `pt_light_samples` | path length, paths per pixel per frame (also a slider in the menu, 1 to 16), lights weighed per point |
 | `pt_reflections 0`-`2` | none, glass and water, every shiny surface |
 | `pt_water 0`-`2` | classic, realistic, simulated |
-| `pt_water_foam` | simulated water: how readily it froths and throws up spray, `1` = as made, `0` = never. Lava never does |
-| `pt_water_shore` | how much foam lies along the banks of simulated water, coming and going with the waves: `0.75` as made, `0` = none, `1` = a good deal. Needs `pt_water_foam` above 0 |
+| `pt_water_quality 0`-`3` | how much is spent on water, set by the preset: low (`0`) does not simulate it (`pt_water 1`); medium (`1`) simulates it in cells of 12 units, 60 times a second, with foam and caustics; high (`2`) in cells of 8 units, 120 times a second, with spray and foam along the banks as well; ultra (`3`) in cells of 6 units, every frame. It sets the six variables below and `pt_water`; any of them may be changed afterwards |
+| `pt_water_rate` | how many times a second simulated water is moved on at most: once a frame where frames come slower than that. `0` = every frame, up to 240 a second. Water at rest that nothing touches, and water more than 2048 units from the eye, is not moved at all |
+| `pt_water_cell`, `pt_water_caustics` | the size of a cell of simulated water, in map units, and how strong the patterns of light are that its waves throw, `0` = none |
+| `pt_water_foam` | simulated water: how readily it froths, `1` = as made, `0` = never. Lava never does |
+| `pt_water_spray` | drops thrown up by a hard splash or a breaking wave: `1` or `0`. Needs `pt_water_foam` above 0 |
+| `pt_water_shore` | how much foam lies along the banks of simulated water, coming and going with the waves: `0.75` at high and ultra, `0` = none, `1` = a good deal. Needs `pt_water_foam` above 0 |
+| `pt_water_shafts` | how much water of any kind scatters the light in it towards the eye, which shows as a glow where light comes down through it: `1` as made, `0` = none |
+| `pt_water_wet` | how wet the banks of simulated water show where it has stood: `1` as made, `0` = not at all |
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
 | `pt_react` | RTX: how readily light gathered over frames is let go where the lighting is found to have changed, so that it does not trail behind a light that moves, flashes or goes out: `0` = never (the default), `1` = at once. Such places are noisier for a few frames; `pt_debug 13` shows where it acts |
 | `pt_fog_history`, `pt_fog_samples` | the light in the air: how many frames of it are kept while things change (6; the rest of the lighting keeps `pt_history`, 8), and at how many points along each view ray it is looked for every frame (2). The air has no surface to be followed by, so its light trails what moves: fewer frames trail less and are noisier, more points are less noisy and cost a shadow ray each |
@@ -307,12 +334,12 @@ Some console commands and variables:
 | `pt_simd 0`-`1` | CPU renderer: the build for AVX2 where the processor has it, or the one for any processor, to compare the two |
 | `pt_debug 1`-`13` | one part of the picture on its own; `12` is the noise the filter measured in the diffuse light, as it stands after filtering (the standard deviation, times 4) |
 | `pt_bump`, `pt_roughness`, `pt_metallic` | scale how deep, how rough and how metallic every surface is taken to be; 1 unless set. Below 1, `pt_metallic` makes what is metal less than metal |
-| `pt_material_maps 0`-`1`, `pt_material_toggle` (**F11**) | normal, roughness and metal maps read from each texture's painted light and colours (`1`, the default), or the plain ones of before, which take brightness for height and give the whole of a texture one number for metal: half for what its name says is metal, less for what the name says nothing of. The key switches between the two while playing; the level's surfaces are made again, which takes a moment |
+| `pt_material_maps 0`-`1`, `pt_material_toggle` (**F11**) | normal, roughness and metal maps read from each texture's painted light and colours, and the lit part of a lamp or a screen told from its frame (`1`, the default), or things as they were before: plain maps, which take brightness for height and give the whole of a texture one number for metal (half for what its name says is metal, less for what the name says nothing of), a light of the map's that gives off its light all over, frame and all, and a screen that glows wherever it is bright. The key switches between the two while playing; the level's surfaces are made again, which takes a moment |
 | `pt_metal_edge` | how many texels of a texture the edge between its metal and the rest is dithered over: `3` unless set, `0` for a hard edge. Every texel is metal or not whatever this is; a wider edge only scatters them further. The maps are made again when it changes |
 | `pt_metal_colour` | how much of the light metal reflects where it was read from a picture: what a metal painted as dark as the game's steel reflects, `0.05` unless set. Brighter painted metal reflects more, none less than it was painted, and the hue is kept. Steel reflects ten times that, but the game's art is that much darker than the things it shows all over, and at `0.5` metal is white beside everything else. `0` leaves metal the colour it was painted, which is next to black. Takes effect at once |
 | `pt_material_delight 0`-`1` | how much of the light painted into a wall texture is taken out of its colours once it has been read as shape: `1` (the default) is all that was read, `0` leaves the colours as they are. Screens and lamps keep theirs |
 | `pt_material_cache 0`-`1` | keep the maps that were made in `baseq2\pt_cache`, so that a texture is read once only; on by default |
-| `pt_material_show <image>` | write a texture beside what was read from it, as a PNG in `baseq2\scrnshot`: its colours without the painted light, its height, normals, roughness, metal, and what it reflects head on. For example `pt_material_show textures/e1u1/metal1_1` or `pt_material_show models/monsters/soldier/skin` |
+| `pt_material_show <image>` | write a texture beside what was read from it, as a PNG in `baseq2\scrnshot`: its colours without the painted light, its height, normals, roughness, metal, what it reflects head on, and the part of it that is lit, which is used where the texture is a lamp or a screen. For example `pt_material_show textures/e1u1/metal1_1` or `pt_material_show models/monsters/soldier/skin` |
 | `throwlight [colour]` (**F**), `throwlight clear` | throw a ball of light: `warm`, `white`, `red`, `orange`, `yellow`, `green`, `cyan`, `blue` or `purple`, or the next of them in turn if none is named; `clear` takes back the ones you threw |
 | `lightball_max`, `lightball_brightness` | how many balls there may be at once before the oldest goes (6 unless set, at most 24), and how bright the next one thrown is (300; a rocket's light is 200) |
 | `screenshot`, `pt_screenshot [paths]` | the frame as shown, or rendered again at high quality |
@@ -356,7 +383,8 @@ pt/         the path tracing core (MIT): knows nothing about Quake 2
   cpu/            CPU backend: BVH, path tracer, denoiser, output
   rtx/            Vulkan backend: the same tracer as compute shaders
   water/          shallow water simulation
-  material/       normal, roughness and metal maps from a texture's colours
+  material/       normal, roughness and metal maps from a texture's colours,
+                  and the lit part of a lamp's picture
   png/            PNG writer
 ref_pt/     the renderer DLLs (GPL): turns Quake 2's maps, models and
             per-frame scene into what pt.h asks for

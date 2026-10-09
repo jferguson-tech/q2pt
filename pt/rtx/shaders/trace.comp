@@ -15,7 +15,6 @@ layout(local_size_x = 8, local_size_y = 8) in;
 #include "scene.glsl"
 
 const float GLASS_INDEX = 1.5;
-const float WATER_INDEX = 1.33;
 const int MAX_LAYERS = 8;	// see-through surfaces looked through before the next counts as solid
 
 // Light meeting the boundary between two clear materials: how much is
@@ -54,18 +53,24 @@ vec3 EyeDir(vec3 forward, vec3 right, vec3 up, vec2 at)
 
 // The light the air scatters to the eye from the first reach of a view ray:
 // the reach is cut into as many lengths as there are samples, and a point
-// drawn in each.
-vec3 FogGlow(vec3 from, vec3 dir, float reach, float fog, float max_sample)
+// drawn in each. And, with a shaft_weight, the light a liquid on the way
+// scatters at shaft_at, which counts for that much: here, so that there is
+// one place where light on a point in the air is worked out and not two.
+vec3 FogGlow(vec3 from, vec3 dir, float reach, float fog, float max_sample, vec3 shaft_at, vec3 shaft_weight)
 {
-	const int count = max(1, int(fr.painted.z));
-	vec3 sum = vec3(0.0);
-	for (int k = 0; k < count; k++)
+	const int count = fog > 0.0 ? max(1, int(fr.painted.z)) : 0;
+	const int points = count + (MaxComponent(shaft_weight) > 0.0 ? 1 : 0);
+	vec3 sum = vec3(0.0), shaft = vec3(0.0);
+	for (int k = 0; k < points; k++)
 	{
-		const float at = (float(k) + Rand()) * reach / float(count);
-		const vec3 lit = DirectMedium(from + dir * at);
-		sum += ClampSample(lit * (fog * (0.25 * INV_PI) * exp(-fog * at) * reach), max_sample);
+		const float at = (float(k) + Rand()) * reach / float(max(count, 1));
+		const vec3 lit = DirectMedium(k < count ? from + dir * at : shaft_at);
+		if (k < count)
+			sum += ClampSample(lit * (fog * (0.25 * INV_PI) * exp(-fog * at) * reach), max_sample);
+		else
+			shaft = ClampSample(lit * shaft_weight, max_sample);
 	}
-	return sum / float(count);
+	return sum / float(max(count, 1)) + shaft;
 }
 
 void main()
@@ -119,6 +124,8 @@ void main()
 	float through = 1.0;		// how much of what is behind still shows
 	vec3 tint = vec3(1.0);		// what liquid on the way has left of each colour
 	vec3 absorb = fr.medium.xyz;	// of the liquid the path is in now; none in air
+	vec3 shaft_at = vec3(0.0);		// where to look for what it scatters towards the eye,
+	vec3 shaft_weight = vec3(0.0);	// and how much that counts for; none: not this frame
 	// the view modes that leave part of the light out, or measure something
 	const int view_mode = fr.bases.x;
 	const bool furnace = view_mode == VIEW_FURNACE;
@@ -182,6 +189,19 @@ void main()
 		MakeSurface(hit, base, origin, dir, fr.settings2.y != 0, surf);
 		if (view_mode == 0)
 			AddFroth(surf);
+		// A liquid scatters a little of the light in it towards the eye: it
+		// glows where light comes down through it, in shafts the waves and
+		// whatever stands in the light's way break up.
+		const float shafts = fr.liquid.z * (absorb.r + absorb.g + absorb.b) * 0.1;		// what it scatters, per unit: a third of what it soaks up
+		// (Looked for one frame in four, and counted four times: it is faint,
+		// and gathered. Where the path goes through liquid more than once,
+		// in the last of it.)
+		if (shafts > 0.0 && view_mode == 0 && hit.t > entered && Rand() < 0.25)
+		{
+			const float at = mix(entered, hit.t, Rand());
+			shaft_at = origin + dir * at;
+			shaft_weight = tint * Fade(absorb, at - entered) * (shafts * INV_PI * (hit.t - entered) * through);
+		}
 		tint *= Fade(absorb, hit.t - entered);
 		entered = hit.t;
 		if (view_mode >= VIEW_LIGHTING)
@@ -342,10 +362,12 @@ void main()
 
 		// the air in front of the sky scatters light like any other: the
 		// sky is dimmed by it and the shafts in it show
-		if (fog > 0.0 && stand_in)
+		const float air = stand_in ? fog : 0.0;
+		if (air > 0.0 || MaxComponent(shaft_weight) > 0.0)
 		{
-			over += FogGlow(eye, eye_dir, stand_depth, fog, max_sample) * direct_on;
-			beyond *= exp(-fog * (sky_hit ? sky_depth : layer_depth));
+			over += FogGlow(eye, eye_dir, stand_depth, air, max_sample, shaft_at, shaft_weight) * direct_on;
+			if (air > 0.0)
+				beyond *= exp(-fog * (sky_hit ? sky_depth : layer_depth));
 		}
 
 		imageStore(img_surface[now], pixel, vec4(have_layer ? layer_n : sky_n, stand_in ? stand_depth : -1.0));
@@ -363,6 +385,8 @@ void main()
 		return;
 	}
 
+	if (view_mode == 0 && fr.size.z > 0)
+		AddWater(surf, MaxComponent(absorb) > 0.0);
 	vec3 kd = surf.kd * through * tint;
 	const vec3 spec_albedo = max(SpecularAlbedo(surf), vec3(MIN_DEMODULATE));
 	vec3 ks = spec_albedo * through * tint;
@@ -397,11 +421,13 @@ void main()
 	// Air that scatters light: some of what the surface sends is lost on the
 	// way, and the air itself glows where light falls through it, which is
 	// what shows as shafts. A few points along the way are sampled per frame.
-	if (fog > 0.0)
+	if (fog > 0.0 || MaxComponent(shaft_weight) > 0.0)
 	{
 		const float reach = have_layer ? layer_depth : hit.t;		// the straight part of the view
-		over += FogGlow(eye, eye_dir, reach, fog, max_sample) * direct_on;
-
+		over += FogGlow(eye, eye_dir, reach, fog, max_sample, shaft_at, shaft_weight) * direct_on;
+	}
+	if (fog > 0.0)
+	{
 		const float kept = exp(-fog * depth);
 		kd *= kept;
 		ks *= kept;
@@ -422,11 +448,14 @@ void main()
 	vec3 sum_d = vec3(0.0), sum_s = vec3(0.0);
 	vec2 moments_d = vec2(0.0), moments_s = vec2(0.0);	// the paths' luminance and its square, summed
 	float spec_reach = -1.0;		// how far the last specular path went before its first hit
+
+	const int NO_PATH = 0, ON_MATTE = 1, ON_SHINE = 2;
+	const vec3 from = surf.p + surf.ng * RAY_OFFSET;
 	for (int k = 0; k < paths; k++)
 	{
 		// The shine takes its share of the light first and the matte part
 		// has what is left, so the two together never reflect more than
-		// falls on them: see Radiance. The share is that of one way the
+		// falls on them: see PathGoOn. The share is that of one way the
 		// light could be mirrored, which is the way followed below.
 		vec3 mirrored, shine;
 		if (!has_specular || !SampleSpecular(surf, mirrored, shine))
@@ -439,8 +468,6 @@ void main()
 
 		if (bounces > 0 && indirect_on > 0.0)
 		{
-			const vec3 from = surf.p + surf.ng * RAY_OFFSET;
-			float reached;
 			// The reflection is followed only some of the time, and counts
 			// for more when it is. The matte part gives up as much as the
 			// reflection counts for, and nothing when it is not followed, so
@@ -448,20 +475,63 @@ void main()
 			// share, or the matte part would have to give up more than it has.
 			const float chance = spec_chance > 0.0 ? min(1.0, max(spec_chance, MaxComponent(shine))) : 0.0;
 			const bool follow = chance > 0.0 && Rand() < chance && MaxComponent(shine) > 0.0;
+			const vec3 kept = follow ? 1.0 - shine * (1.0 / chance) : vec3(1.0);
+
+			// A path off the matte part and then, if it is followed, one off
+			// the shine (see Radiance), in one loop: a step of whichever the
+			// pixel is on to a turn. The card runs the pixels of a tile in
+			// step, every one waiting while any other has work to do in a part
+			// of the shader. With a loop for each path they all waited out
+			// the longest of each, and most paths are short; here a pixel
+			// whose first path has ended is on its second while others are
+			// still on their first. What a pixel does, and the order it does
+			// it in, is as it was.
+			int stage = NO_PATH;
+			Path path;
+			rays_followed = 0;
 			if (has_diffuse)
 			{
-				const vec3 kept = follow ? 1.0 - shine * (1.0 / chance) : vec3(1.0);
-				rays_followed = 0;
-				d += kept * Radiance(from, SampleDiffuse(surf), false, 1, bounces, reached);
-				followed_d = rays_followed;
+				path = PathFrom(from, SampleDiffuse(surf), false, 1, bounces);
+				stage = ON_MATTE;
 			}
-			if (follow)
+			else if (follow)
 			{
-				rays_followed = 0;
-				sp += shine * Radiance(from, mirrored, !surf.light_sampled_spec, 1, fr.settings.w, reached)
-					/ spec_albedo * (1.0 / chance);
-				followed_s = rays_followed;
-				spec_reach = reached;
+				path = PathFrom(from, mirrored, !surf.light_sampled_spec, 1, fr.settings.w);
+				stage = ON_SHINE;
+			}
+			while (stage != NO_PATH)
+			{
+				Surface s;
+				bool shiny;
+				if (PathMeet(path, s, shiny))
+				{
+					vec3 its_mirrored, its_shine;
+					if (!shiny || !SampleSpecular(s, its_mirrored, its_shine))
+						its_shine = vec3(0.0);
+					const Lit world = DirectWorld(s, false), frame = DirectFrameOne(s);
+					PathGoOn(path, s, its_mirrored, its_shine, world, frame);
+				}
+				if (!path.ended)
+					continue;
+				if (stage == ON_MATTE)
+				{
+					d += kept * path.radiance;
+					followed_d = rays_followed;
+					stage = NO_PATH;
+					if (follow)
+					{
+						rays_followed = 0;
+						path = PathFrom(from, mirrored, !surf.light_sampled_spec, 1, fr.settings.w);
+						stage = ON_SHINE;
+					}
+				}
+				else
+				{
+					sp += shine * path.radiance / spec_albedo * (1.0 / chance);
+					followed_s = rays_followed;
+					spec_reach = path.reached;
+					stage = NO_PATH;
+				}
 			}
 		}
 		else if (furnace)

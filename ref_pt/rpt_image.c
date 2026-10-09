@@ -400,6 +400,33 @@ int R_ImageNormalTexture (image_t *image)
 
 /*
 ===============
+R_ImageLitTexture
+
+The backend's texture for the part of the image that gives off light, see
+R_ImageLit, or -1 where no part of it stands apart
+===============
+*/
+int R_ImageLitTexture (image_t *image)
+{
+	pt_texture_t	tex;
+	float			share;
+
+	if (!image)
+		return -1;
+	if (!image->pt_lit_texture)
+	{
+		tex.pixels = R_ImageLit (image, &share);
+		if (!tex.pixels)
+			return -1;
+		tex.width = image->width;
+		tex.height = image->height;
+		image->pt_lit_texture = rpt.backend->texture_create (rpt.backend, &tex) + 1;
+	}
+	return image->pt_lit_texture - 1;
+}
+
+/*
+===============
 R_MakeSkinMaterials
 
 Reads the detail maps of the level's skins now, while it is loading, so
@@ -463,8 +490,11 @@ static void R_FreeImage (image_t *image)
 		rpt.backend->texture_destroy (rpt.backend, image->pt_texture - 1);
 	if (image->pt_normal_texture && rpt.backend)
 		rpt.backend->texture_destroy (rpt.backend, image->pt_normal_texture - 1);
+	if (image->pt_lit_texture && rpt.backend)
+		rpt.backend->texture_destroy (rpt.backend, image->pt_lit_texture - 1);
 	free (image->normalmap);
 	free (image->colour);
+	free (image->lit);
 	free (image->pixels);
 	memset (image, 0, sizeof(*image));
 }

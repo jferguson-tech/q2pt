@@ -56,9 +56,12 @@ void Material::Set(const pt_material_t &src, const Texture *tex, const Texture *
 	flags = src.flags;
 	emissive = MaxComponent(emission) > 0.0f && !(flags & PT_MAT_SKY);
 	emission_per_texel = emission;
-	if (texture && !(flags & PT_MAT_EMIT_TEXTURE))
+	// where a map says which part of the surface the light comes from, the
+	// light is shared out over that part and not over the whole picture
+	const Texture *shared = (emission_map && (flags & PT_MAT_EMIT_MAPPED)) ? emission_map : texture;
+	if (shared && !(flags & PT_MAT_EMIT_TEXTURE))
 	{
-		const Vec3 avg = texture->average;
+		const Vec3 avg = shared->average;
 		emission_per_texel = Vec3(emission.x / avg.x, emission.y / avg.y, emission.z / avg.z);
 	}
 }
@@ -350,7 +353,7 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 		m.Set(in->materials[i], texture(in->materials[i].texture), texture(in->materials[i].normal_texture),
 			texture(in->materials[i].emission_texture - 1));
 		// glowing detail is too dim and too patchy to be worth sampling as a light
-		m.sampled = m.emissive && !(m.flags & PT_MAT_EMIT_BRIGHT) && !m.emission_map;
+		m.sampled = m.emissive && !(m.flags & PT_MAT_EMIT_BRIGHT) && (!m.emission_map || (m.flags & PT_MAT_EMIT_MAPPED));
 		if (m.flags & PT_MAT_WAVES)
 			w->has_waves = true;
 	}
@@ -400,7 +403,7 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 				body = &b;
 		if (!body)
 		{
-			w->waters.push_back({FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX, t.p0.z, t.mat, false});
+			w->waters.push_back({FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX, t.p0.z, t.mat, false, {}});
 			body = &w->waters.back();
 		}
 		if (t.n.z > 0.0f)
@@ -459,6 +462,60 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 		w->lights[i].pdf = (float)(power[i] / total);
 		run += power[i];
 		w->light_cdf[i] = (float)(run / total);
+	}
+
+	// Where the light on each simulated liquid comes from, for the patterns
+	// its waves throw on what lies in it: over each part of it, the middle
+	// of the lights that shine on its surface there, each counted for what
+	// it puts there. A part no light shines on has what the rest has, and
+	// with none at all it comes from overhead, as under an open sky.
+	for (World::Water &b : w->waters)
+	{
+		float weights[World::Water::kLamps * World::Water::kLamps];
+		Vec3 all(0.0f, 0.0f, 0.0f);
+		float all_weight = 0.0f;
+		for (int k = 0; k < World::Water::kLamps * World::Water::kLamps; k++)
+		{
+			const Vec3 at(b.min_x + (b.max_x - b.min_x) * (((float)(k % World::Water::kLamps) + 0.5f) / (float)World::Water::kLamps),
+				b.min_y + (b.max_y - b.min_y) * (((float)(k / World::Water::kLamps) + 0.5f) / (float)World::Water::kLamps), b.z + 1.0f);
+			Vec3 sum(0.0f, 0.0f, 0.0f);
+			float weight = 0.0f;
+			for (const Light &l : w->lights)
+			{
+				const Vec3 d = l.origin - at;
+				const float dist2 = Dot(d, d);
+				if (d.z <= 1.0f || dist2 > 2048.0f * 2048.0f)
+					continue;
+				const Vec3 wi = d * (1.0f / std::sqrt(dist2));
+				float e = Luminance(l.emission) * wi.z / dist2;
+				if (l.tri != ~0u)
+					e *= std::max(-Dot(w->tris[l.tri].n, wi), 0.0f) * w->tris[l.tri].area;
+				else if (l.cone_cos > 0.0f && -Dot(wi, l.dir) < l.cone_cos)
+					continue;
+				if (e <= 0.0f)
+					continue;
+				Ray ray;
+				ray.o = at;
+				ray.d = d;
+				ray.tmin = 0.0f;
+				ray.tmax = 0.999f;
+				if (w->bvh.AnyHit(ray, [&](uint32_t i, float, float) { return i != l.tri && w->tris[i].mat->alpha >= 1.0f; }))
+					continue;
+				sum = sum + l.origin * e;
+				weight += e;
+			}
+			weights[k] = weight;
+			if (weight > 0.0f)
+			{
+				b.lamps[k] = sum * (1.0f / weight);
+				all = all + b.lamps[k];
+				all_weight += 1.0f;
+			}
+		}
+		for (int k = 0; k < World::Water::kLamps * World::Water::kLamps; k++)
+			if (weights[k] <= 0.0f)
+				b.lamps[k] = all_weight > 0.0f ? all * (1.0f / all_weight)
+					: Vec3((b.min_x + b.max_x) * 0.5f, (b.min_y + b.max_y) * 0.5f, b.z + 4096.0f);
 	}
 	if (!w->light_cdf.empty())
 		w->light_cdf.back() = 1.0f;

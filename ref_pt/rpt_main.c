@@ -426,7 +426,7 @@ void R_RenderFrame (refdef_t *fd)
 		R_MaterialsReport ();
 	}
 
-	R_WaterFrame (fd);		// before the scene is built, and where the player really is
+	R_WaterFrame (fd);		// before the scene is built, and where the player really is; R_WaterStep follows
 
 	// a fixed camera, for looking at a place without walking there
 	{
@@ -474,6 +474,7 @@ void R_RenderFrame (refdef_t *fd)
 			rpt.backend->render_view (rpt.backend, &view);
 		R_BenchView ();
 	}
+	R_WaterStep ();		// while the view is traced
 
 	// damage flashes, underwater tint and the like
 	Draw_Blend (fd->x, fd->y, fd->width, fd->height, fd->blend);
