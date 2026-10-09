@@ -91,7 +91,7 @@ struct Material
 	float			alpha = 1.0f;
 	float			emission_seen = 0.0f;
 	float			scroll_u = 0.0f, scroll_v = 0.0f;
-	int				wave_map = 0, caustic_map = 0;	// handle + 1
+	int				wave_map = 0, caustic_map = 0, foam_map = 0;	// handle + 1
 	float			wave_rect[4] = {0, 0, 0, 0};
 	Vec3			absorb;
 	float			roughness = 1.0f;
@@ -300,13 +300,49 @@ struct Scene
 		return ((c00 * (1.0f - ax) + c10 * ax) * (1.0f - ay) + (c01 * (1.0f - ax) + c11 * ax) * ay) * (1.0f / 16777216.0f);
 	}
 
-	// How thick the froth lies at p on the liquid whose maps the material
-	// carries, 0 for none to 1: it lies in clumps and strings, which close up
-	// as it thickens. Froth in pt/rtx/shaders/scene.glsl is the same and is
-	// to be kept so.
-	float Froth(const Material &m, Vec3 p) const
+	// Bubbles packed together, about one unit across: 1 on the walls between
+	// them, falling to 0 in their middles
+	static float Bubbles(float x, float y)
 	{
-		const Texture *t = Map(m.caustic_map);
+		const float cx = std::floor(x), cy = std::floor(y);
+		const float fx = x - cx, fy = y - cy;
+		const int ix = (int)cx, iy = (int)cy;
+		float d1 = 8.0f, d2 = 8.0f;
+		for (int j = -1; j <= 1; j++)
+		{
+			for (int i = -1; i <= 1; i++)
+			{
+				const uint32_t h = Hash((uint32_t)(ix + i), (uint32_t)(iy + j));
+				const float ox = (float)i + (float)(h & 0xffffu) * (1.0f / 65535.0f) - fx;
+				const float oy = (float)j + (float)(h >> 16) * (1.0f / 65535.0f) - fy;
+				const float d = ox * ox + oy * oy;
+				if (d < d1)
+				{
+					d2 = d1;
+					d1 = d;
+				}
+				else if (d < d2)
+					d2 = d;
+			}
+		}
+		return 1.0f - std::min(std::max((std::sqrt(d2) - std::sqrt(d1)) * 2.2f, 0.0f), 1.0f);
+	}
+
+	// froth's own shape: large bubbles and small, most where their walls meet
+	static float FrothPattern(float x, float y)
+	{
+		return 0.6f * Bubbles(x * 0.11f, y * 0.11f) + 0.4f * Bubbles(x * 0.37f, y * 0.37f);
+	}
+
+	// How much of the surface at p froth covers, 0 to 0.9, on the liquid
+	// whose maps the material carries, and how old it is there. Thick and
+	// fresh it lies closed; thinner or older it opens into rings and strings
+	// along the walls of its bubbles. Froth in pt/rtx/shaders/scene.glsl is
+	// the same and is to be kept so.
+	float Froth(const Material &m, Vec3 p, float &age) const
+	{
+		const float slide = 1.6f;	// seconds the pattern rides on the liquid before it starts again
+		const Texture *t = Map(m.foam_map);
 		if (!t)
 			return 0.0f;
 		float u, v;
@@ -314,13 +350,33 @@ struct Scene
 		if (u < 0.0f || v < 0.0f || u > 1.0f || v > 1.0f)
 			return 0.0f;
 		uint32_t texel[4];
-		float w[4];
+		float w[4], foam[4] = {};
 		t->Corners(u, v, texel, w);
-		const float froth = (((texel[0] >> 8) & 0xff) * w[0] + ((texel[1] >> 8) & 0xff) * w[1]
-			+ ((texel[2] >> 8) & 0xff) * w[2] + ((texel[3] >> 8) & 0xff) * w[3]) * (1.0f / 255.0f);
-		if (froth <= 0.004f)
+		for (int k = 0; k < 4; k++)
+			for (int c = 0; c < 4; c++)
+				foam[c] += (float)((texel[k] >> (c * 8)) & 0xff) * w[k];
+		const float cover = foam[0] * (1.0f / 255.0f);
+		age = foam[1] * (1.0f / 255.0f);
+		if (cover <= 0.004f)
 			return 0.0f;
-		return std::min(std::max((froth * 1.2f - 0.6f * Lumps(p.x * 0.19f, p.y * 0.19f) - 0.4f * Lumps(p.x * 0.83f, p.y * 0.83f)) * 5.0f, 0.0f), 1.0f);
+		const float fx = foam[2] - 128.0f, fy = foam[3] - 128.0f;
+		float pattern;
+		if (fx * fx + fy * fy > 4.0f)
+		{
+			// The liquid carries it along. The pattern is drawn twice, each
+			// sliding with the liquid for a while before it starts again,
+			// and one fades in as the other fades out.
+			float phase = time * (1.0f / slide);
+			phase -= std::floor(phase);
+			const float other = phase < 0.5f ? phase + 0.5f : phase - 0.5f;
+			const float a = FrothPattern(p.x - fx * (slide * (other - 0.5f)), p.y - fy * (slide * (other - 0.5f)));
+			const float b = FrothPattern(p.x - fx * (slide * (phase - 0.5f)), p.y - fy * (slide * (phase - 0.5f)));
+			const float share = 1.0f - std::fabs(2.0f * phase - 1.0f);
+			pattern = a * (1.0f - share) + b * share;
+		}
+		else
+			pattern = FrothPattern(p.x, p.y);
+		return std::min(std::max((pattern - 1.0f + cover * (1.3f - 0.45f * age)) * 3.0f, 0.0f), 1.0f) * 0.9f;
 	}
 
 	// how much the waves brighten light passing through the surface at p

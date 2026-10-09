@@ -46,7 +46,7 @@ typedef struct
 	float		absorb[3];
 	int			parent;				// the body this one turned out to be part of, or itself
 	pt_water_t	*sim;				// only bodies that are their own parent have one
-	int			wave_texture, caustic_texture;		// backend handles, -1 = none
+	int			wave_texture, caustic_texture, foam_texture;		// backend handles, -1 = none
 } waterbody_t;
 
 // the shape of the liquid, kept until the simulations are made
@@ -103,6 +103,8 @@ void R_WaterReset (void)
 			rpt.backend->texture_destroy (rpt.backend, w_bodies[i].wave_texture);
 		if (rpt.backend && w_bodies[i].caustic_texture >= 0)
 			rpt.backend->texture_destroy (rpt.backend, w_bodies[i].caustic_texture);
+		if (rpt.backend && w_bodies[i].foam_texture >= 0)
+			rpt.backend->texture_destroy (rpt.backend, w_bodies[i].foam_texture);
 	}
 	memset (w_bodies, 0, sizeof(w_bodies));
 	w_numbodies = 0;
@@ -292,7 +294,7 @@ int R_WaterBody (image_t *image, const char *name, float z, float points[][3], i
 	b->parent = w_numbodies;
 	b->lava = strstr (name, "lava") != NULL;
 	b->clear = !b->lava && !strstr (name, "slime");
-	b->wave_texture = b->caustic_texture = -1;
+	b->wave_texture = b->caustic_texture = b->foam_texture = -1;
 	R_WaterAbsorb (image, name, b->absorb);
 	return w_numbodies++;
 }
@@ -434,6 +436,10 @@ void R_WaterFinish (void)
 		b->wave_texture = rpt.backend->texture_create (rpt.backend, &tex);
 		tex.pixels = pt_water_caustics (b->sim, b->lava ? 0 : r_watercaustics);
 		b->caustic_texture = rpt.backend->texture_create (rpt.backend, &tex);
+		// lava does not froth
+		tex.pixels = b->lava ? NULL : pt_water_foam (b->sim);
+		if (tex.pixels)
+			b->foam_texture = rpt.backend->texture_create (rpt.backend, &tex);
 	}
 
 	// every part of a body shows the one simulation
@@ -447,6 +453,7 @@ void R_WaterFinish (void)
 			mat = R_WorldMaterialPtr (b->materials[k]);
 			mat->wave_map = root->wave_texture + 1;
 			mat->caustic_map = root->caustic_texture + 1;
+			mat->foam_map = root->foam_texture + 1;
 			mat->wave_rect[0] = root->mins[0];
 			mat->wave_rect[1] = root->mins[1];
 			mat->wave_rect[2] = 1.0f / (pt_water_width (root->sim) * pt_water_cell (root->sim));
@@ -508,7 +515,7 @@ void R_WaterFrame (refdef_t *fd)
 		if (!b->sim)
 			continue;
 
-		pt_water_foaming (b->sim, b->lava ? 0 : r_waterfoam, FOAM_LIFE);
+		pt_water_foaming (b->sim, b->lava ? 0 : r_waterfoam, FOAM_LIFE, r_watershore);
 
 		if (dt > 0)
 		{
@@ -605,6 +612,8 @@ void R_WaterFrame (refdef_t *fd)
 			r_waterreach = pt_water_reach (b->sim);
 		rpt.backend->texture_update (rpt.backend, b->caustic_texture,
 			pt_water_caustics (b->sim, b->lava ? 0 : r_watercaustics));
+		if (b->foam_texture >= 0)
+			rpt.backend->texture_update (rpt.backend, b->foam_texture, pt_water_foam (b->sim));
 	}
 
 	// the spray in the air rises, falls and is gone where it lands, leaving a ring

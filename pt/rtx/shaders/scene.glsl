@@ -75,7 +75,8 @@ struct Material
 	int		wave_map;			// slots, or -1
 	int		caustic_map;
 	uint	bits;
-	uint	pad0, pad1, pad2;
+	int		foam_map;
+	uint	pad0, pad1;
 };
 
 struct Light
@@ -697,6 +698,7 @@ struct Surface
 	float	alpha;		// GGX width, roughness squared
 	bool	light_sampled_spec;
 	bool	medium;		// not a surface at all but a point in the air: no facing, scatters evenly
+	float	froth;		// how much of a liquid's surface froth covers here; it is in colour and mat.alpha already
 	Material mat;		// after animation
 };
 
@@ -712,15 +714,63 @@ float Lumps(vec2 p)
 	return mix(mix(c00, c10, a.x), mix(c01, c11, a.x), a.y) * (1.0 / 16777216.0);
 }
 
-// How thick the froth on a liquid lies at p, 0 for none to 1, where froth of
-// it covers the surface thereabouts: it lies in clumps and strings, which
-// close up as it thickens. Scene::Froth in pt/cpu/pt_world.h is the same and
-// is to be kept so.
-float Froth(vec2 p, float froth)
+// Bubbles packed together, about one unit across: 1 on the walls between
+// them, falling to 0 in their middles
+float Bubbles(vec2 p)
 {
-	if (froth <= 0.004)
+	const vec2 cell = floor(p);
+	const vec2 f = p - cell;
+	const ivec2 c = ivec2(cell);
+	float d1 = 8.0, d2 = 8.0;
+	for (int j = -1; j <= 1; j++)
+	{
+		for (int i = -1; i <= 1; i++)
+		{
+			const uint h = Hash(uint(c.x + i), uint(c.y + j));
+			const vec2 o = vec2(float(i) + float(h & 0xffffu) * (1.0 / 65535.0), float(j) + float(h >> 16) * (1.0 / 65535.0)) - f;
+			const float d = dot(o, o);
+			if (d < d1)
+			{
+				d2 = d1;
+				d1 = d;
+			}
+			else if (d < d2)
+				d2 = d;
+		}
+	}
+	return 1.0 - clamp((sqrt(d2) - sqrt(d1)) * 2.2, 0.0, 1.0);
+}
+
+// froth's own shape: large bubbles and small, most where their walls meet
+float FrothPattern(vec2 p)
+{
+	return 0.6 * Bubbles(p * 0.11) + 0.4 * Bubbles(p * 0.37);
+}
+
+const float FROTH_SLIDE = 1.6;	// seconds the pattern rides on the liquid before it starts again
+
+// How much of a liquid's surface at p froth covers, 0 to 0.9, given what its
+// foam picture says there. Thick and fresh it lies closed; thinner or older
+// it opens into rings and strings along the walls of its bubbles. Froth in
+// pt/cpu/pt_trace.cpp is the same and is to be kept so.
+float Froth(vec2 p, vec4 foam)
+{
+	if (foam.r <= 0.004)
 		return 0.0;
-	return clamp((froth * 1.2 - 0.6 * Lumps(p * 0.19) - 0.4 * Lumps(p * 0.83)) * 5.0, 0.0, 1.0);
+	const vec2 flow = foam.ba * 255.0 - 128.0;
+	float pattern;
+	if (dot(flow, flow) > 4.0)
+	{
+		// The liquid carries it along. The pattern is drawn twice, each
+		// sliding with the liquid for a while before it starts again, and
+		// one fades in as the other fades out.
+		const float phase = fract(fr.sky_misc.w * (1.0 / FROTH_SLIDE));
+		pattern = mix(FrothPattern(p - flow * (FROTH_SLIDE * (fract(phase + 0.5) - 0.5))),
+			FrothPattern(p - flow * (FROTH_SLIDE * (phase - 0.5))), 1.0 - abs(2.0 * phase - 1.0));
+	}
+	else
+		pattern = FrothPattern(p);
+	return clamp((pattern - 1.0 + foam.r * (1.3 - 0.45 * foam.g)) * 3.0, 0.0, 1.0) * 0.9;
 }
 
 // What a metal reflects, worked out from the colour it was painted
@@ -781,6 +831,7 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 
 	s.mat = mat;
 	s.medium = false;
+	s.froth = 0.0;
 	s.p = origin + dir * hit.t;
 	s.wo = -dir;
 	s.tri_n = len > 0.0 ? x / len : vec3(0.0, 0.0, 1.0);
@@ -871,24 +922,6 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 		}
 		// crests gather the light in the liquid and troughs spread it
 		s.colour *= clamp(1.0 + wave_height * 0.35, 0.6, 1.8);
-
-		// Froth is air and liquid so finely mixed that light is scattered
-		// every way before it gets through: white, matt and solid to the eye.
-		// Where it lies thin the dark of the liquid shows through it.
-		const float froth = mat.caustic_map < 0 ? 0.0
-			: Froth(s.p.xy, Texel(mat.caustic_map, (s.p.xy - mat.wave_rect.xy) * mat.wave_rect.zw, true).g);
-		if (froth > 0.0)
-		{
-			s.colour = mix(s.colour, vec3(1.0), 0.8) * ((0.1 + 0.4 * froth) * (0.65 + 0.35 * Lumps(s.p.xy * 2.3)));
-			s.glow = vec3(0.0);
-			s.roughness = 1.0;
-			metallic = 0.0;
-			s.mat.alpha = 1.0;
-			s.mat.flags &= ~(MAT_EMIT_BRIGHT | MAT_BLACK);
-			s.mat.bits &= ~BIT_EMISSIVE;
-			s.mat.emission = vec4(0.0);
-			s.mat.emission_per_texel.rgb = vec3(0.0);
-		}
 	}
 	else if ((mat.flags & MAT_WAVES) != 0u && wave_strength > 0.0)
 	{
@@ -947,6 +980,35 @@ void MakeSurface(Hit hit, Material base, vec3 origin, vec3 dir, bool smooth_it, 
 	}
 	s.alpha = max(s.roughness * s.roughness, MIN_ALPHA);
 	s.light_sampled_spec = s.roughness >= LIGHT_SAMPLED_ROUGHNESS;
+}
+
+// Froth on a simulated liquid, for the eye's own rays, which alone see it.
+// It is air and liquid finely mixed, which scatters light every way: a pale
+// matt layer over the liquid, which still shows through where the layer is
+// thin and still shines a little where it is not. Bubbles do not lie flat.
+void AddFroth(inout Surface s)
+{
+	if (s.mat.foam_map < 0 || s.mat.wave_map < 0 || fr.settings_f.z <= 0.0)
+		return;
+	const vec4 foam = Texel(s.mat.foam_map, (s.p.xy - s.mat.wave_rect.xy) * s.mat.wave_rect.zw, true);
+	const float froth = Froth(s.p.xy, foam);
+	if (froth <= 0.0)
+		return;
+
+	const vec3 pale = mix(s.colour, vec3(1.0), 0.6) * ((0.55 - 0.2 * foam.g) * (0.7 + 0.3 * Lumps(s.p.xy * 2.3)));
+	const float both = s.mat.alpha + froth - s.mat.alpha * froth;
+	s.colour = (s.colour * (s.mat.alpha * (1.0 - froth)) + pale * froth) / both;
+	s.kd = s.colour * (1.0 - s.metallic);
+	s.froth = froth;
+	s.mat.alpha = both;
+	const vec3 n = normalize(s.n + vec3(Lumps(s.p.xy * 1.9) - 0.5, Lumps(s.p.yx * 1.9 + 31.7) - 0.5, 0.0) * (0.5 * froth));
+	if (dot(n, s.wo) >= 0.02 && dot(n, s.ng) > 0.0)
+		s.n = n;
+	s.glow = vec3(0.0);
+	s.mat.flags &= ~(MAT_EMIT_BRIGHT | MAT_BLACK);
+	s.mat.bits &= ~BIT_EMISSIVE;
+	s.mat.emission = vec4(0.0);
+	s.mat.emission_per_texel.rgb = vec3(0.0);
 }
 
 // what the surface gives off; seen is for the eye looking straight at it
@@ -1499,6 +1561,7 @@ vec3 DirectMedium(vec3 p)
 {
 	Surface s;
 	s.medium = true;
+	s.froth = 0.0;
 	s.p = p;
 	s.ng = vec3(0.0, 0.0, 1.0);
 	s.n = s.ng;

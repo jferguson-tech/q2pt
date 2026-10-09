@@ -33,7 +33,8 @@ struct Surface
 	float			alpha;		// GGX width, roughness squared
 	bool			light_sampled_spec;
 	bool			medium;		// not a surface at all but a point in the air: no facing, scatters evenly
-	bool			foam = false;	// froth on a liquid: solid and matt, whatever the material is
+	float			foam = 0.0f;	// how much of a liquid's surface froth covers here; it is in colour and cover already
+	float			cover = 1.0f;	// how much of what is behind it the surface hides: the material's alpha, and the froth's
 
 	// how much the specular lobe reflects in total towards wo, roughly
 	Vec3 SpecularAlbedo() const;
@@ -71,7 +72,8 @@ bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &
 
 // smooth: filter the textures, for surfaces the eye sees directly. Further
 // along a path the nearest texel is as good and cheaper.
-void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth = false);
+// froth: whether to look for it on a simulated liquid, as only the eye's own rays do
+void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth = false, bool froth = false);
 // in this view mode the material is solid whatever its alpha says. Clay: all
 // that is solid, and liquids. The white furnace: everything.
 bool ViewSolid(int mode, const Material &mat);

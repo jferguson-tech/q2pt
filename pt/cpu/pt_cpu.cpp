@@ -615,7 +615,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 			sky_depth = travelled + hit.t;
 			break;
 		}
-		MakeSurface(sc, *tri, hit, ray, surf, sc.filter_textures);
+		MakeSurface(sc, *tri, hit, ray, surf, sc.filter_textures, !view_mode);
 		const Material &mat = *surf.mat;
 		tint *= Fade(absorb, hit.t - entered);
 		entered = hit.t;
@@ -636,7 +636,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 				return;
 			}
 		}
-		if (mat.alpha >= 1.0f || surf.foam || layer >= 8 || (view_mode && ViewSolid(view_mode, mat)))
+		if (mat.alpha >= 1.0f || layer >= 8 || (view_mode && ViewSolid(view_mode, mat)))
 		{
 			solid = true;
 			break;
@@ -653,7 +653,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 		// Glass and water are clear materials with a tint painted on. The
 		// boundary reflects some of the light, more at a glancing angle, and
 		// lets the rest in; water bends it on the way.
-		bool bent = false;
+		bool bent = false, shut = false;
 		if (!(mat.flags & PT_MAT_BLACK) && surf.roughness < kLightSampledRoughness)
 		{
 			const bool liquid = (mat.flags & PT_MAT_WAVES) != 0 && sc.refraction;
@@ -677,19 +677,38 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 			// with reflections off the light simply all goes through
 			if (sc.reflections < 1 && fresnel < 1.0f)
 				fresnel = 0.0f;
-			if (fresnel > 0.0f)
+			// froth is wet and shines, but less than the liquid under it
+			const float shine = fresnel * (1.0f - 0.75f * surf.foam);
+			shut = fresnel >= 1.0f;
+			// Froth is matt, and lit by the room as well as by its lamps.
+			// Half the rays that would have gone to look for what the
+			// surface mirrors go to look for that light instead; from under
+			// the liquid it is the light above that comes through.
+			const bool scatter = surf.foam > 0.0f && rng.Float() < 0.5f;
+			const float chosen = surf.foam > 0.0f ? 0.5f : 1.0f;
+			if (shine > 0.0f || scatter)
 			{
 				Ray mirror;
-				mirror.o = surf.p + surf.ng * kRayOffset;
+				float side = 1.0f;
 				mirror.d = surf.n * (2.0f * Dot(surf.n, surf.wo)) - surf.wo;
 				if (Dot(mirror.d, surf.ng) < 0.0f)
 					mirror.d = mirror.d - surf.ng * (2.0f * Dot(mirror.d, surf.ng));
+				if (scatter)
+				{
+					side = tri->n.z < -0.5f ? -1.0f : 1.0f;
+					mirror.d = SampleDiffuse(surf, rng) * side;
+				}
+				mirror.o = surf.p + surf.ng * (side * kRayOffset);
 				mirror.tmin = 0.0f;
 				mirror.tmax = FLT_MAX;
 
 				float reached = 0.0f;
-				const float weight = through * fresnel;
-				front_mirror += ClampSample(Radiance(sc, mirror, rng, false, true, 1, sc.reflection_bounces, &reached), sc.max_sample) * weight;
+				const float weight = scatter ? 0.0f : through * shine;
+				const Vec3 found = ClampSample(Radiance(sc, mirror, rng, false, !scatter, 1, sc.reflection_bounces, &reached), sc.max_sample);
+				if (scatter)
+					front_mirror += found * surf.kd * (through * (1.0f - shine) * (shut ? 1.0f : surf.cover) / chosen);
+				else
+					front_mirror += found * (weight / chosen);
 
 				// A reflection appears to sit behind the glass, as far again
 				// as the thing reflected is in front. That is where to look
@@ -700,7 +719,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 					px.over_pos[i] = cam.origin + eye_dir * (travelled + hit.t + std::min(reached, 100000.0f));
 				}
 			}
-			through *= 1.0f - fresnel;
+			through *= 1.0f - shine;
 
 			// going in, the liquid starts soaking up light; coming out, it stops
 			if (mat.flags & PT_MAT_WAVES)
@@ -721,7 +740,16 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 		}
 
 		// the painted tint: covers its share of what is behind and shows lit itself
-		const float share = through * mat.alpha;
+		// where the liquid lets nothing out, froth has all that it does not mirror
+		const float cover = shut && surf.foam > 0.0f ? 1.0f : surf.cover;
+		const float share = through * cover;
+		if (surf.foam > 0.0f && tri->n.z < -0.5f)
+		{
+			// froth seen from under the liquid: what lights it is above,
+			// and comes through it
+			surf.n = -surf.n;
+			surf.ng = -surf.ng;
+		}
 		if (mat.emissive && surf.front)
 			front_add += Emitted(surf, true) * share;
 		if (share > 0.0f && MaxComponent(surf.kd) > 0.0f)
@@ -729,7 +757,7 @@ void TracePixel(CpuBackend *s, const Scene &sc, const Camera &frame_cam, float j
 			const Lit world = DirectWorld(sc, surf, rng, true), frame = DirectFrameOne(sc, surf, rng);
 			front_diffuse += surf.kd * (world.diffuse + frame.diffuse) * (kInvPi * share);
 		}
-		through *= 1.0f - mat.alpha;
+		through *= 1.0f - cover;
 		if (!bent)
 			ray.tmin = hit.t + 0.01f;
 	}
