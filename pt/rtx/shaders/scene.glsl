@@ -181,10 +181,12 @@ layout(set = 0, binding = 31, rgba32f) uniform image2D img_over;		// xyz: the sa
 // further. The mean and the mean square of the luminance, the frame's and the
 // last one's, in turn, like img_kept.
 layout(set = 0, binding = 32, rg32f) uniform image2D img_moments[6];
+// how much the frame's lights put on the pixel, see FrameLightLevel, by parity
+layout(set = 0, binding = 33, r32f) uniform image2D img_flash[2];
 // Where the light has changed, in blocks of 8 pixels: [0] to [2] each
 // channel's sums over a block, [3].x how far what was gathered there is to
 // be let go, 0 to 1, and .y how far apart the sums were. See change.comp.
-layout(set = 0, binding = 33, rgba32f) uniform image2D img_change[4];
+layout(set = 0, binding = 34, rgba32f) uniform image2D img_change[4];
 
 // how far what was gathered at a pixel is to be let go: the blocks' values,
 // smoothly from one block to the next
@@ -1423,6 +1425,32 @@ Lit DirectFrameAll(Surface s)
 		}
 	}
 	return sum;
+}
+
+// How much the frame's lights, which come and go, put on the pixel: what
+// the point lights put on the surface, which was lit exactly, what the
+// balls would put on it with nothing in the way, and what all of them light
+// the air in front of it by with nothing in the way, along the view ray to
+// reach. There is no noise in it, so from frame to frame it says where light
+// has changed, and by how much of the whole, which the gathered light
+// cannot say of itself.
+float FrameLightLevel(Surface s, vec3 flash_light, vec3 eye, vec3 dir, float reach, float fog)
+{
+	float level = Luminance(flash_light);
+	for (int i = 0; i < fr.counts.y; i++)
+	{
+		const Light l = frame_lights.l[i];
+		if (l.radius > 0.0)
+			level += Importance(s, PointLight(s, l));
+		if (fog > 0.0)
+		{
+			const vec3 d = l.origin - eye;
+			const float t0 = dot(d, dir);
+			const float h = max(sqrt(max(dot(d, d) - t0 * t0, 0.0)), 1.0);
+			level += Luminance(l.emission) * fog * (0.25 * INV_PI) * (atan((reach - t0) / h) + atan(t0 / h)) / h;
+		}
+	}
+	return level;
 }
 
 // light on a point in the air, from all round

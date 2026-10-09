@@ -144,7 +144,10 @@ under *Offline demo rendering*.
 Its denoiser works as the CPU renderer's does: how far a pixel is smoothed
 follows from the noise measured in it, gathered over frames beside the light,
 not from how long it has been in view, and a pixel whose noise has settled is
-left as it is.
+left as it is. Light that comes and goes, a muzzle flash, an explosion, a
+bolt flying past, does not trail: what the frame's lights put on a pixel is
+known exactly, and where that changes from one frame to the next the
+gathered light starts afresh to the same degree, in both renderers.
 
 Like the CPU renderer it can trace a smaller picture than the window and
 build the full size one from it over a few frames (`pt_scale`). The same
@@ -265,7 +268,7 @@ Some console commands and variables:
 | `pt_react` | RTX: how readily light gathered over frames is let go where the lighting is found to have changed, so that it does not trail behind a light that moves, flashes or goes out: `0` = never (the default), `1` = at once. Such places are noisier for a few frames; `pt_debug 13` shows where it acts |
 | `pt_fog_history`, `pt_fog_samples` | the light in the air: how many frames of it are kept while things change (6; the rest of the lighting keeps `pt_history`, 8), and at how many points along each view ray it is looked for every frame (2). The air has no surface to be followed by, so its light trails what moves: fewer frames trail less and are noisier, more points are less noisy and cost a shadow ray each |
 | `pt_bloom_max` | the most that anything adds to the glow, in times white over white (4): up to half of it a bright thing adds all it has, then less and less, so that a lamp hundreds of times white glows like a strong lamp and does not drown the picture. `0` = no limit |
-| `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time. `pt_history` is how many frames of lighting are blended while things change (8): more is smoother, and leaves light behind what moves for longer |
+| `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time. `pt_history` is how many frames of lighting are blended while things change (8): more is smoother, and leaves light behind what moves for longer. A flash or an explosion is not held back by it: where the light the frame's lights put on a pixel changes by a quarter of its whole light or more, its history starts afresh, and by less, it is cut back in proportion |
 | `pt_reflection_history 0`-`1` | what mirrors and glass show is followed from frame to frame where it appears to be, behind the surface, rather than where the surface is; on unless set, for comparison |
 | `pt_filter 0`-`2`, `pt_filter_cycle` (**F7**) | the picture as the paths alone make it, noise and all: `0` every frame on its own, `1` the same but frames add up while you stand still, `2` (the default) blended over time and filtered |
 | `pt_view 0`-`13`, `pt_view_cycle` (number pad **+**, and **-** to step back) | the scene drawn some other way than as it is, for checking the renderer and for pictures; each means the same in both path tracers. The keys and the menu's row step through all of them but `3`, which is typed in the console. Not kept in the config; offline rendering and screenshots honour it, and changing it starts the picture afresh |

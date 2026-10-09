@@ -174,7 +174,7 @@ const uint32_t kBitEmissive = 1, kBitSampled = 2, kBitSwell = 4;	// GpuMaterial:
 const uint32_t kNumInstances = 5;
 const uint32_t kMaskScene = 1, kMaskHeld = 2;
 const int kNumStyles = 256;							// light styles, at the start of the tables
-const uint32_t kNumBindings = 34;
+const uint32_t kNumBindings = 35;
 
 // The pictures kept per pixel between the passes, in the order the shaders'
 // bindings take them; see scene.glsl.
@@ -195,8 +195,9 @@ enum
 	kMirror = 28,	// 2
 	kOver = 30,
 	kMoments = 31,	// 6
-	kChange = 37,	// 4
-	kNumTargets = 41
+	kFlash = 37,	// 2
+	kChange = 39,	// 4
+	kNumTargets = 43
 };
 
 const uint32_t kMaxTextures = 4096;
@@ -1539,10 +1540,11 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 		// light is lost: so these are kept at full precision.
 		const bool gathered = i >= kKept && i < kKept + 6;
 		const bool moments = i >= kMoments && i < kMoments + 6;
+		const bool flash = i >= kFlash && i < kFlash + 2;
 		// one value for each block of 8 by 8 pixels
 		const bool blocks = i >= kChange && i < kChange + 4;
 		const VkFormat format = (positions || gathered || blocks) ? VK_FORMAT_R32G32B32A32_SFLOAT
-			: moments ? VK_FORMAT_R32G32_SFLOAT
+			: moments ? VK_FORMAT_R32G32_SFLOAT : flash ? VK_FORMAT_R32_SFLOAT
 			: (i == kPicture ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R16G16B16A16_SFLOAT);
 
 		VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -1588,7 +1590,8 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 		{17, kSurface, 2}, {18, kSeen, 1}, {19, kAlbedo, 2}, {20, kNoisy, 3},
 		{21, kExtra, 1}, {22, kKept, 6}, {23, kFilter, 6}, {24, kPicture, 1},
 		{26, kHdr, 1}, {27, kBloom, 2}, {28, kSteady, 2}, {29, kGraded, 1},
-		{30, kMirror, 2}, {31, kOver, 1}, {32, kMoments, 6}, {33, kChange, 4},
+		{30, kMirror, 2}, {31, kOver, 1}, {32, kMoments, 6}, {33, kFlash, 2},
+		{34, kChange, 4},
 	};
 	VkDescriptorImageInfo info[kNumTargets];
 	for (const auto &g : groups)
@@ -1668,7 +1671,8 @@ void CreateScene(RtxBackend *s)
 	bind[28].descriptorCount = 2;
 	bind[30].descriptorCount = 2;
 	bind[32].descriptorCount = 6;
-	bind[33].descriptorCount = 4;
+	bind[33].descriptorCount = 2;
+	bind[34].descriptorCount = 4;
 
 	VkDescriptorSetLayoutCreateInfo dlci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
 	dlci.bindingCount = kNumBindings;
