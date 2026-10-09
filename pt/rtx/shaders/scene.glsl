@@ -14,6 +14,7 @@ const uint MAT_CAMERA_INVISIBLE = 8u;
 const uint MAT_BLACK = 16u;
 const uint MAT_WAVES = 32u;
 const uint MAT_EMIT_BRIGHT = 64u;
+const uint MAT_EMIT_MAPPED = 4096u;
 const uint MAT_WARP = 128u;
 const uint MAT_METAL_TEXTURE = 512u;
 const uint MAT_METAL_PAINTED = 1024u;
@@ -1038,7 +1039,12 @@ vec3 Emitted(Surface s, bool seen)
 {
 	const Material m = s.mat;
 	if (m.emission_map >= 0)
-		return m.emission.rgb * s.glow;
+	{
+		if ((m.flags & MAT_EMIT_MAPPED) == 0u)
+			return m.emission.rgb * s.glow;
+		// the material's own light, from where the map says it comes
+		return (seen && m.emission.a > 0.0) ? s.glow * m.emission.a : m.emission_per_texel.rgb * s.glow;
+	}
 	if ((m.flags & MAT_EMIT_BRIGHT) != 0u)
 	{
 		// the lit parts of a screen or a button: bright texels glow, dark ones do not

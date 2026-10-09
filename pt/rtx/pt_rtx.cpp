@@ -1445,8 +1445,11 @@ void SetMaterial(const RtxBackend *s, GpuMaterial &dest, const pt_material_t &in
 		// the texture's own colour is taken out, so that a light gives off
 		// what the map says it does whatever its picture
 		out.emission_per_texel[i] = in.emission[i];
-		if (out.texture >= 0 && !(in.flags & PT_MAT_EMIT_TEXTURE))
-			out.emission_per_texel[i] = in.emission[i] / s->textures[out.texture].average[i];
+		// where a map says which part of the surface the light comes from, the
+		// light is shared out over that part and not over the whole picture
+		const int32_t shared = (out.emission_map >= 0 && (in.flags & PT_MAT_EMIT_MAPPED)) ? out.emission_map : out.texture;
+		if (shared >= 0 && !(in.flags & PT_MAT_EMIT_TEXTURE))
+			out.emission_per_texel[i] = in.emission[i] / s->textures[shared].average[i];
 		out.absorb[i] = in.absorb[i];
 	}
 	out.emission[3] = in.emission_seen;
@@ -1458,7 +1461,7 @@ void SetMaterial(const RtxBackend *s, GpuMaterial &dest, const pt_material_t &in
 	if (emissive)
 		out.bits |= kBitEmissive;
 	// glowing detail is too dim and too patchy to be worth sampling as a light
-	if (emissive && !(in.flags & PT_MAT_EMIT_BRIGHT) && out.emission_map < 0)
+	if (emissive && !(in.flags & PT_MAT_EMIT_BRIGHT) && (out.emission_map < 0 || (in.flags & PT_MAT_EMIT_MAPPED)))
 		out.bits |= kBitSampled;
 	dest = out;
 }

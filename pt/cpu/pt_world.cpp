@@ -56,9 +56,12 @@ void Material::Set(const pt_material_t &src, const Texture *tex, const Texture *
 	flags = src.flags;
 	emissive = MaxComponent(emission) > 0.0f && !(flags & PT_MAT_SKY);
 	emission_per_texel = emission;
-	if (texture && !(flags & PT_MAT_EMIT_TEXTURE))
+	// where a map says which part of the surface the light comes from, the
+	// light is shared out over that part and not over the whole picture
+	const Texture *shared = (emission_map && (flags & PT_MAT_EMIT_MAPPED)) ? emission_map : texture;
+	if (shared && !(flags & PT_MAT_EMIT_TEXTURE))
 	{
-		const Vec3 avg = texture->average;
+		const Vec3 avg = shared->average;
 		emission_per_texel = Vec3(emission.x / avg.x, emission.y / avg.y, emission.z / avg.z);
 	}
 }
@@ -350,7 +353,7 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 		m.Set(in->materials[i], texture(in->materials[i].texture), texture(in->materials[i].normal_texture),
 			texture(in->materials[i].emission_texture - 1));
 		// glowing detail is too dim and too patchy to be worth sampling as a light
-		m.sampled = m.emissive && !(m.flags & PT_MAT_EMIT_BRIGHT) && !m.emission_map;
+		m.sampled = m.emissive && !(m.flags & PT_MAT_EMIT_BRIGHT) && (!m.emission_map || (m.flags & PT_MAT_EMIT_MAPPED));
 		if (m.flags & PT_MAT_WAVES)
 			w->has_waves = true;
 	}

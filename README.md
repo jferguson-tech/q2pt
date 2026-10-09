@@ -41,8 +41,13 @@ a second.*
   small part of what steel reflects, so metal reflects more than it was
   painted, in its own hue; `pt_metal_colour` says how much. The painted
   light, once read, is taken out of the texture's colours, where it would
-  otherwise light each raised edge a second time. The maps are twice as fine
-  as the textures. They are
+  otherwise light each raised edge a second time. A lamp gives off its light
+  and its frame does not: where a map makes a texture a light, or its name
+  says it is a lamp, a screen or a sign, the part of the picture that is lit
+  is told from the rest by how far it stands out from it. All of a light's
+  light comes from there, and its frame and rivets are lit by the room like
+  any wall; a sign whose picture shows it switched off does not glow. The
+  maps are twice as fine as the textures. They are
   kept in `baseq2\pt_cache`, about 110 KB a texture, which can be deleted at
   any time; nothing made from the game's art is part of this repository.
   **F11** switches between these maps and the plain ones made before them.
@@ -303,12 +308,12 @@ Some console commands and variables:
 | `pt_simd 0`-`1` | CPU renderer: the build for AVX2 where the processor has it, or the one for any processor, to compare the two |
 | `pt_debug 1`-`13` | one part of the picture on its own; `12` is the noise the filter measured in the diffuse light, as it stands after filtering (the standard deviation, times 4) |
 | `pt_bump`, `pt_roughness`, `pt_metallic` | scale how deep, how rough and how metallic every surface is taken to be; 1 unless set. Below 1, `pt_metallic` makes what is metal less than metal |
-| `pt_material_maps 0`-`1`, `pt_material_toggle` (**F11**) | normal, roughness and metal maps read from each texture's painted light and colours (`1`, the default), or the plain ones of before, which take brightness for height and give the whole of a texture one number for metal: half for what its name says is metal, less for what the name says nothing of. The key switches between the two while playing; the level's surfaces are made again, which takes a moment |
+| `pt_material_maps 0`-`1`, `pt_material_toggle` (**F11**) | normal, roughness and metal maps read from each texture's painted light and colours, and the lit part of a lamp or a screen told from its frame (`1`, the default), or things as they were before: plain maps, which take brightness for height and give the whole of a texture one number for metal (half for what its name says is metal, less for what the name says nothing of), a light of the map's that gives off its light all over, frame and all, and a screen that glows wherever it is bright. The key switches between the two while playing; the level's surfaces are made again, which takes a moment |
 | `pt_metal_edge` | how many texels of a texture the edge between its metal and the rest is dithered over: `3` unless set, `0` for a hard edge. Every texel is metal or not whatever this is; a wider edge only scatters them further. The maps are made again when it changes |
 | `pt_metal_colour` | how much of the light metal reflects where it was read from a picture: what a metal painted as dark as the game's steel reflects, `0.05` unless set. Brighter painted metal reflects more, none less than it was painted, and the hue is kept. Steel reflects ten times that, but the game's art is that much darker than the things it shows all over, and at `0.5` metal is white beside everything else. `0` leaves metal the colour it was painted, which is next to black. Takes effect at once |
 | `pt_material_delight 0`-`1` | how much of the light painted into a wall texture is taken out of its colours once it has been read as shape: `1` (the default) is all that was read, `0` leaves the colours as they are. Screens and lamps keep theirs |
 | `pt_material_cache 0`-`1` | keep the maps that were made in `baseq2\pt_cache`, so that a texture is read once only; on by default |
-| `pt_material_show <image>` | write a texture beside what was read from it, as a PNG in `baseq2\scrnshot`: its colours without the painted light, its height, normals, roughness, metal, and what it reflects head on. For example `pt_material_show textures/e1u1/metal1_1` or `pt_material_show models/monsters/soldier/skin` |
+| `pt_material_show <image>` | write a texture beside what was read from it, as a PNG in `baseq2\scrnshot`: its colours without the painted light, its height, normals, roughness, metal, what it reflects head on, and the part of it that is lit, which is used where the texture is a lamp or a screen. For example `pt_material_show textures/e1u1/metal1_1` or `pt_material_show models/monsters/soldier/skin` |
 | `throwlight [colour]` (**F**), `throwlight clear` | throw a ball of light: `warm`, `white`, `red`, `orange`, `yellow`, `green`, `cyan`, `blue` or `purple`, or the next of them in turn if none is named; `clear` takes back the ones you threw |
 | `lightball_max`, `lightball_brightness` | how many balls there may be at once before the oldest goes (6 unless set, at most 24), and how bright the next one thrown is (300; a rocket's light is 200) |
 | `screenshot`, `pt_screenshot [paths]` | the frame as shown, or rendered again at high quality |
@@ -351,7 +356,8 @@ pt/         the path tracing core (MIT): knows nothing about Quake 2
   cpu/            CPU backend: BVH, path tracer, denoiser, output
   rtx/            Vulkan backend: the same tracer as compute shaders
   water/          shallow water simulation
-  material/       normal, roughness and metal maps from a texture's colours
+  material/       normal, roughness and metal maps from a texture's colours,
+                  and the lit part of a lamp's picture
   png/            PNG writer
 ref_pt/     the renderer DLLs (GPL): turns Quake 2's maps, models and
             per-frame scene into what pt.h asks for
