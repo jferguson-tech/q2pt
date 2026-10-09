@@ -385,11 +385,14 @@ void main()
 	vec3 sum_d = vec3(0.0), sum_s = vec3(0.0);
 	vec2 moments_d = vec2(0.0), moments_s = vec2(0.0);	// the paths' luminance and its square, summed
 	float spec_reach = -1.0;		// how far the last specular path went before its first hit
+
+	const int NO_PATH = 0, ON_MATTE = 1, ON_SHINE = 2;
+	const vec3 from = surf.p + surf.ng * RAY_OFFSET;
 	for (int k = 0; k < paths; k++)
 	{
 		// The shine takes its share of the light first and the matte part
 		// has what is left, so the two together never reflect more than
-		// falls on them: see Radiance. The share is that of one way the
+		// falls on them: see PathGoOn. The share is that of one way the
 		// light could be mirrored, which is the way followed below.
 		vec3 mirrored, shine;
 		if (!has_specular || !SampleSpecular(surf, mirrored, shine))
@@ -402,8 +405,6 @@ void main()
 
 		if (bounces > 0 && indirect_on > 0.0)
 		{
-			const vec3 from = surf.p + surf.ng * RAY_OFFSET;
-			float reached;
 			// The reflection is followed only some of the time, and counts
 			// for more when it is. The matte part gives up as much as the
 			// reflection counts for, and nothing when it is not followed, so
@@ -411,20 +412,63 @@ void main()
 			// share, or the matte part would have to give up more than it has.
 			const float chance = spec_chance > 0.0 ? min(1.0, max(spec_chance, MaxComponent(shine))) : 0.0;
 			const bool follow = chance > 0.0 && Rand() < chance && MaxComponent(shine) > 0.0;
+			const vec3 kept = follow ? 1.0 - shine * (1.0 / chance) : vec3(1.0);
+
+			// A path off the matte part and then, if it is followed, one off
+			// the shine (see Radiance), in one loop: a step of whichever the
+			// pixel is on to a turn. The card runs the pixels of a tile in
+			// step, every one waiting while any other has work to do in a part
+			// of the shader. With a loop for each path they all waited out
+			// the longest of each, and most paths are short; here a pixel
+			// whose first path has ended is on its second while others are
+			// still on their first. What a pixel does, and the order it does
+			// it in, is as it was.
+			int stage = NO_PATH;
+			Path path;
+			rays_followed = 0;
 			if (has_diffuse)
 			{
-				const vec3 kept = follow ? 1.0 - shine * (1.0 / chance) : vec3(1.0);
-				rays_followed = 0;
-				d += kept * Radiance(from, SampleDiffuse(surf), false, 1, bounces, reached);
-				followed_d = rays_followed;
+				path = PathFrom(from, SampleDiffuse(surf), false, 1, bounces);
+				stage = ON_MATTE;
 			}
-			if (follow)
+			else if (follow)
 			{
-				rays_followed = 0;
-				sp += shine * Radiance(from, mirrored, !surf.light_sampled_spec, 1, fr.settings.w, reached)
-					/ spec_albedo * (1.0 / chance);
-				followed_s = rays_followed;
-				spec_reach = reached;
+				path = PathFrom(from, mirrored, !surf.light_sampled_spec, 1, fr.settings.w);
+				stage = ON_SHINE;
+			}
+			while (stage != NO_PATH)
+			{
+				Surface s;
+				bool shiny;
+				if (PathMeet(path, s, shiny))
+				{
+					vec3 its_mirrored, its_shine;
+					if (!shiny || !SampleSpecular(s, its_mirrored, its_shine))
+						its_shine = vec3(0.0);
+					const Lit world = DirectWorld(s, false), frame = DirectFrameOne(s);
+					PathGoOn(path, s, its_mirrored, its_shine, world, frame);
+				}
+				if (!path.ended)
+					continue;
+				if (stage == ON_MATTE)
+				{
+					d += kept * path.radiance;
+					followed_d = rays_followed;
+					stage = NO_PATH;
+					if (follow)
+					{
+						rays_followed = 0;
+						path = PathFrom(from, mirrored, !surf.light_sampled_spec, 1, fr.settings.w);
+						stage = ON_SHINE;
+					}
+				}
+				else
+				{
+					sp += shine * path.radiance / spec_albedo * (1.0 / chance);
+					followed_s = rays_followed;
+					spec_reach = path.reached;
+					stage = NO_PATH;
+				}
 			}
 		}
 		else if (furnace)

@@ -46,6 +46,8 @@ typedef struct
 	int			parent;				// the body this one turned out to be part of, or itself
 	pt_water_t	*sim;				// only bodies that are their own parent have one
 	int			wave_texture, caustic_texture;		// backend handles, -1 = none
+	const uint32_t	*waves, *caustics;	// its pictures as last made, for the next frame; NULL = not yet
+	float		reach;				// how far from level its waves stood in them
 } waterbody_t;
 
 // the shape of the liquid, kept until the simulations are made
@@ -67,6 +69,7 @@ static watertri_t	*w_tris;
 static int			w_numtris, w_maxtris;
 static float		w_lasttime;
 static vec3_t		w_lasteye;
+static float		w_dt;			// the time this frame covers, for R_WaterStep
 
 /*
 ===============
@@ -398,13 +401,25 @@ static qboolean W_Over (waterbody_t *b, const float *p)
 	return p[0] >= b->mins[0] && p[0] <= b->maxs[0] && p[1] >= b->mins[1] && p[1] <= b->maxs[1];
 }
 
+// a body's pictures, of its surface as it stands now
+static void W_Pictures (waterbody_t *b)
+{
+	b->waves = pt_water_waves (b->sim, r_waterwaves);
+	b->reach = pt_water_reach (b->sim);
+	b->caustics = pt_water_caustics (b->sim, b->lava ? 0 : r_watercaustics);
+}
+
 /*
 ===============
 R_WaterFrame
 
-Pokes each body where things touch its surface, steps it and hands the
-backend the new pictures. Called before the scene is built, while
-R_EntityMoved still has last frame to compare with.
+Hands the backend each body's pictures, and pokes it where things touch its
+surface. Called before the scene is built, while R_EntityMoved still has
+last frame to compare with.
+
+The pictures are those R_WaterStep made once the last frame had been sent
+to be traced: what is shown is the surface a frame behind what pokes it,
+which nobody can see, and stepping it costs the frame nothing.
 ===============
 */
 void R_WaterFrame (refdef_t *fd)
@@ -417,12 +432,14 @@ void R_WaterFrame (refdef_t *fd)
 	float		dt, speed, amount, moved, feet, d[2];
 	int			i, j, splashes;
 
+	w_dt = 0;
 	if (!w_numbodies)
 		return;
 
 	dt = fd->time - w_lasttime;
 	if (dt < 0 || dt > 0.25f)
 		dt = 0;		// a new map, a load or a long pause: nothing sensible to do
+	w_dt = dt;
 	VectorCopy (fd->vieworg, eye);
 	feet = eye[2] - 46;
 	r_waterreach = 0;
@@ -431,6 +448,13 @@ void R_WaterFrame (refdef_t *fd)
 	{
 		if (!b->sim)
 			continue;
+
+		if (!b->waves)
+			W_Pictures (b);		// a new map: as it lies
+		rpt.backend->texture_update (rpt.backend, b->wave_texture, b->waves);
+		if (b->reach > r_waterreach)
+			r_waterreach = b->reach;
+		rpt.backend->texture_update (rpt.backend, b->caustic_texture, b->caustics);
 
 		if (dt > 0)
 		{
@@ -489,20 +513,40 @@ void R_WaterFrame (refdef_t *fd)
 					b->mins[0] + (b->maxs[0] - b->mins[0]) * (rand () & 0x7fff) / 32767.0f,
 					b->mins[1] + (b->maxs[1] - b->mins[1]) * (rand () & 0x7fff) / 32767.0f,
 					10 + (rand () & 7), b->lava ? 0.5f : 0.25f);
-
-			// heavy liquids move slowly and settle fast
-			pt_water_step (b->sim, dt, b->lava ? LAVA_GRAVITY : WATER_GRAVITY, r_waterdamping * (b->lava ? 0.9f : 0.45f));
 		}
-
-		rpt.backend->texture_update (rpt.backend, b->wave_texture, pt_water_waves (b->sim, r_waterwaves));
-		if (pt_water_reach (b->sim) > r_waterreach)
-			r_waterreach = pt_water_reach (b->sim);
-		rpt.backend->texture_update (rpt.backend, b->caustic_texture,
-			pt_water_caustics (b->sim, b->lava ? 0 : r_watercaustics));
 	}
 
 	w_lasttime = fd->time;
 	VectorCopy (eye, w_lasteye);
+}
+
+/*
+===============
+R_WaterStep
+
+Moves each body on by the time the frame covers and makes its pictures, for
+the next frame to show. Called once the frame's view has been sent to be
+traced. A body of some size takes a couple of milliseconds, and the RTX
+renderer's card has nothing to do while the frame that follows is being put
+together: done at the start of the frame, as it was, that was a couple of
+milliseconds of every frame with the card idle. Here it is busy tracing.
+===============
+*/
+void R_WaterStep (void)
+{
+	waterbody_t	*b;
+	int			i;
+
+	for (i=0, b=w_bodies ; i<w_numbodies ; i++, b++)
+	{
+		if (!b->sim)
+			continue;
+		// heavy liquids move slowly and settle fast
+		if (w_dt > 0)
+			pt_water_step (b->sim, w_dt, b->lava ? LAVA_GRAVITY : WATER_GRAVITY, r_waterdamping * (b->lava ? 0.9f : 0.45f));
+		W_Pictures (b);
+	}
+	w_dt = 0;		// until there is another frame
 }
 
 /*

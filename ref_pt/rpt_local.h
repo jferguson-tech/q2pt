@@ -235,6 +235,7 @@ int		R_WaterBody (image_t *image, const char *name, float z, float points[][3], 
 void	R_WaterSetMaterial (int body, int material);
 void	R_WaterFinish (void);
 void	R_WaterFrame (refdef_t *fd);
+void	R_WaterStep (void);
 qboolean	R_WaterEyeUnder (const float *eye, float strength, qboolean under);
 void	R_WaterAround (const float *eye, float *absorb);
 pt_material_t *R_WorldMaterialPtr (int index);
