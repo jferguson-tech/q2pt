@@ -294,9 +294,12 @@ Some console commands and variables:
 | `pt_bounces`, `pt_samples`, `pt_light_samples` | path length, paths per pixel per frame (also a slider in the menu, 1 to 16), lights weighed per point |
 | `pt_reflections 0`-`2` | none, glass and water, every shiny surface |
 | `pt_water 0`-`2` | classic, realistic, simulated |
-| `pt_water_foam` | simulated water: how readily it froths and throws up spray, `1` = as made, `0` = never. Lava never does |
-| `pt_water_shore` | how much foam lies along the banks of simulated water, coming and going with the waves: `0.75` as made, `0` = none, `1` = a good deal. Needs `pt_water_foam` above 0 |
-| `pt_water_caustics` | simulated water: the net of light its waves throw on what lies in it, `1` = as made, `0` = none, more = stronger. Lava throws none |
+| `pt_water_quality 0`-`3` | how much is spent on water, set by the preset: low (`0`) does not simulate it (`pt_water 1`); medium (`1`) simulates it in cells of 12 units, 60 times a second, with foam and caustics; high (`2`) in cells of 8 units, 120 times a second, with spray and foam along the banks as well; ultra (`3`) in cells of 6 units, every frame. It sets the six variables below and `pt_water`; any of them may be changed afterwards |
+| `pt_water_rate` | how many times a second simulated water is moved on at most: once a frame where frames come slower than that. `0` = every frame, up to 240 a second. Water at rest that nothing touches, and water more than 2048 units from the eye, is not moved at all |
+| `pt_water_cell`, `pt_water_caustics` | the size of a cell of simulated water, in map units, and how strong the patterns of light are that its waves throw, `0` = none |
+| `pt_water_foam` | simulated water: how readily it froths, `1` = as made, `0` = never. Lava never does |
+| `pt_water_spray` | drops thrown up by a hard splash or a breaking wave: `1` or `0`. Needs `pt_water_foam` above 0 |
+| `pt_water_shore` | how much foam lies along the banks of simulated water, coming and going with the waves: `0.75` at high and ultra, `0` = none, `1` = a good deal. Needs `pt_water_foam` above 0 |
 | `pt_water_shafts` | how much water of any kind scatters the light in it towards the eye, which shows as a glow where light comes down through it: `1` as made, `0` = none |
 | `pt_water_wet` | how wet the banks of simulated water show where it has stood: `1` as made, `0` = not at all |
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |

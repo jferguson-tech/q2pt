@@ -101,9 +101,19 @@ void pt_water_churn(pt_water_t *w, float x, float y, float radius, float amount)
 /*
 Advance by dt seconds. Waves travel at the square root of gravity times the
 depth, in units per second; damping is the share of the liquid's motion
-lost per second (0-1).
+lost per second (0-1). The liquid moves in steps of dt, or smaller ones
+where it is too deep for that, so how often this is called is how smoothly
+it moves.
 */
 void pt_water_step(pt_water_t *w, float dt, float gravity, float damping);
+
+/*
+Is the liquid at rest: level, with nothing flowing, no froth going, and
+nothing done to it since it was last stepped? Stepping it then changes
+nothing, and its pictures are what they were. A new one is not until it
+has been stepped once.
+*/
+int pt_water_still(const pt_water_t *w);
 
 /*
 Where a wave has broken hard enough to throw up spray since this was last

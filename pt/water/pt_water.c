@@ -47,6 +47,9 @@ struct pt_water_s
 	float		spray[PT_WATER_SPRAY_MAX * 3];
 	int			sprays;
 	unsigned	seed;
+	int			touched;		/* something has been done to it since the last step */
+	int			quiet;			/* the last step left it level and at rest */
+	int			settling;		/* a wet mark is still drying or ripples are still dying down */
 };
 
 /* how fast the wet a wave left behind it dries, in units of height a second */
@@ -60,6 +63,11 @@ struct pt_water_s
 #define STIR_HEIGHT		0.5f
 #define STIR_STREAM		0.01f
 #define STIR_SETTLES	0.4f
+
+/* a surface nowhere further from level than this, in units, with nothing
+   flowing faster than FLOW_REST units a second, is at rest */
+#define HEIGHT_REST		0.02f
+#define FLOW_REST		0.1f
 
 /* froth may pile up past what covers a cell, and then lasts the longer */
 #define FOAM_MAX		1.5f
@@ -191,6 +199,7 @@ void pt_water_disturb(pt_water_t *w, float x, float y, float radius, float amoun
 	if (y0 < 0) y0 = 0;
 	if (x1 > w->width - 1) x1 = w->width - 1;
 	if (y1 > w->height - 1) y1 = w->height - 1;
+	w->touched = 1;
 
 	for (iy = y0; iy <= y1; iy++)
 	{
@@ -221,6 +230,8 @@ void pt_water_foaming(pt_water_t *w, float amount, float life, float shore)
 			w->foam = w->old = NULL;
 		}
 	}
+	if ((w->foam && amount > 0.0f ? amount : 0.0f) != w->foaming || (shore > 0.0f ? shore : 0.0f) != w->shore_amount)
+		w->touched = 1;		/* its pictures are not what they were */
 	if (w->foam && amount <= 0.0f && w->foaming > 0.0f)
 	{
 		/* turned off: what there was goes at once */
@@ -242,6 +253,7 @@ void pt_water_churn(pt_water_t *w, float x, float y, float radius, float amount)
 
 	if (w->foaming <= 0.0f)
 		return;
+	w->touched = 1;
 	if (r < 1.5f)
 		r = 1.5f;
 	x0 = (int)floorf(cx - r); x1 = (int)ceilf(cx + r);
@@ -421,6 +433,7 @@ void pt_water_move(pt_water_t *w, float x, float y, float radius, float vx, floa
 	float r = radius / w->cell, drag = 1.0f * dt;
 	int x0, y0, x1, y1, ix, iy;
 
+	w->touched = 1;
 	if (r < 1.5f)
 		r = 1.5f;
 	if (drag > 1.0f)
@@ -782,6 +795,11 @@ void pt_water_step(pt_water_t *w, float dt, float gravity, float damping)
 	step = 0.5f * w->cell / sqrtf(gravity * (w->deepest + PT_WATER_HEIGHT_MAX));
 	if (step > 1.0f / 60.0f)
 		step = 1.0f / 60.0f;
+	/* Asked for less than that at a time, it moves by what it is asked
+	   for: whoever calls more often than 60 times a second sees it move
+	   each time, and not every other. */
+	if (dt < step && w->leftover <= 0.0f)
+		step = dt > 0.001f ? dt : 0.001f;
 
 	w->leftover += dt;
 	while (w->leftover >= step && guard++ < 32)
@@ -789,8 +807,9 @@ void pt_water_step(pt_water_t *w, float dt, float gravity, float damping)
 		step_once(w, step, gravity, damping);
 		w->leftover -= step;
 	}
-	if (guard >= 32)
+	if (guard >= 32 || w->leftover < 1.0e-6f)
 		w->leftover = 0.0f;
+	w->settling = 0;
 	{
 		/* What the liquid has stood against stays wet for a while. And
 		   where waves are, or a stream, the surface is ruffled with ripples
@@ -809,10 +828,13 @@ void pt_water_step(pt_water_t *w, float dt, float gravity, float damping)
 					+ fabsf(at(w, w->h, x, y + 1, here) - at(w, w->h, x, y - 1, here))) * (STIR_SLOPE / w->cell)
 					+ fabsf(here) * STIR_HEIGHT;
 
-				w->mark[i] = here > was ? here : was;
 				if (w->current)
 					busy += (fabsf(w->current[i * 2]) + fabsf(w->current[i * 2 + 1])) * STIR_STREAM;
 				if (busy > 1.0f) busy = 1.0f;
+				/* a mark still drying, or ripples still settling, keep it awake */
+				if (w->open[i] && (w->mark[i] > here + HEIGHT_REST || w->stir[i] > busy + 0.01f))
+					w->settling = 1;
+				w->mark[i] = here > was ? here : was;
 				if (busy < w->stir[i] - settled) busy = w->stir[i] - settled;
 				w->stir[i] = busy;
 			}
@@ -820,6 +842,38 @@ void pt_water_step(pt_water_t *w, float dt, float gravity, float damping)
 	}
 	if (w->foaming > 0.0f)
 		foam_step(w, dt);
+
+	/* Has it come to rest? Then it is put level, which nobody can tell
+	   from where it was, and stays so until something touches it. */
+	w->touched = 0;
+	w->quiet = !w->foamy && !w->sprays && !w->settling;
+	if (w->quiet)
+	{
+		const size_t cells = (size_t)w->width * w->height;
+		const size_t us = (size_t)(w->width + 1) * w->height, vs = (size_t)w->width * (w->height + 1);
+		size_t i;
+		for (i = 0; i < cells && w->quiet; i++)
+			if (w->open[i] && fabsf(w->h[i]) > HEIGHT_REST)
+				w->quiet = 0;
+		for (i = 0; i < us && w->quiet; i++)
+			if (fabsf(w->u[i]) > FLOW_REST)
+				w->quiet = 0;
+		for (i = 0; i < vs && w->quiet; i++)
+			if (fabsf(w->v[i]) > FLOW_REST)
+				w->quiet = 0;
+		if (w->quiet)
+		{
+			memset(w->h, 0, cells * sizeof(float));
+			memset(w->u, 0, us * sizeof(float));
+			memset(w->v, 0, vs * sizeof(float));
+			w->leftover = 0.0f;
+		}
+	}
+}
+
+int pt_water_still(const pt_water_t *w)
+{
+	return w->quiet && !w->touched;
 }
 
 int pt_water_spray(pt_water_t *w, const float **at)
