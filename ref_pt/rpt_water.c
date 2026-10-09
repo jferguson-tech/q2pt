@@ -24,7 +24,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // texture. Level faces of the same liquid at the same height that lie near
 // each other are taken to be one body. Each body gets a simulation (in
 // ../pt/water, which knows nothing of the game) that is poked where the
-// player, monsters, items and splashes touch its surface.
+// player, monsters, items and splashes touch its surface. What that beats
+// to froth the simulation keeps; the spray it throws up is kept here.
 
 #include "rpt_local.h"
 #include "../pt/water/pt_water.h"
@@ -45,8 +46,8 @@ typedef struct
 	float		absorb[3];
 	int			parent;				// the body this one turned out to be part of, or itself
 	pt_water_t	*sim;				// only bodies that are their own parent have one
-	int			wave_texture, caustic_texture;		// backend handles, -1 = none
-	const uint32_t	*waves, *caustics;	// its pictures as last made, for the next frame; NULL = not yet
+	int			wave_texture, caustic_texture, foam_texture;		// backend handles, -1 = none
+	const uint32_t	*waves, *caustics, *foam;	// its pictures as last made, for the next frame; NULL = not yet
 	float		reach;				// how far from level its waves stood in them
 } waterbody_t;
 
@@ -62,6 +63,19 @@ typedef struct
 #define	LAVA_GRAVITY	54.0f	// heavy liquids move slowly
 #define	STREAM_SPEED	48.0f	// units a second: what the map calls flowing
 #define	BODY_AMOUNT		1.75f	// how much of a player or a monster is in the liquid, as pt_water_move counts it
+#define	FOAM_LIFE		2.5f	// seconds for half the froth to go
+#define	CHURN_SPEED		110.0f	// what moves through the liquid faster than this leaves froth behind
+
+// a drop of spray on its way up and down again
+typedef struct
+{
+	vec3_t	origin, velocity;
+	float	radius;
+	int		body;			// where it came from and falls back to
+} waterdrop_t;
+
+#define	MAX_WATER_DROPS	768
+#define	DROP_GRAVITY	800.0f
 
 static waterbody_t	w_bodies[MAX_WATER_BODIES];
 static int			w_numbodies;
@@ -70,6 +84,8 @@ static int			w_numtris, w_maxtris;
 static float		w_lasttime;
 static vec3_t		w_lasteye;
 static float		w_dt;			// the time this frame covers, for R_WaterStep
+static waterdrop_t	w_drops[MAX_WATER_DROPS];
+static int			w_numdrops;
 
 /*
 ===============
@@ -90,12 +106,70 @@ void R_WaterReset (void)
 			rpt.backend->texture_destroy (rpt.backend, w_bodies[i].wave_texture);
 		if (rpt.backend && w_bodies[i].caustic_texture >= 0)
 			rpt.backend->texture_destroy (rpt.backend, w_bodies[i].caustic_texture);
+		if (rpt.backend && w_bodies[i].foam_texture >= 0)
+			rpt.backend->texture_destroy (rpt.backend, w_bodies[i].foam_texture);
 	}
 	memset (w_bodies, 0, sizeof(w_bodies));
 	w_numbodies = 0;
 	free (w_tris);
 	w_tris = NULL;
 	w_numtris = w_maxtris = 0;
+	w_numdrops = 0;
+}
+
+static float W_Random (void)
+{
+	return (rand () & 0x7fff) / 32767.0f;
+}
+
+/*
+===============
+W_Spray
+
+Something has hit the surface of a body at x, y: drops fly up, the more and
+the higher the harder it was
+===============
+*/
+static void W_Spray (int body, float x, float y, float hard, float spread)
+{
+	waterdrop_t	*d;
+	float		angle, out;
+	int			i, count;
+
+	if (hard > 2)
+		hard = 2;
+	count = (int)(hard * 14) + 1;
+	for (i=0 ; i<count && w_numdrops<MAX_WATER_DROPS ; i++)
+	{
+		d = &w_drops[w_numdrops++];
+		angle = W_Random () * 6.2831853f;
+		out = sqrt (W_Random ());
+		d->origin[0] = x + cos (angle) * out * spread;
+		d->origin[1] = y + sin (angle) * out * spread;
+		d->origin[2] = w_bodies[body].z + 0.5f;
+		// outwards from the middle, and mostly up
+		d->velocity[0] = cos (angle) * out * (30 + 50 * hard);
+		d->velocity[1] = sin (angle) * out * (30 + 50 * hard);
+		d->velocity[2] = (0.35f + 0.65f * W_Random ()) * (90 + 110 * hard);
+		d->radius = 0.3f + 0.45f * W_Random ();
+		d->body = body;
+	}
+}
+
+/*
+===============
+R_WaterDrop
+
+The spray in the air, one drop at a time: false when there are no more
+===============
+*/
+qboolean R_WaterDrop (int index, float *origin, float *radius)
+{
+	if (index < 0 || index >= w_numdrops)
+		return false;
+	VectorCopy (w_drops[index].origin, origin);
+	*radius = w_drops[index].radius;
+	return true;
 }
 
 /*
@@ -223,7 +297,7 @@ int R_WaterBody (image_t *image, const char *name, float z, float points[][3], i
 	b->parent = w_numbodies;
 	b->lava = strstr (name, "lava") != NULL;
 	b->clear = !b->lava && !strstr (name, "slime");
-	b->wave_texture = b->caustic_texture = -1;
+	b->wave_texture = b->caustic_texture = b->foam_texture = -1;
 	R_WaterAbsorb (image, name, b->absorb);
 	return w_numbodies++;
 }
@@ -365,6 +439,10 @@ void R_WaterFinish (void)
 		b->wave_texture = rpt.backend->texture_create (rpt.backend, &tex);
 		tex.pixels = pt_water_caustics (b->sim, b->lava ? 0 : r_watercaustics);
 		b->caustic_texture = rpt.backend->texture_create (rpt.backend, &tex);
+		// lava does not froth
+		tex.pixels = b->lava ? NULL : pt_water_foam (b->sim);
+		if (tex.pixels)
+			b->foam_texture = rpt.backend->texture_create (rpt.backend, &tex);
 	}
 
 	// every part of a body shows the one simulation
@@ -378,6 +456,7 @@ void R_WaterFinish (void)
 			mat = R_WorldMaterialPtr (b->materials[k]);
 			mat->wave_map = root->wave_texture + 1;
 			mat->caustic_map = root->caustic_texture + 1;
+			mat->foam_map = root->foam_texture + 1;
 			mat->wave_rect[0] = root->mins[0];
 			mat->wave_rect[1] = root->mins[1];
 			mat->wave_rect[2] = 1.0f / (pt_water_width (root->sim) * pt_water_cell (root->sim));
@@ -407,6 +486,7 @@ static void W_Pictures (waterbody_t *b)
 	b->waves = pt_water_waves (b->sim, r_waterwaves);
 	b->reach = pt_water_reach (b->sim);
 	b->caustics = pt_water_caustics (b->sim, b->lava ? 0 : r_watercaustics);
+	b->foam = b->foam_texture >= 0 ? pt_water_foam (b->sim) : NULL;
 }
 
 /*
@@ -429,7 +509,8 @@ void R_WaterFrame (refdef_t *fd)
 	particle_t	*p;
 	vec3_t		eye;
 	vec3_t		by;
-	float		dt, speed, amount, moved, feet, d[2];
+	waterdrop_t	*drop;
+	float		dt, speed, amount, moved, feet, fell, d[2];
 	int			i, j, splashes;
 
 	w_dt = 0;
@@ -440,6 +521,8 @@ void R_WaterFrame (refdef_t *fd)
 	if (dt < 0 || dt > 0.25f)
 		dt = 0;		// a new map, a load or a long pause: nothing sensible to do
 	w_dt = dt;
+	if (!dt || r_waterfoam <= 0)
+		w_numdrops = 0;
 	VectorCopy (fd->vieworg, eye);
 	feet = eye[2] - 46;
 	r_waterreach = 0;
@@ -455,9 +538,23 @@ void R_WaterFrame (refdef_t *fd)
 		if (b->reach > r_waterreach)
 			r_waterreach = b->reach;
 		rpt.backend->texture_update (rpt.backend, b->caustic_texture, b->caustics);
+		if (b->foam_texture >= 0 && b->foam)
+			rpt.backend->texture_update (rpt.backend, b->foam_texture, b->foam);
+		pt_water_foaming (b->sim, b->lava ? 0 : r_waterfoam, FOAM_LIFE, r_watershore);
 
 		if (dt > 0)
 		{
+			// the player, jumping or falling in
+			fell = (w_lasteye[2] - eye[2]) / dt;
+			if (W_Over (b, eye) && feet < b->z && w_lasteye[2] - 46 >= b->z && fell > 120 && fell < 4000)
+			{
+				amount = fell * 0.004f;
+				pt_water_disturb (b->sim, eye[0], eye[1], 26, amount > 3 ? 3 : amount);
+				pt_water_churn (b->sim, eye[0], eye[1], 34, amount > 1.2f ? 1.2f : amount);
+				if (r_waterfoam > 0 && !b->lava)
+					W_Spray (i, eye[0], eye[1], amount, 14);
+			}
+
 			// the player, wading or swimming at the surface
 			if (W_Over (b, eye) && feet < b->z && eye[2] + 10 > b->z)
 			{
@@ -471,6 +568,8 @@ void R_WaterFrame (refdef_t *fd)
 				if (amount > 2)
 					amount = 2;
 				pt_water_disturb (b->sim, eye[0], eye[1], 18, amount * dt * 16);
+				if (speed > CHURN_SPEED && speed < 1000)
+					pt_water_churn (b->sim, eye[0], eye[1], 18, (speed - CHURN_SPEED) * 0.05f * dt);
 			}
 
 			// monsters, items, gibs, projectiles: whatever is at the surface and moving
@@ -484,12 +583,21 @@ void R_WaterFrame (refdef_t *fd)
 				if (moved < 0.25f || moved > 1000 * dt)
 					continue;
 				pt_water_move (b->sim, e->origin[0], e->origin[1], 16, by[0] / dt, by[1] / dt, BODY_AMOUNT, dt);
+				speed = sqrt (by[0]*by[0] + by[1]*by[1]) / dt;
+				if (speed > CHURN_SPEED)
+					pt_water_churn (b->sim, e->origin[0], e->origin[1], 16, (speed - CHURN_SPEED) * 0.05f * dt);
 				// what falls in or climbs out makes a splash of its own
 				amount = fabs (by[2]) * 0.15f;
 				if (amount > 3)
 					amount = 3;
 				if (amount > 0.05f)
 					pt_water_disturb (b->sim, e->origin[0], e->origin[1], 14, amount);
+				if (amount > 0.3f)
+				{
+					pt_water_churn (b->sim, e->origin[0], e->origin[1], 22, amount * 0.4f);
+					if (r_waterfoam > 0 && !b->lava && fabs (by[2]) / dt > 120)
+						W_Spray (i, e->origin[0], e->origin[1], amount * 0.5f, 10);
+				}
 			}
 
 			// splashes and bubbles show up as particles at the surface
@@ -499,6 +607,7 @@ void R_WaterFrame (refdef_t *fd)
 				if (fabs (p->origin[2] - b->z) > 4 || !W_Over (b, p->origin))
 					continue;
 				pt_water_disturb (b->sim, p->origin[0], p->origin[1], 6, 0.1f);
+				pt_water_churn (b->sim, p->origin[0], p->origin[1], 7, 0.06f);
 				splashes++;
 			}
 
@@ -514,6 +623,23 @@ void R_WaterFrame (refdef_t *fd)
 					b->mins[1] + (b->maxs[1] - b->mins[1]) * (rand () & 0x7fff) / 32767.0f,
 					10 + (rand () & 7), b->lava ? 0.5f : 0.25f);
 		}
+	}
+
+	// the spray in the air rises, falls and is gone where it lands, leaving a ring
+	for (i=0, drop=w_drops ; i<w_numdrops ; )
+	{
+		drop->velocity[2] -= DROP_GRAVITY * dt;
+		VectorMA (drop->origin, dt, drop->velocity, drop->origin);
+		b = &w_bodies[drop->body];
+		if (drop->origin[2] < b->z)
+		{
+			if (b->sim)
+				pt_water_disturb (b->sim, drop->origin[0], drop->origin[1], 5, 0.04f);
+			*drop = w_drops[--w_numdrops];
+			continue;
+		}
+		i++;
+		drop++;
 	}
 
 	w_lasttime = fd->time;
@@ -535,15 +661,23 @@ milliseconds of every frame with the card idle. Here it is busy tracing.
 void R_WaterStep (void)
 {
 	waterbody_t	*b;
-	int			i;
+	const float	*sprays;
+	int			i, j, splashes;
 
 	for (i=0, b=w_bodies ; i<w_numbodies ; i++, b++)
 	{
 		if (!b->sim)
 			continue;
-		// heavy liquids move slowly and settle fast
 		if (w_dt > 0)
+		{
+			// heavy liquids move slowly and settle fast
 			pt_water_step (b->sim, w_dt, b->lava ? LAVA_GRAVITY : WATER_GRAVITY, r_waterdamping * (b->lava ? 0.9f : 0.45f));
+
+			// where a wave broke
+			splashes = pt_water_spray (b->sim, &sprays);
+			for (j=0 ; j<splashes ; j++)
+				W_Spray (i, sprays[j*3], sprays[j*3+1], sprays[j*3+2], pt_water_cell (b->sim) * 0.5f);
+		}
 		W_Pictures (b);
 	}
 	w_dt = 0;		// until there is another frame

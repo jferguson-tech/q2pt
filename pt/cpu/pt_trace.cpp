@@ -569,12 +569,14 @@ static Vec3 MetalColour(Vec3 c, float level)
 	return Vec3(reflects[0], reflects[1], reflects[2]);
 }
 
-void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth)
+void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth, bool with_froth)
 {
 	const Material &mat = tri.mat->At(sc.anim_frame);
 	s.tri = &tri;
 	s.mat = &mat;
 	s.medium = false;
+	s.foam = 0.0f;
+	s.cover = mat.alpha;
 	s.p = ray.o + ray.d * hit.t;
 	s.wo = -ray.d;
 	s.front = Dot(tri.n, ray.d) < 0.0f;
@@ -675,6 +677,24 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 		}
 		// crests gather the light in the liquid and troughs spread it
 		s.colour *= std::min(std::max(1.0f + wave_height * 0.35f, 0.6f), 1.8f);
+
+		// Froth is air and liquid finely mixed, which scatters light every
+		// way: a pale matt layer over the liquid, which still shows through
+		// where the layer is thin and still shines a little where it is not.
+		// Bubbles do not lie flat.
+		float age = 0.0f;
+		const float froth = with_froth ? sc.Froth(mat, s.p, age) : 0.0f;
+		if (froth > 0.0f)
+		{
+			const Vec3 pale = (s.colour * 0.4f + Vec3(0.6f)) * ((0.55f - 0.2f * age) * (0.7f + 0.3f * Scene::Lumps(s.p.x * 2.3f, s.p.y * 2.3f)));
+			const float both = mat.alpha + froth - mat.alpha * froth;
+			s.colour = (s.colour * (mat.alpha * (1.0f - froth)) + pale * froth) * (1.0f / both);
+			s.foam = froth;
+			s.cover = both;
+			n = Normalize(n + Vec3(Scene::Lumps(s.p.x * 1.9f, s.p.y * 1.9f) - 0.5f,
+				Scene::Lumps(s.p.y * 1.9f + 31.7f, s.p.x * 1.9f + 31.7f) - 0.5f, 0.0f) * (0.5f * froth));
+			s.glow = Vec3();
+		}
 	}
 	else if ((mat.flags & PT_MAT_WAVES) && sc.wave_strength > 0.0f)
 	{
@@ -694,7 +714,7 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	s.n = n;
 
 	s.metallic = metallic;
-	if (mat.flags & PT_MAT_BLACK)
+	if ((mat.flags & PT_MAT_BLACK) && s.foam <= 0.0f)
 	{
 		s.kd = Vec3();
 		s.f0 = Vec3();
@@ -714,6 +734,8 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 Vec3 Emitted(const Surface &s, bool seen)
 {
 	const Material &m = *s.mat;
+	if (s.foam > 0.0f)
+		return Vec3();
 	if (m.emission_map)
 		return m.emission * s.glow;
 	if (m.flags & PT_MAT_EMIT_BRIGHT)
