@@ -20,6 +20,10 @@ metal vivid: rust, paint, wood, cloth, skin. And it was painted as dark as it
 looks, not as bright as it reflects, so what a metal of a given painted
 colour reflects is worked out here too.
 
+Light is told by brightness. A lamp or a lit screen was painted far brighter
+than what is round it, so in a picture known to show one, the part that
+gives off the light can be told from its frame.
+
 It knows nothing about any game or renderer, and reads and writes no files.
 */
 #ifndef PT_MATERIAL_H
@@ -110,6 +114,35 @@ at the detail map's size, 128 level, 64 a texel lower. Made with malloc, or
 NULL.
 */
 unsigned char *pt_material_height(const uint32_t *pixels, int width, int height, const pt_material_from_t *from);
+
+/*
+What is lit in a picture known to show a lamp, a lit screen or a lit sign:
+the picture again, the same size, black wherever it gives off no light. The
+art was painted with its lamps far brighter than what is round them, so a
+texel is lit if it is far brighter than the picture is for the most part and
+belongs to a patch that is brighter still somewhere: the lamp and the glow
+painted round it, not its frame; the letters, not the sign. A red lamp
+counts for as bright as a white one. What lies within a few texels of a lit
+patch and is as bright and of the same colour is lit with it, as the bright
+rings of one lens are; so is what is strongly coloured and lies between lit
+texels of its own colour, as its dark rings do; and gaps a texel wide in
+what is lit are closed. repeats is as in pt_material_from_t.
+
+NULL if nothing in the picture stands apart from the rest of it: it is
+unlit, or of one thing all over, as a crystal or a sheet of lava is, and
+then all of it gives off light or none of it does. NULL too if it is too
+large or there is no memory. Made with malloc.
+
+share is given how much of all the light the picture's colours stand for
+is in the part that is lit, 0 - 1. Where that is small, what was found is a
+few bright specks in a picture that is not dark, and a light that the whole
+picture stood for until now would be crowded into them.
+
+This is for pictures that are known to be of something lit. Colour and
+brightness alone do not tell a lamp from a bright yellow stripe, so what a
+picture is of has to come from elsewhere: its name, or the map it is in.
+*/
+uint32_t *pt_material_glow(const uint32_t *pixels, int width, int height, int repeats, float *share);
 
 /*
 What a metal reflects, worked out from the colour it was painted. Art made

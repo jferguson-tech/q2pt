@@ -31,28 +31,15 @@ bool IsHole(const Tri &t, float u, float v)
 	return (t.mat->texture->Texel(s, tt) >> 24) < 128;
 }
 
-// true if nothing stops light between the surface and target
-// How much of the light from target reaches the surface: 0 if something is
-// in the way, otherwise 1 times whatever rippling liquid on the way does to
-// it, which gathers the light in some places and thins it in others.
-float Visible(const Scene &sc, const Surface &s, Vec3 target, Rng &rng)
+// is anything in the way of light along the ray
+static bool Blocked(const Scene &sc, const Ray &shadow, Rng &rng)
 {
-	rng.rays++;
-	Ray shadow;
-	shadow.o = s.p + s.ng * kRayOffset;
-	shadow.d = target - shadow.o;
-	shadow.tmin = 0.0f;
-	shadow.tmax = 0.999f;
-
-	float through = 1.0f;
 	const auto blocks = [&](const Tri &t, float u, float v)
 	{
 		if (IsHole(t, u, v) || BackOfGlass(t, shadow.d))
 			return false;
 		if (t.mat->alpha >= 1.0f || rng.Float() < t.mat->alpha)
 			return true;
-		if (t.mat->caustic_map)
-			through *= sc.Caustic(*t.mat, t.p0 + t.e1 * u + t.e2 * v);
 		return false;
 	};
 
@@ -69,26 +56,99 @@ float Visible(const Scene &sc, const Surface &s, Vec3 target, Rng &rng)
 	};
 	const int world = sc.world->bvh.AnyHit8(shadow, [&](uint32_t i, float u, float v) { return kind(sc.world->tris[i], u, v); });
 	if (world == 1)
-		return 0.0f;
+		return true;
 	if (world == 0)
 	{
 		const int frame = sc.frame->bvh.AnyHit8(shadow, [&](uint32_t i, float u, float v) { return kind(sc.frame->tris[i], u, v); });
 		if (frame == 1)
-			return 0.0f;
+			return true;
 		if (frame == 0)
-			return through;
+			return false;
 		// nothing of the world's was in the way, so only the frame is left to ask
 		if (sc.frame->bvh.AnyHit(shadow, [&](uint32_t i, float u, float v) { return blocks(sc.frame->tris[i], u, v); }))
-			return 0.0f;
-		return through;
+			return true;
+		return false;
 	}
 #endif
 
 	if (sc.world->bvh.AnyHit(shadow, [&](uint32_t i, float u, float v) { return blocks(sc.world->tris[i], u, v); }))
-		return 0.0f;
+		return true;
 	if (sc.frame->bvh.AnyHit(shadow, [&](uint32_t i, float u, float v) { return blocks(sc.frame->tris[i], u, v); }))
-		return 0.0f;
-	return through;
+		return true;
+	return false;
+}
+
+// Light bends where it goes into a liquid. Of a path with one end in the
+// liquid and the other out of it, whose surface lies level at z: where it
+// crosses, which is nearer over the end in the liquid than a straight line
+// between the two would.
+static Vec3 BentCrossing(Vec3 in_liquid, Vec3 out_of_it, float z)
+{
+	const float down = z - in_liquid.z, up = out_of_it.z - z;
+	const float ax = out_of_it.x - in_liquid.x, ay = out_of_it.y - in_liquid.y;
+	const float len = std::sqrt(ax * ax + ay * ay);
+	if (len < 1.0e-4f)
+		return Vec3(in_liquid.x, in_liquid.y, z);
+	// the sines of the two angles at the surface are as the liquid's index:
+	// from where that puts it for small angles, and nearer each step
+	const float straight = len * down / (down + up);
+	float x = len * down / (down + Scene::kWaterIndex * up);
+	for (int i = 0; i < 3; i++)
+	{
+		const float y = len - x;
+		const float a = 1.0f / std::sqrt(x * x + down * down), b = 1.0f / std::sqrt(y * y + up * up);
+		x -= (Scene::kWaterIndex * x * a - y * b) / (Scene::kWaterIndex * down * down * a * a * a + up * up * b * b * b);
+		x = std::min(std::max(x, 0.0f), straight);
+	}
+	const float share = x / len;
+	return Vec3(in_liquid.x + ax * share, in_liquid.y + ay * share, z);
+}
+
+// How much of the light from target reaches the surface: 0 if something is
+// in the way, otherwise 1. With bend, a little less where the path crosses
+// the surface of a simulated liquid: there it bends, as light does going
+// into water, so a shadow falls where the bent light is cut off. That is for
+// what the eye sees itself; light that has bounced takes the liquid for no
+// more than it looks. (What the waves do to the light is laid over what the
+// eye sees: see AddWater.)
+float Visible(const Scene &sc, const Surface &s, Vec3 target, Rng &rng, bool bend = false)
+{
+	rng.rays++;
+	Ray shadow;
+	shadow.o = s.p + s.ng * kRayOffset;
+	shadow.d = target - shadow.o;
+	shadow.tmin = 0.0f;
+	shadow.tmax = 0.999f;
+
+	if (bend && sc.swell)
+	{
+		for (const World::Water &b : sc.world->waters)
+		{
+			if ((shadow.o.z - b.z) * (target.z - b.z) >= 0.0f)
+				continue;
+			const bool rising = target.z > b.z;
+			const Vec3 out = rising ? target : shadow.o;
+			const Vec3 q = BentCrossing(rising ? shadow.o : target, out, b.z);
+			if (q.x < b.min_x || q.x > b.max_x || q.y < b.min_y || q.y > b.max_y || !sc.Map(b.mat->caustic_map) || !sc.Wet(*b.mat, q))
+				continue;
+			// as far as the surface, and from there on
+			Ray leg = shadow;
+			leg.d = q - shadow.o;
+			if (Blocked(sc, leg, rng))
+				return 0.0f;
+			leg.o = q;
+			leg.d = target - q;
+			leg.tmin = 1.0e-3f;
+			rng.rays++;
+			if (Blocked(sc, leg, rng))
+				return 0.0f;
+			// less of it gets in at a glancing angle, and what is painted on
+			// the liquid stops its share
+			const float m = 1.0f - (out.z - b.z) / Length(out - q);
+			return (0.98f - 0.98f * m * m * m * m * m) * (b.top ? 1.0f - b.mat->alpha : 1.0f);
+		}
+	}
+	return Blocked(sc, shadow, rng) ? 0.0f : 1.0f;
 }
 
 // ---- GGX microfacet reflection, height correlated Smith shadowing ----
@@ -256,6 +316,91 @@ static float WaveHeight(const Scene &sc, const Texture &map, const Material &m, 
 	const float h = (stored(row[0]) * (1.0f - ax) + stored(row[1]) * ax) * (1.0f - ay)
 		+ (stored(row[map.width]) * (1.0f - ax) + stored(row[map.width + 1]) * ax) * ay;
 	return (h * (1.0f / 65535.0f) - 0.5f) * 16.0f * sc.wave_strength;
+}
+
+// What a simulated liquid does to something solid in it or by it, for the
+// eye's own rays; under is whether the ray is in a liquid where it met the
+// thing.
+//
+// In the liquid, its waves gather the light that comes down through them
+// into bright lines and thin it between. Light is gathered over many
+// frames, in which time the waves have moved on and their pattern would
+// come to nothing, so it is not in the light as it is traced: it is worked
+// out here for the light from where most of the liquid's light comes from,
+// and laid over the surface like paint, which nothing blurs.
+//
+// By it, its banks are wet as far up as it has lately stood and a little
+// further: darker, and shiny.
+void AddWater(const Scene &sc, Surface &s, bool under)
+{
+	if (!sc.swell)
+		return;
+	for (const World::Water &b : sc.world->waters)
+	{
+		const Material &m = *b.mat;
+		const float up = s.p.z - b.z;
+		const Texture *waves = sc.Map(m.wave_map), *marks = sc.Map(m.caustic_map);
+		if (up > 12.0f || (!under && up < -9.0f) || !waves || !marks
+			|| s.p.x < b.min_x - 8.0f || s.p.y < b.min_y - 8.0f || s.p.x > b.max_x + 8.0f || s.p.y > b.max_y + 8.0f)
+			continue;
+
+		// how high it has stood, between the cells that have liquid in or by them
+		const float fx = (s.p.x - m.wave_rect[0]) * m.wave_rect[2] * (float)marks->width - 0.5f;
+		const float fy = (s.p.y - m.wave_rect[1]) * m.wave_rect[3] * (float)marks->height - 0.5f;
+		const int x0 = (int)std::floor(fx), y0 = (int)std::floor(fy);
+		const float ax = fx - (float)x0, ay = fy - (float)y0;
+		float sum = 0.0f, weight = 0.0f;
+		for (int k = 0; k < 4; k++)
+		{
+			const int x = x0 + (k & 1), y = y0 + (k >> 1);
+			if (x < 0 || y < 0 || x >= marks->width || y >= marks->height)
+				continue;
+			const float v = (float)(marks->pixels[(size_t)y * marks->width + x] >> 24);
+			const float w = ((k & 1) ? ax : 1.0f - ax) * ((k >> 1) ? ay : 1.0f - ay);
+			if (v > 127.5f)
+			{
+				sum += v * w;
+				weight += w;
+			}
+		}
+		if (weight <= 0.0f)
+			continue;
+
+		if (up < WaveHeight(sc, *waves, m, s.p.x, s.p.y))
+		{
+			// in it, if the eye's ray is; something under its bed is not
+			const Vec3 lamp = b.Lamp(s.p.x, s.p.y);
+			if (!under || lamp.z <= b.z || up >= 0.0f)
+				continue;
+			const Vec3 q = BentCrossing(s.p, lamp, b.z);
+			const float down = Length(q - s.p), from = Length(q - lamp);
+			bool wet;
+			const float gain = sc.Caustic(m, q, (1.0f - 1.0f / Scene::kWaterIndex) * down * from / (down + from), wet);
+			// what faces away from the light has none of it
+			const float facing = std::min(std::max(Dot(s.n, q - s.p) / down * 4.0f, 0.0f), 1.0f);
+			if (wet)
+				s.kd = s.kd * (1.0f + (gain - 1.0f) * facing);
+			return;
+		}
+		if (sc.water_wet <= 0.0f)
+			continue;
+
+		const float mark = (sum / weight - 160.0f) * (8.0f / 95.0f) * sc.wave_strength;
+		// it soaks a little higher than it stood, and not to a ruled line
+		const float edge = mark + 0.75f + 1.5f * Scene::Lumps((s.p.x + s.p.y) * 0.45f, (s.p.z + s.p.x - s.p.y) * 0.45f);
+		const float wet = std::min(std::max((edge - up) * 1.5f, 0.0f), 1.0f) * std::min(sc.water_wet, 1.0f);
+		if (wet <= 0.0f)
+			continue;
+
+		// water fills what made the surface rough and pale
+		const float dark = 1.0f - 0.45f * wet;
+		s.colour = s.colour * dark;
+		s.kd = s.kd * dark;
+		s.roughness = std::min(s.roughness, s.roughness + (0.3f - s.roughness) * wet);
+		s.alpha = std::max(s.roughness * s.roughness, kMinAlpha);
+		s.light_sampled_spec = s.roughness >= kLightSampledRoughness;
+		return;
+	}
 }
 
 // Where the ray first crosses the surface of a simulated liquid before limit.
@@ -737,7 +882,12 @@ Vec3 Emitted(const Surface &s, bool seen)
 	if (s.foam > 0.0f)
 		return Vec3();
 	if (m.emission_map)
-		return m.emission * s.glow;
+	{
+		if (!(m.flags & PT_MAT_EMIT_MAPPED))
+			return m.emission * s.glow;
+		// the material's own light, from where the map says it comes
+		return (seen && m.emission_seen > 0.0f) ? s.glow * m.emission_seen : m.emission_per_texel * s.glow;
+	}
 	if (m.flags & PT_MAT_EMIT_BRIGHT)
 	{
 		// the lit parts of a screen or a button: bright texels glow, dark ones do not
@@ -748,11 +898,11 @@ Vec3 Emitted(const Surface &s, bool seen)
 	return (seen && m.emission_seen > 0.0f) ? s.colour * m.emission_seen : m.emission_per_texel * s.colour;
 }
 
-// Light thrown back up by a simulated liquid surface: the dancing patches on
-// walls and ceilings near water. The surface is treated as a mirror for the
+// Light thrown back up by a simulated liquid surface, onto walls and
+// ceilings near water. The surface is treated as a level mirror for the
 // light just sampled, so its image lies as far below the surface as the
-// light is above, and the waves' gathering of light shapes what comes back.
-// y is the point on the light, e what it would send straight here.
+// light is above. y is the point on the light, e what it would send
+// straight here.
 static void WaterBounce(const Scene &sc, const Surface &s, Vec3 y, Vec3 e, Lit &out, Rng &rng)
 {
 	if (s.medium)
@@ -782,13 +932,10 @@ static void WaterBounce(const Scene &sc, const Surface &s, Vec3 y, Vec3 e, Lit &
 	const Vec3 wi = d * (1.0f / std::sqrt(len2));
 	const float m = 1.0f + wi.z;	// 1 - cosine of the angle at the water
 	const float fresnel = 0.02f + 0.98f * m * m * m * m * m;
-	const float gain = fresnel * sc.Caustic(*body->mat, q);
-	if (gain <= 0.001f)
-		return;
 
 	// e was for the straight path; this one is as long as the way to the image
 	const Vec3 straight = y - s.p;
-	const Lit add = Reflect(s, wi, e * (gain * Dot(straight, straight) / len2));
+	const Lit add = Reflect(s, wi, e * (fresnel * Dot(straight, straight) / len2));
 	if (Importance(s, add) <= 0.0f)
 		return;
 
@@ -978,7 +1125,7 @@ static Lit DirectLights(const Scene &sc, const Surface &s, Rng &rng, bool first_
 	chosen_e *= wsum / (candidates * chosen_phat);
 
 	Lit out;
-	const float clear = Visible(sc, s, chosen_y, rng);
+	const float clear = Visible(sc, s, chosen_y, rng, first_hit);
 	if (clear > 0.0f)
 		out = Reflect(s, chosen_wi, chosen_e * clear);
 	if (!sc.world->waters.empty())

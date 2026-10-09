@@ -54,6 +54,15 @@ vertices appear counter clockwise.
 									   light in lights, so a path that comes upon it
 									   counts its glow only where lights are not looked
 									   for: from the eye and in a sharp reflection */
+#define PT_MAT_EMIT_MAPPED		4096u	/* emission_texture says where on the surface the
+									   material's light comes from, and stands for
+									   texture in all that is said of emission: a
+									   point gives off emission times its texel there
+									   over its average texel, emission_seen applies,
+									   and a world's material is sampled as a light
+									   as it would be without the map. For a lamp in
+									   its frame: the lamp gives off all the light
+									   and the frame none */
 
 typedef struct pt_texture_s
 {
@@ -79,7 +88,8 @@ typedef struct pt_material_s
 	int			emission_texture;	/* 0 for none, else 1 + a texture, numbered as
 								   texture is, that says what glows and in what
 								   colour: emitted light is it times emission.
-								   Found by paths only, not sampled as a light. */
+								   Found by paths only, not sampled as a light.
+								   See also PT_MAT_EMIT_MAPPED */
 	int			normal_texture;	/* -1 for none; same numbering as texture. RGB is a
 								   tangent space normal (x along u, y along v),
 								   alpha replaces roughness. See also
@@ -93,10 +103,13 @@ typedef struct pt_material_s
 								   half way), 0 = none; replaces the PT_MAT_WAVES
 								   ripples. Level triangles with one are drawn
 								   where the waves stand, see wave_reach */
-	int			caustic_map;	/* handle + 1 of how much the waves brighten the
-								   light going through, R / 255 * 4; 0 = none. A
-								   is 0 where the picture covers no liquid, and
-								   the waves' surface is not looked for there */
+	int			caustic_map;	/* handle + 1 of a picture of how sharply the
+								   waves curve, which gathers and spreads the
+								   light going through, and in A of how high the
+								   liquid has lately stood: see pt_water_caustics
+								   in pt/water. 0 = none. A is 0 where the picture
+								   covers no liquid, and the waves' surface is
+								   not looked for there */
 	int			foam_map;		/* handle + 1 of the froth on the liquid; 0 =
 								   none. R is how much of the surface it covers,
 								   G how old it is (0 fresh, 255 old: older froth
@@ -294,6 +307,11 @@ typedef struct pt_view_s
 	float	wave_strength;		/* ripples on liquids; 0 = flat, 1 = normal */
 	float	wave_reach;			/* no wave picture holds a height further than this
 								   from level this frame, in units */
+	float	water_shafts;		/* how much liquids scatter the light in them
+								   towards the eye, which shows as shafts; 0 =
+								   not at all, 1 = normal */
+	float	water_wet;			/* how wet the banks of simulated liquids show
+								   where they have stood; 0 = not at all, 1 = normal */
 	float	metal_colour;		/* PT_MAT_METAL_PAINTED: how much of the light a
 								   metal painted mid dark (1.2% of white, as old
 								   game art paints steel) reflects. One painted

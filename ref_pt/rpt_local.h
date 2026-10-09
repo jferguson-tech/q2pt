@@ -60,6 +60,11 @@ typedef struct image_s
 	qboolean	normal_byhand;				// a map made by hand went into normalmap
 	uint32_t	*colour;					// made with normalmap: pixels with the painted light
 											// taken out, or NULL where pixels are as good
+	uint32_t	*lit;						// made on demand, see R_ImageLit: pixels where the picture
+											// gives off light and black elsewhere, or NULL
+	float		lit_share;					// how much of the picture's light is in lit
+	qboolean	lit_read;					// lit is what the picture gave, NULL included
+	int			pt_lit_texture;				// backend handle + 1 for lit
 } image_t;
 
 typedef struct
@@ -164,6 +169,12 @@ void	R_MaterialInfo (const char *name, matinfo_t *info);
 float	R_MetalColour (void);
 uint32_t *R_ImageNormalMap (image_t *image, const matinfo_t *info, int *width, int *height);
 image_t	*R_ImageGlowMap (image_t *image);
+const uint32_t *R_ImageLit (image_t *image, float *share);
+int		R_ImageLitTexture (image_t *image);
+
+// A light's picture gives off its light from the part of it that is lit only
+// if this much of the light its colours stand for is in that part
+#define	LIT_SHARE_LEAST		0.4f
 
 //
 // rpt_world.c
@@ -190,6 +201,7 @@ extern	int		r_normalflip;
 extern	int		r_watermode;		// 0 classic, 1 realistic, 2 simulated
 extern	float	r_waterreach;
 extern	float	r_watercell, r_waterwaves, r_watercaustics, r_waterdamping, r_waterfoam, r_watershore;
+extern	float	r_waterrate, r_waterspray;
 extern	float	r_bumpscale, r_roughscale, r_metalscale;
 extern	int		r_materialmaps;		// detail maps are read from the pictures' painted light
 extern	float	r_materialdelight;
@@ -252,6 +264,7 @@ int		R_WaterBody (image_t *image, const char *name, float z, float points[][3], 
 void	R_WaterSetMaterial (int body, int material);
 void	R_WaterFinish (void);
 void	R_WaterFrame (refdef_t *fd);
+void	R_WaterStep (void);
 qboolean	R_WaterDrop (int index, float *origin, float *radius);
 qboolean	R_WaterEyeUnder (const float *eye, float strength, qboolean under);
 void	R_WaterAround (const float *eye, float *absorb);

@@ -14,6 +14,7 @@ Quake 2's renderer interface to that header lives in `../ref_pt`.
 - `material/` - makes a normal, roughness and metal map from the colours of a
   hand painted texture, reading its painted highlights and shadows as shape
   and telling metal from what covers it by colour, gives the texture back
-  with that painted light taken out, and works out what a metal painted that
-  dark reflects
+  with that painted light taken out, works out what a metal painted that
+  dark reflects, and tells the lit part of a lamp's or a screen's picture
+  from its frame
 - `png/` - PNG writer

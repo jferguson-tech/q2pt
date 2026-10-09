@@ -82,6 +82,12 @@ static cvar_t	*pt_water_height;		// how tall the simulated waves are, 1 = normal
 static cvar_t	*pt_water_damping;		// how fast waves die down, 1 = normal
 static cvar_t	*pt_water_foam;			// how readily simulated water froths and sprays, 1 = normal, 0 = never
 static cvar_t	*pt_water_shore;		// how much froth lies along its banks, 0 = none
+static cvar_t	*pt_water_shafts;		// how much liquids scatter the light in them, which shows as shafts; 0 = none
+static cvar_t	*pt_water_wet;			// how wet its banks show where it has stood; 0 = not at all
+static cvar_t	*pt_water_spray;		// drops thrown up by hard splashes and breaking waves, 0 = none
+static cvar_t	*pt_water_rate;			// times a second simulated water is stepped at most, 0 = every frame
+static cvar_t	*pt_water_quality;		// 0 low to 3 ultra: sets the water variables above, see water_presets
+static cvar_t	*pt_water_quality_applied;	// the one they were last set from
 static cvar_t	*pt_waves;				// ripple strength on liquids
 
 // materials: scale what rpt_material.c decides
@@ -100,7 +106,8 @@ float	r_detailglow = 1;
 int		r_watermode = 2;
 int		r_normalflip;
 float	r_waterreach;
-float	r_watercell = 8, r_waterwaves = 1, r_watercaustics = 0, r_waterdamping = 1, r_waterfoam = 1, r_watershore = 0.75f;
+float	r_watercell = 12, r_waterwaves = 1, r_watercaustics = 1, r_waterdamping = 1, r_waterfoam = 1, r_watershore = 0;
+float	r_waterrate = 60, r_waterspray = 0;
 float	r_bumpscale = 1, r_roughscale = 1, r_metalscale = 1;
 int		r_materialmaps = 1;
 float	r_materialdelight = 1;
@@ -123,9 +130,31 @@ static struct
 	{ "pt_reflections",			&pt_reflections,		{ 1, 2, 2, 2 } },
 	{ "pt_reflection_bounces",	&pt_reflection_bounces,	{ 1, 0, 0, 0 } },
 	{ "pt_reflection_rate",		&pt_reflection_rate,	{ 0.5f, 1, 1, 1 } },
+	{ "pt_water_quality",		&pt_water_quality,		{ 0, 1, 2, 3 } },
 };
 
 #define	NUM_PRESET_VARS	(sizeof(presets) / sizeof(presets[0]))
+
+// What each pt_water_quality sets. Low does not simulate at all: the liquid
+// ripples as it did before there was a simulation, which costs next to
+// nothing. Any of these may be set by hand afterwards and stays so until
+// pt_water_quality is changed again.
+static struct
+{
+	char	*name;
+	float	value[NUM_PRESETS];		// low, medium, high, ultra
+} water_presets[] =
+{
+	{ "pt_water",			{ 1, 2, 2, 2 } },
+	{ "pt_water_cell",		{ 16, 12, 8, 6 } },
+	{ "pt_water_foam",		{ 0, 1, 1, 1 } },
+	{ "pt_water_spray",		{ 0, 0, 1, 1 } },
+	{ "pt_water_shore",		{ 0, 0, 0.75f, 0.75f } },
+	{ "pt_water_caustics",	{ 0, 1, 1, 1 } },
+	{ "pt_water_rate",		{ 30, 60, 120, 0 } },
+};
+
+#define	NUM_WATER_PRESET_VARS	(sizeof(water_presets) / sizeof(water_presets[0]))
 
 // pt_material_delight, held to what it can mean
 static float R_MaterialDelight (void)
@@ -204,11 +233,18 @@ void R_InitSettings (void)
 	pt_waves = ri.Cvar_Get ("pt_waves", "1", CVAR_ARCHIVE);
 	pt_water = ri.Cvar_Get ("pt_water", "2", CVAR_ARCHIVE);
 	pt_normal_flip = ri.Cvar_Get ("pt_normal_flip", "0", CVAR_ARCHIVE);
-	pt_water_cell = ri.Cvar_Get ("pt_water_cell", "8", CVAR_ARCHIVE);
-	pt_water_caustics = ri.Cvar_Get ("pt_water_caustics", "0", CVAR_ARCHIVE);
+	// the water variables start as the medium pt_water_quality has them
+	pt_water_cell = ri.Cvar_Get ("pt_water_cell", "12", CVAR_ARCHIVE);
+	pt_water_caustics = ri.Cvar_Get ("pt_water_caustics", "1", CVAR_ARCHIVE);
 	pt_water_damping = ri.Cvar_Get ("pt_water_damping", "1", CVAR_ARCHIVE);
 	pt_water_foam = ri.Cvar_Get ("pt_water_foam", "1", CVAR_ARCHIVE);
-	pt_water_shore = ri.Cvar_Get ("pt_water_shore", "0.75", CVAR_ARCHIVE);
+	pt_water_shore = ri.Cvar_Get ("pt_water_shore", "0", CVAR_ARCHIVE);
+	pt_water_spray = ri.Cvar_Get ("pt_water_spray", "0", CVAR_ARCHIVE);
+	pt_water_rate = ri.Cvar_Get ("pt_water_rate", "60", CVAR_ARCHIVE);
+	pt_water_quality = ri.Cvar_Get ("pt_water_quality", "-1", CVAR_ARCHIVE);
+	pt_water_quality_applied = ri.Cvar_Get ("pt_water_quality_applied", "-1", CVAR_ARCHIVE);
+	pt_water_shafts = ri.Cvar_Get ("pt_water_shafts", "1", CVAR_ARCHIVE);
+	pt_water_wet = ri.Cvar_Get ("pt_water_wet", "1", CVAR_ARCHIVE);
 	pt_water_height = ri.Cvar_Get ("pt_water_height", "2", CVAR_ARCHIVE);
 
 	pt_bump = ri.Cvar_Get ("pt_bump", "1", CVAR_ARCHIVE);
@@ -234,6 +270,46 @@ void R_InitSettings (void)
 	r_materialmaps = pt_material_maps->value != 0;
 	r_materialdelight = R_MaterialDelight ();
 	r_metaledge = R_MetalEdge ();
+}
+
+/*
+===============
+R_UpdateWaterQuality
+
+Sets the water variables from pt_water_quality when it has changed, as
+R_UpdatePreset does the rest from pt_quality.
+
+A setup from before there was a pt_water_quality has none: it is given the
+one that goes with its pt_quality, or high, which is what all water was
+then, and keeps the water variables it has. Only the two that are as new as
+pt_water_quality itself are set from it.
+===============
+*/
+static void R_UpdateWaterQuality (void)
+{
+	int		quality, i;
+
+	quality = (int)pt_water_quality->value;
+	if (quality >= NUM_PRESETS)
+		quality = NUM_PRESETS - 1;
+
+	if (quality < 0)
+	{
+		quality = (int)pt_quality->value;
+		if (quality < 0 || quality >= NUM_PRESETS)
+			quality = 2;
+		ri.Cvar_SetValue ("pt_water_spray", water_presets[3].value[quality]);
+		ri.Cvar_SetValue ("pt_water_rate", water_presets[6].value[quality]);
+	}
+	else if (quality != (int)pt_water_quality_applied->value)
+	{
+		for (i=0 ; i<(int)NUM_WATER_PRESET_VARS ; i++)
+			ri.Cvar_SetValue (water_presets[i].name, water_presets[i].value[quality]);
+	}
+	else
+		return;
+	ri.Cvar_SetValue ("pt_water_quality", quality);
+	ri.Cvar_SetValue ("pt_water_quality_applied", quality);
 }
 
 /*
@@ -294,9 +370,13 @@ qboolean R_UpdateSettings (void)
 {
 	qboolean	reload = false;
 
+	R_UpdateWaterQuality ();	// first, so that a setup without one is given it before the preset is compared
 	R_UpdatePreset ();
+	R_UpdateWaterQuality ();	// the preset may have set it
 
 	// these act on the running simulations
+	r_waterrate = pt_water_rate->value;
+	r_waterspray = pt_water_spray->value;
 	r_waterwaves = pt_water_height->value;
 	r_normalflip = pt_normal_flip->value != 0;	// takes effect when the materials are next made
 	r_watercaustics = pt_water_caustics->value;
@@ -418,6 +498,8 @@ void R_ViewSettings (pt_view_t *view)
 	view->refraction = pt_refraction->value != 0;
 	view->wave_strength = pt_waves->value;
 	view->wave_reach = r_waterreach;
+	view->water_shafts = pt_water_shafts->value;
+	view->water_wet = pt_water_wet->value;
 	view->metal_colour = R_MetalColour ();
 
 	view->light_samples = pt_light_samples->value;
