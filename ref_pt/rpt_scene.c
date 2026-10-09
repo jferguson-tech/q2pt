@@ -183,16 +183,21 @@ static entstate_t *S_Before (int index, entity_t *e, vec3_t origin, vec3_t axis[
 R_EntityMoved
 
 How far entity number index has moved since last frame, or 0 if it was not
-there then. Only meaningful before R_BuildScene has run for this frame.
+there then; by, if given, gets which way. Only meaningful before
+R_BuildScene has run for this frame.
 =============
 */
-float R_EntityMoved (int index, entity_t *e)
+float R_EntityMoved (int index, entity_t *e, float *by)
 {
 	vec3_t	d;
 
+	if (by)
+		VectorClear (by);
 	if (index < 0 || index >= s_numwas || s_was[index].model != e->model)
 		return 0;
 	VectorSubtract (e->origin, s_was[index].origin, d);
+	if (by)
+		VectorCopy (d, by);
 	return VectorLength (d);
 }
 
@@ -795,6 +800,7 @@ static void S_AddBall (entity_t *e, int index)
 #define	DOT_SIZE	16
 
 static int	s_dottexture = -1;		// a white disc on nothing, for particles
+static int	s_droptexture = -1;		// and a paler one, for spray
 
 /*
 =============
@@ -806,6 +812,7 @@ The backend is going, and its textures with it
 void R_SceneShutdown (void)
 {
 	s_dottexture = -1;
+	s_droptexture = -1;
 }
 
 // the picture every particle is cut from: opaque inside a circle, a hole outside
@@ -889,6 +896,65 @@ static void S_AddParticles (refdef_t *fd, vec3_t forward, vec3_t right, vec3_t u
 
 /*
 =============
+S_AddSpray
+
+The drops thrown up from simulated water (see rpt_water.c). Unlike the
+game's particles they give off no light of their own: a cloud of fine drops
+is white because it scatters whatever falls on it.
+=============
+*/
+static void S_AddSpray (vec3_t right, vec3_t up)
+{
+	static uint32_t	pixels[DOT_SIZE * DOT_SIZE];
+	pt_texture_t	tex;
+	pt_material_t	mat;
+	vec3_t			origin, corner[4];
+	float			radius, dx, dy;
+	int				i, j, x, y, material;
+
+	if (!R_WaterDrop (0, origin, &radius))
+		return;
+	if (s_droptexture < 0)
+	{
+		for (y=0 ; y<DOT_SIZE ; y++)
+		{
+			for (x=0 ; x<DOT_SIZE ; x++)
+			{
+				dx = (x + 0.5f) * (2.0f / DOT_SIZE) - 1;
+				dy = (y + 0.5f) * (2.0f / DOT_SIZE) - 1;
+				pixels[y * DOT_SIZE + x] = dx * dx + dy * dy <= 1 ? 0xffb8b8b8u : 0x00b8b8b8u;
+			}
+		}
+		tex.width = tex.height = DOT_SIZE;
+		tex.pixels = pixels;
+		s_droptexture = rpt.backend->texture_create (rpt.backend, &tex);
+	}
+
+	memset (&mat, 0, sizeof(mat));
+	mat.texture = s_droptexture;
+	mat.alpha = 1;
+	mat.flags = s_droptexture >= 0 ? PT_MAT_ALPHA_TEST : 0;
+	mat.roughness = 1;
+	mat.normal_texture = -1;
+	mat.anim_next = -1;
+	material = S_FindMaterial (&mat);
+
+	for (i=0 ; R_WaterDrop (i, origin, &radius) ; i++)
+	{
+		for (j=0 ; j<3 ; j++)
+		{
+			corner[0][j] = origin[j] - right[j] * radius - up[j] * radius;
+			corner[1][j] = origin[j] + right[j] * radius - up[j] * radius;
+			corner[2][j] = origin[j] + right[j] * radius + up[j] * radius;
+			corner[3][j] = origin[j] - right[j] * radius + up[j] * radius;
+		}
+		S_Triangle (corner[0], corner[1], corner[2], 0, 0, 1, 0, 1, 1, material);
+		S_Triangle (corner[0], corner[2], corner[3], 0, 0, 1, 1, 0, 1, material);
+	}
+}
+
+/*
+=============
 R_BuildScene
 =============
 */
@@ -950,6 +1016,7 @@ void R_BuildScene (refdef_t *fd, pt_scene_t *scene)
 	}
 
 	S_AddParticles (fd, forward, right, up);
+	S_AddSpray (right, up);
 
 	numlights = s_numballlights;
 	for (i=0 ; i<fd->num_dlights && numlights<MAX_BALL_LIGHTS+MAX_DLIGHTS ; i++)

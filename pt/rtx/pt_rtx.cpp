@@ -58,6 +58,9 @@ const uint32_t trace_comp_spv[] =
 const uint32_t temporal_comp_spv[] =
 #include "temporal.comp.inc"
 ;
+const uint32_t change_comp_spv[] =
+#include "change.comp.inc"
+;
 const uint32_t atrous_comp_spv[] =
 #include "atrous.comp.inc"
 ;
@@ -97,6 +100,10 @@ struct PassPush
 	int32_t	a, b, c, d;
 };
 
+// simulated bodies of liquid the shaders are told of; those of a map beyond
+// that stay the level sheets the map has for them
+const int kMaxWaters = 24;
+
 // What the shaders are told about the frame (std140); see scene.glsl, which
 // says what is in each.
 struct FrameBlock
@@ -114,12 +121,13 @@ struct FrameBlock
 	int32_t	output_i[4];
 	float	output_f[4];
 	int32_t	frame_has[4], size[4];
-	float	water_rect[8][4], water_at[8][4], water_wave[8][4];
+	float	water_rect[kMaxWaters][4], water_at[kMaxWaters][4], water_wave[kMaxWaters][4];
 	int32_t	out_size[4];
 	float	open_origin[4], open_forward[4], open_right[4], open_up[4];	// motion blur: the eye as the shutter opened; open_origin[3]: there is blur
 	int32_t	held[4];		// first triangle of the frame that the eye carries, how many; [2]: reflections are followed where they appear to be
 	float	painted[4];		// [0]: what a metal painted dark reflects, see pt_view_t's metal_colour; [1]: bloom_max; [2]: fog_samples; [3]: fog_history
-	float	liquid[4];		// [0]: wave_reach
+	float	liquid[4];		// [0]: wave_reach; [1]: react
+	int32_t	table_at3[4];	// in indices: what stands in for each of the map's lights when it is not kept; the cells' lists in order of light
 };
 
 // one triangle, one material and one light as the shaders read them (std430)
@@ -144,21 +152,22 @@ struct GpuMaterial
 	float		scroll[2];
 	int32_t		wave_map, caustic_map;
 	uint32_t	bits;
-	uint32_t	pad[3];
+	int32_t		foam_map;
+	uint32_t	pad[2];
 };
 
 struct GpuLight
 {
-	float		origin[3];
-	uint32_t	tri;
+	float		origin[3];	// a triangle's first corner
+	uint32_t	tri;		// a point: kPointLight plus its light style
 	float		emission[3];
 	float		pdf;
-	float		dir[3];
+	float		dir[3];		// a triangle: from its first corner to its second
 	float		cone_cos;
-	int32_t		style;
+	float		edge[3];	// a triangle: from its first corner to its third
 	float		radius;
-	int32_t		pad[2];
 };
+const uint32_t kPointLight = 0xffffff00u;
 
 const uint32_t kBitEmissive = 1, kBitSampled = 2, kBitSwell = 4;	// GpuMaterial::bits
 // Instances of the top level structure: the map, its glass, what moves, its
@@ -167,7 +176,7 @@ const uint32_t kBitEmissive = 1, kBitSampled = 2, kBitSwell = 4;	// GpuMaterial:
 const uint32_t kNumInstances = 5;
 const uint32_t kMaskScene = 1, kMaskHeld = 2;
 const int kNumStyles = 256;							// light styles, at the start of the tables
-const uint32_t kNumBindings = 33;
+const uint32_t kNumBindings = 35;
 
 // The pictures kept per pixel between the passes, in the order the shaders'
 // bindings take them; see scene.glsl.
@@ -188,7 +197,9 @@ enum
 	kMirror = 28,	// 2
 	kOver = 30,
 	kMoments = 31,	// 6
-	kNumTargets = 37
+	kFlash = 37,	// 2
+	kChange = 39,	// 4
+	kNumTargets = 43
 };
 
 const uint32_t kMaxTextures = 4096;
@@ -326,18 +337,25 @@ struct RtxBackend
 	uint32_t				num_instances = 0;
 
 	// lights and the tables for finding them; see LoadWorldNow
-	Buffer					frame_block, world_lights, frame_lights, tables, indices, meter;
+	Buffer					frame_block, world_lights, frame_lights, tables, indices;
+	// The sums the exposure is set from. The shader adds to them in the card's
+	// own memory, where they run on and wrap round, and each view's tracing
+	// ends by copying them to where they can be read here. (Added up straight
+	// into memory of the host's, every sum was a trip to it and back: 4 ms of
+	// a 47 ms frame on an RTX 4060 Laptop.)
+	Buffer					meter, meter_read;
+	uint32_t				meter_was[2] = {};		// what they stood at when last read
 	int						num_world_lights = 0;
 	bool					has_grid = false;
 	float					grid_origin[3] = {0, 0, 0}, grid_inv_cell = 0.0f;
 	int						grid_dims[3] = {0, 0, 0};
-	int						table_light_cdf = 0, table_grid_pdf = 0, table_grid_cdf = 0, table_sky_chance = 0, table_sky_cdf = 0;
-	int						index_grid_light = 0, index_grid_count = 0;
+	int						table_light_keep = 0, table_grid_pdf = 0, table_grid_keep = 0, table_sky_chance = 0, table_sky_cdf = 0;
+	int						index_grid_light = 0, index_grid_count = 0, index_light_other = 0, index_grid_sorted = 0;
 	int						sky_res = 0;
 	float					sky_total = 0.0f, sky_scale = 1.0f;
 	// simulated bodies of liquid: extent, height of the surface, material
 	int						num_waters = 0;
-	float					water_rect[8][4] = {}, water_at[8][4] = {}, water_wave[8][4] = {};
+	float					water_rect[kMaxWaters][4] = {}, water_at[kMaxWaters][4] = {}, water_wave[kMaxWaters][4] = {};
 
 	// textures the host has changed, until the next frame takes them
 	Buffer					updates;
@@ -356,7 +374,7 @@ struct RtxBackend
 	VkPipeline				trace_pipeline = VK_NULL_HANDLE, temporal_pipeline = VK_NULL_HANDLE;
 	VkPipeline				atrous_pipeline = VK_NULL_HANDLE, compose_pipeline = VK_NULL_HANDLE;
 	VkPipeline				bloom_pipeline = VK_NULL_HANDLE, resolve_pipeline = VK_NULL_HANDLE;
-	VkPipeline				grade_pipeline = VK_NULL_HANDLE;
+	VkPipeline				grade_pipeline = VK_NULL_HANDLE, change_pipeline = VK_NULL_HANDLE;
 	bool					bloom_on = false;
 	float					camera[16] = {};		// the last view, to tell whether it has moved
 	FrameBlock				block{};				// what the shaders were last told
@@ -364,6 +382,8 @@ struct RtxBackend
 	bool					trace_ready = false;	// there is a picture of this frame's view to show
 	bool					trace_pending = false;	// but it has yet to be traced
 	bool					has_history = false;	// the last frame's pictures can be built on
+	bool					react_on = false;		// this frame looks for where the light has changed
+	int						still_frames = 0;		// frames in a row in which nothing changed
 	int						parity = 0;				// which of each pair of pictures is this frame's
 	uint32_t				frame_index = 0;
 	uint32_t				prev_hash = 0;
@@ -1409,8 +1429,9 @@ void SetMaterial(const RtxBackend *s, GpuMaterial &dest, const pt_material_t &in
 	out.texture = used(slot(in.texture));
 	out.normal_texture = used(slot(in.normal_texture));
 	out.emission_map = used(slot(in.emission_texture - 1));
-	out.wave_map = used(in.wave_map - 1);			// these two are handles
+	out.wave_map = used(in.wave_map - 1);			// these three are handles
 	out.caustic_map = used(in.caustic_map - 1);
+	out.foam_map = used(in.foam_map - 1);
 	out.flags = in.flags;
 	out.alpha = in.alpha;
 	out.roughness = Clamp01(in.roughness);
@@ -1532,8 +1553,11 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 		// light is lost: so these are kept at full precision.
 		const bool gathered = i >= kKept && i < kKept + 6;
 		const bool moments = i >= kMoments && i < kMoments + 6;
-		const VkFormat format = (positions || gathered) ? VK_FORMAT_R32G32B32A32_SFLOAT
-			: moments ? VK_FORMAT_R32G32_SFLOAT
+		const bool flash = i >= kFlash && i < kFlash + 2;
+		// one value for each block of 8 by 8 pixels
+		const bool blocks = i >= kChange && i < kChange + 4;
+		const VkFormat format = (positions || gathered || blocks) ? VK_FORMAT_R32G32B32A32_SFLOAT
+			: moments ? VK_FORMAT_R32G32_SFLOAT : flash ? VK_FORMAT_R32_SFLOAT
 			: (i == kPicture ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R16G16B16A16_SFLOAT);
 
 		VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -1541,6 +1565,8 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 		ici.format = format;
 		const bool full = i == kPicture || i == kSteady || i == kSteady + 1;
 		ici.extent = {(uint32_t)(full ? out_width : width), (uint32_t)(full ? out_height : height), 1};
+		if (blocks)
+			ici.extent = {((uint32_t)width + 7) / 8, ((uint32_t)height + 7) / 8, 1};
 		ici.mipLevels = 1;
 		ici.arrayLayers = 1;
 		ici.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -1577,7 +1603,8 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 		{17, kSurface, 2}, {18, kSeen, 1}, {19, kAlbedo, 2}, {20, kNoisy, 3},
 		{21, kExtra, 1}, {22, kKept, 6}, {23, kFilter, 6}, {24, kPicture, 1},
 		{26, kHdr, 1}, {27, kBloom, 2}, {28, kSteady, 2}, {29, kGraded, 1},
-		{30, kMirror, 2}, {31, kOver, 1}, {32, kMoments, 6},
+		{30, kMirror, 2}, {31, kOver, 1}, {32, kMoments, 6}, {33, kFlash, 2},
+		{34, kChange, 4},
 	};
 	VkDescriptorImageInfo info[kNumTargets];
 	for (const auto &g : groups)
@@ -1657,6 +1684,8 @@ void CreateScene(RtxBackend *s)
 	bind[28].descriptorCount = 2;
 	bind[30].descriptorCount = 2;
 	bind[32].descriptorCount = 6;
+	bind[33].descriptorCount = 2;
+	bind[34].descriptorCount = 4;
 
 	VkDescriptorSetLayoutCreateInfo dlci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
 	dlci.bindingCount = kNumBindings;
@@ -1694,6 +1723,7 @@ void CreateScene(RtxBackend *s)
 
 	s->trace_pipeline = MakeComputePipeline(s, trace_comp_spv, sizeof(trace_comp_spv));
 	s->temporal_pipeline = MakeComputePipeline(s, temporal_comp_spv, sizeof(temporal_comp_spv));
+	s->change_pipeline = MakeComputePipeline(s, change_comp_spv, sizeof(change_comp_spv));
 	s->atrous_pipeline = MakeComputePipeline(s, atrous_comp_spv, sizeof(atrous_comp_spv));
 	s->compose_pipeline = MakeComputePipeline(s, compose_comp_spv, sizeof(compose_comp_spv));
 	s->bloom_pipeline = MakeComputePipeline(s, bloom_comp_spv, sizeof(bloom_comp_spv));
@@ -1754,8 +1784,16 @@ void CreateScene(RtxBackend *s)
 	s->frame_lights = MakeBuffer(s, 64 * sizeof(GpuLight), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
 	s->tables = MakeBuffer(s, kNumStyles * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
 	s->indices = MakeBuffer(s, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
-	s->meter = MakeBuffer(s, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, true);
-	memset(s->meter.ptr, 0, 64);
+	s->meter = MakeBuffer(s, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+		| VK_BUFFER_USAGE_TRANSFER_DST_BIT, false);
+	s->meter_read = MakeBuffer(s, 64, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, true);
+	memset(s->meter_read.ptr, 0, 64);
+	s->meter_was[0] = s->meter_was[1] = 0;
+	{
+		VkCommandBuffer cmd = BeginOnce(s);
+		vkCmdFillBuffer(cmd, s->meter.buffer, 0, VK_WHOLE_SIZE, 0);
+		EndOnce(s);
+	}
 	Reserve(s, s->world, 1, 1, kWorldBuild, false);
 	Reserve(s, s->frame, 1, 1, kFrameBuild, true);
 	ShowBuffers(s);
@@ -1803,6 +1841,7 @@ void DestroyScene(RtxBackend *s)
 	FreeBuffer(s, s->tables);
 	FreeBuffer(s, s->indices);
 	FreeBuffer(s, s->meter);
+	FreeBuffer(s, s->meter_read);
 	FreeBuffer(s, s->updates);
 	FreeBuffer(s, s->readback);
 	for (Texture &t : s->textures)
@@ -1810,7 +1849,7 @@ void DestroyScene(RtxBackend *s)
 	FreeTexture(s, s->blank);
 	FreeTargets(s);
 	for (VkPipeline p : {s->trace_pipeline, s->temporal_pipeline, s->atrous_pipeline, s->compose_pipeline,
-		s->bloom_pipeline, s->resolve_pipeline, s->grade_pipeline})
+		s->bloom_pipeline, s->resolve_pipeline, s->grade_pipeline, s->change_pipeline})
 		if (p)
 			vkDestroyPipeline(s->device, p, nullptr);
 	if (s->trace_playout) vkDestroyPipelineLayout(s->device, s->trace_playout, nullptr);
@@ -1819,6 +1858,45 @@ void DestroyScene(RtxBackend *s)
 	if (s->trace_sampler) vkDestroySampler(s->device, s->trace_sampler, nullptr);
 	if (s->smooth_sampler) vkDestroySampler(s->device, s->smooth_sampler, nullptr);
 	if (s->tex_sampler) vkDestroySampler(s->device, s->tex_sampler, nullptr);
+}
+
+// For picking one of count things by chance, each as often as its share
+// says, with no search however many there are (Walker's alias method, built
+// Vose's way): a place among them is drawn evenly, and the thing there is
+// kept with the chance keep has for it, or else the one that other names
+// is taken in its stead. Each thing's whole chance, as itself and as the
+// stand-in of others, comes to its share.
+void PickingTable(const float *share, size_t count, float *keep, uint32_t *other)
+{
+	// each one's share of a place, in which 1 is all of it
+	double sum = 0.0;
+	for (size_t i = 0; i < count; i++)
+		sum += share[i] > 0.0f ? share[i] : 0.0;
+	std::vector<double> has(count);
+	std::vector<uint32_t> under, over;
+	for (size_t i = 0; i < count; i++)
+	{
+		has[i] = sum > 0.0 ? (share[i] > 0.0f ? share[i] : 0.0) * (double)count / sum : 1.0;
+		keep[i] = 1.0f;
+		other[i] = (uint32_t)i;
+		(has[i] < 1.0 ? under : over).push_back((uint32_t)i);
+	}
+	// one with less than a place to itself has the rest of its place filled
+	// by one with more, which is left with that much less
+	while (!under.empty() && !over.empty())
+	{
+		const uint32_t less = under.back(), more = over.back();
+		under.pop_back();
+		keep[less] = (float)has[less];
+		other[less] = more;
+		has[more] -= 1.0 - has[less];
+		if (has[more] < 1.0)
+		{
+			over.pop_back();
+			under.push_back(more);
+		}
+	}
+	// (what is left on either side has a place to itself, give or take the rounding)
 }
 
 void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
@@ -1925,23 +2003,42 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 		const pt::Light &l = w->lights[i];
 		GpuLight &out = lights[i];
 		memset(&out, 0, sizeof(out));
-		out.tri = l.tri == ~0u ? ~0u : place[l.tri];
 		out.pdf = l.pdf;
 		out.cone_cos = l.cone_cos;
-		out.style = l.style;
 		for (int a = 0; a < 3; a++)
-		{
-			out.origin[a] = l.origin[a];
 			out.emission[a] = l.emission[a];
-			out.dir[a] = l.dir[a];
+		if (l.tri == ~0u)
+		{
+			out.tri = kPointLight | (uint32_t)((l.style > 0 && l.style < 256) ? l.style : 0);
+			for (int a = 0; a < 3; a++)
+			{
+				out.origin[a] = l.origin[a];
+				out.dir[a] = l.dir[a];
+			}
+		}
+		else
+		{
+			// A point is drawn on it for every light weighed, which is most
+			// of what weighing costs: its corners are here with the rest of
+			// it, not to be looked up among the map's.
+			out.tri = place[l.tri];
+			const float *corner[3];
+			for (int k = 0; k < 3; k++)
+				corner[k] = &in->positions[in->indices[l.tri * 3 + k] * 3];
+			for (int a = 0; a < 3; a++)
+			{
+				out.origin[a] = corner[0][a];
+				out.dir[a] = corner[1][a] - corner[0][a];
+				out.edge[a] = corner[2][a] - corner[0][a];
+			}
 		}
 	}
 
 	// tables: the light styles, then whatever the frame block says is where
-	s->table_light_cdf = kNumStyles;
-	s->table_grid_pdf = s->table_light_cdf + (int)num_lights;
-	s->table_grid_cdf = s->table_grid_pdf + (int)grid.pdf.size();
-	s->table_sky_chance = s->table_grid_cdf + (int)grid.cdf.size();
+	s->table_light_keep = kNumStyles;
+	s->table_grid_pdf = s->table_light_keep + (int)num_lights;
+	s->table_grid_keep = s->table_grid_pdf + (int)grid.pdf.size();
+	s->table_sky_chance = s->table_grid_keep + (int)grid.cdf.size();
 	s->table_sky_cdf = s->table_sky_chance + (int)w->sky_chance.size();
 	const size_t num_floats = (size_t)s->table_sky_cdf + sky_cells;
 	Room(s, s->tables, num_floats * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -1953,20 +2050,65 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 		if (!v.empty())
 			memcpy(&tables[at], v.data(), v.size() * sizeof(float));
 	};
-	put(s->table_light_cdf, w->light_cdf);
 	put(s->table_grid_pdf, grid.pdf);
-	put(s->table_grid_cdf, grid.cdf);
 	put(s->table_sky_chance, w->sky_chance);
 	put(s->table_sky_cdf, w->sky_cdf);
 
+	// The shaders weigh many lights at every point they light, and each is
+	// first picked by chance: from the whole map by its light, or from the
+	// list of the cell the point is in. The CPU backend finds the one a
+	// number drawn stands for by halving a table of the chances added up,
+	// a dozen looks for the map and five for a cell. Pixels are traced on
+	// the card in step with their neighbours, each waiting out every look
+	// any of them has to take, so the shaders pick from tables that take one
+	// look whatever the count: see PickingTable. The chances are the same.
+	const int per_cell = pt::LightGrid::kPerCell;
+	static_assert(per_cell <= 32, "a place in a cell's list has five bits");
 	s->index_grid_light = 0;
 	s->index_grid_count = (int)grid.light.size();
-	Room(s, s->indices, std::max<size_t>(grid.light.size() + cells, 1) * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+	s->index_light_other = s->index_grid_count + (int)cells;
+	s->index_grid_sorted = s->index_light_other + (int)num_lights;
+	Room(s, s->indices, std::max<size_t>(grid.light.size() * 2 + cells + num_lights, 1) * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 	uint32_t *index = static_cast<uint32_t *>(s->indices.ptr);
-	for (size_t i = 0; i < grid.light.size(); i++)
-		index[i] = grid.light[i];
-	for (size_t i = 0; i < cells; i++)
-		index[grid.light.size() + i] = grid.count[i];
+	{
+		std::vector<float> share(num_lights), keep(std::max<size_t>(num_lights, per_cell));
+		std::vector<uint32_t> other(std::max<size_t>(num_lights, per_cell));
+		for (size_t i = 0; i < num_lights; i++)
+			share[i] = w->lights[i].pdf;
+		PickingTable(share.data(), num_lights, keep.data(), other.data());
+		if (num_lights)
+		{
+			memcpy(&tables[s->table_light_keep], keep.data(), num_lights * sizeof(float));
+			memcpy(&index[s->index_light_other], other.data(), num_lights * sizeof(uint32_t));
+		}
+
+		// A cell's list: each light with, in its low five bits, the place in
+		// the list of the one that stands in for it. And the list again in
+		// order of light, each with its own place in its low bits: a light
+		// picked map wide may be in the cell's list as well, what chance it
+		// had of being picked from there has to be known, and going down the
+		// list for it took a look at every entry.
+		for (size_t c = 0; c < cells; c++)
+		{
+			const size_t first = c * per_cell;
+			const int count = grid.count[c];
+			uint32_t entry[pt::LightGrid::kPerCell] = {}, sorted[pt::LightGrid::kPerCell];
+			PickingTable(&grid.pdf[first], count, keep.data(), other.data());
+			for (int j = 0; j < per_cell; j++)
+			{
+				if (j >= count)
+					keep[j] = 1.0f;
+				else
+					entry[j] = (grid.light[first + j] << 5) | other[j];
+				sorted[j] = j < count ? (grid.light[first + j] << 5) | (uint32_t)j : ~0u;
+			}
+			std::sort(sorted, sorted + count);
+			memcpy(&tables[s->table_grid_keep + first], keep.data(), per_cell * sizeof(float));
+			memcpy(&index[s->index_grid_light + first], entry, sizeof(entry));
+			memcpy(&index[s->index_grid_sorted + first], sorted, sizeof(sorted));
+			index[s->index_grid_count + c] = (uint32_t)count;
+		}
+	}
 
 	s->num_world_lights = (int)num_lights;
 	s->has_grid = cells > 0 && w->sky_chance.size() == cells;
@@ -1979,7 +2121,7 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 	s->num_waters = 0;
 	for (const pt::World::Water &body : w->waters)
 	{
-		if (s->num_waters == 8)
+		if (s->num_waters == kMaxWaters)
 			break;
 		float *rect = s->water_rect[s->num_waters], *at = s->water_at[s->num_waters];
 		rect[0] = body.min_x;
@@ -1987,7 +2129,7 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 		rect[2] = body.max_x;
 		rect[3] = body.max_y;
 		at[0] = body.z;
-		at[1] = (float)(body.mat - w->materials.data());
+		at[1] = body.top ? (float)(body.mat - w->materials.data()) : -1.0f;
 		// as SetMaterial has them
 		const auto used = [&](int t) { return (t >= 0 && t < (int)kMaxTextures && s->textures[t].view) ? t : -1; };
 		at[2] = (float)used(body.mat->wave_map - 1);
@@ -2039,9 +2181,11 @@ const float kTypicalTarget = 0.0054f;	// the brightness the exposure aims the ty
 // about a second so that it does not pump.
 void AdaptExposure(RtxBackend *s, const pt_view_t *view)
 {
-	uint32_t *meter = static_cast<uint32_t *>(s->meter.ptr);
-	const uint32_t sum = meter[0], count = meter[1];
-	meter[0] = meter[1] = 0;
+	// what the views traced since the last look added to the sums
+	const uint32_t *meter = static_cast<const uint32_t *>(s->meter_read.ptr);
+	const uint32_t sum = meter[0] - s->meter_was[0], count = meter[1] - s->meter_was[1];
+	s->meter_was[0] = meter[0];
+	s->meter_was[1] = meter[1];
 	if (!count || s->exposure_used <= 0.0f)
 		return;
 
@@ -2228,7 +2372,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	for (uint32_t i = 0; i < num_lights; i++)
 	{
 		memset(&lights[i], 0, sizeof(GpuLight));
-		lights[i].tri = ~0u;
+		lights[i].tri = kPointLight;
 		for (int a = 0; a < 3; a++)
 		{
 			lights[i].origin[a] = scene->lights[i].origin[a];
@@ -2374,14 +2518,16 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.bases[3] = (int32_t)s->frame.num_solid;
 	f.grid_dims[3] = s->has_grid ? 1 : 0;
 	f.grid_origin[3] = s->grid_inv_cell;
-	f.table_at[0] = s->table_light_cdf;
+	f.table_at[0] = s->table_light_keep;
 	f.table_at[1] = s->table_grid_pdf;
-	f.table_at[2] = s->table_grid_cdf;
+	f.table_at[2] = s->table_grid_keep;
 	f.table_at[3] = s->table_sky_chance;
 	f.table_at2[0] = s->table_sky_cdf;
 	f.table_at2[1] = s->sky_res;
 	f.table_at2[2] = s->index_grid_light;
 	f.table_at2[3] = s->index_grid_count;
+	f.table_at3[0] = s->index_light_other;
+	f.table_at3[1] = s->index_grid_sorted;
 
 	const int bounces = std::max(0, view->bounces);
 	const int paths = std::min(std::max(1, view->samples), 64);
@@ -2452,6 +2598,13 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	memcpy(f.water_at, s->water_at, sizeof(f.water_at));
 	memcpy(f.water_wave, s->water_wave, sizeof(f.water_wave));
 	f.liquid[0] = std::min(std::max(view->wave_reach, 0.0f), 8.0f);
+	// Looked for while things change and for a few frames after: the frame
+	// a light goes out is the last that differs from the one before, and
+	// what little of it is missed then would fade very slowly from an
+	// average that runs on.
+	s->still_frames = still ? std::min(s->still_frames + 1, 1000) : 0;
+	s->react_on = f.output_i[3] && view->react > 0.0f && s->still_frames < 8;
+	f.liquid[1] = s->react_on ? std::min(view->react, 1.0f) : 0.0f;
 
 	memcpy(s->frame_block.ptr, &f, sizeof(f));
 	s->prev_time = view->time;
@@ -2471,18 +2624,25 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	s->scene_ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - began).count();
 }
 
-// what one pass has written, the next may read
-void BetweenPasses(VkCommandBuffer cmd, VkPipelineStageFlags2 next_stage, VkAccessFlags2 next_access)
+// what one step has written, the next may read
+void Between(VkCommandBuffer cmd, VkPipelineStageFlags2 stage, VkAccessFlags2 access,
+	VkPipelineStageFlags2 next_stage, VkAccessFlags2 next_access)
 {
 	VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
-	b.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-	b.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+	b.srcStageMask = stage;
+	b.srcAccessMask = access;
 	b.dstStageMask = next_stage;
 	b.dstAccessMask = next_access;
 	VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
 	di.memoryBarrierCount = 1;
 	di.pMemoryBarriers = &b;
 	vkCmdPipelineBarrier2(cmd, &di);
+}
+
+// what one pass has written, the next may read
+void BetweenPasses(VkCommandBuffer cmd, VkPipelineStageFlags2 next_stage, VkAccessFlags2 next_access)
+{
+	Between(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, next_stage, next_access);
 }
 
 // pictures the host has changed since the last frame (the wave maps of
@@ -2563,8 +2723,20 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 	run(s->trace_pipeline, 0, 0, 0);
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
 
-	// gathered with what earlier frames saw
+	// gathered with what earlier frames saw, less where the light is found
+	// to have changed since: looked for block by block, see change.comp
 	mark();
+	if (s->react_on)
+	{
+		run(s->change_pipeline, 0, 0, 0);
+		BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
+		groups_x = (gx + 7) / 8;
+		groups_y = (gy + 7) / 8;
+		run(s->change_pipeline, 1, 0, 0);
+		BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
+		groups_x = gx;
+		groups_y = gy;
+	}
 	run(s->temporal_pipeline, 0, 0, 0);
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
 
@@ -2582,6 +2754,15 @@ void RecordTrace(RtxBackend *s, VkCommandBuffer cmd)
 	mark();
 	run(s->compose_pipeline, source, 0, 0);
 	BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
+
+	// the exposure's sums, which that added to, to where they can be read here
+	{
+		const VkAccessFlags2 copied = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+		BetweenPasses(cmd, VK_PIPELINE_STAGE_2_COPY_BIT, copied);
+		const VkBufferCopy sums{0, 0, 2 * sizeof(uint32_t)};
+		vkCmdCopyBuffer(cmd, s->meter.buffer, s->meter_read.buffer, 1, &sums);
+		Between(cmd, VK_PIPELINE_STAGE_2_COPY_BIT, copied, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, rw);
+	}
 
 	// the glow of what is too bright for the screen: taken out at half size,
 	// then blurred across and down three times, which comes close to a gaussian

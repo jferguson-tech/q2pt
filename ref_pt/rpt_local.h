@@ -200,7 +200,7 @@ extern	float	r_detailglow;
 extern	int		r_normalflip;
 extern	int		r_watermode;		// 0 classic, 1 realistic, 2 simulated
 extern	float	r_waterreach;
-extern	float	r_watercell, r_waterwaves, r_watercaustics, r_waterdamping;
+extern	float	r_watercell, r_waterwaves, r_watercaustics, r_waterdamping, r_waterfoam, r_watershore;
 extern	float	r_bumpscale, r_roughscale, r_metalscale;
 extern	int		r_materialmaps;		// detail maps are read from the pictures' painted light
 extern	float	r_materialdelight;
@@ -242,14 +242,17 @@ void	R_BenchFrame (void);
 //
 void	R_WaterReset (void);
 void	R_WaterAbsorb (image_t *image, const char *name, float *absorb);
-int		R_WaterBody (image_t *image, const char *name, float z, float points[][3], int numpoints);
+int		R_WaterBody (image_t *image, const char *name, float z, float points[][3], int numpoints, const float *stream);
 void	R_WaterSetMaterial (int body, int material);
 void	R_WaterFinish (void);
 void	R_WaterFrame (refdef_t *fd);
+void	R_WaterStep (void);
+qboolean	R_WaterDrop (int index, float *origin, float *radius);
 qboolean	R_WaterEyeUnder (const float *eye, float strength, qboolean under);
 void	R_WaterAround (const float *eye, float *absorb);
 pt_material_t *R_WorldMaterialPtr (int index);
-float	R_EntityMoved (int index, entity_t *e);
+int		R_WorldTriangles (const float **positions);
+float	R_EntityMoved (int index, entity_t *e, float *by);
 
 //
 // rpt_model.c

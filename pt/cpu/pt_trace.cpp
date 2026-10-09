@@ -569,12 +569,14 @@ static Vec3 MetalColour(Vec3 c, float level)
 	return Vec3(reflects[0], reflects[1], reflects[2]);
 }
 
-void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth)
+void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth, bool with_froth)
 {
 	const Material &mat = tri.mat->At(sc.anim_frame);
 	s.tri = &tri;
 	s.mat = &mat;
 	s.medium = false;
+	s.foam = 0.0f;
+	s.cover = mat.alpha;
 	s.p = ray.o + ray.d * hit.t;
 	s.wo = -ray.d;
 	s.front = Dot(tri.n, ray.d) < 0.0f;
@@ -675,6 +677,24 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 		}
 		// crests gather the light in the liquid and troughs spread it
 		s.colour *= std::min(std::max(1.0f + wave_height * 0.35f, 0.6f), 1.8f);
+
+		// Froth is air and liquid finely mixed, which scatters light every
+		// way: a pale matt layer over the liquid, which still shows through
+		// where the layer is thin and still shines a little where it is not.
+		// Bubbles do not lie flat.
+		float age = 0.0f;
+		const float froth = with_froth ? sc.Froth(mat, s.p, age) : 0.0f;
+		if (froth > 0.0f)
+		{
+			const Vec3 pale = (s.colour * 0.4f + Vec3(0.6f)) * ((0.55f - 0.2f * age) * (0.7f + 0.3f * Scene::Lumps(s.p.x * 2.3f, s.p.y * 2.3f)));
+			const float both = mat.alpha + froth - mat.alpha * froth;
+			s.colour = (s.colour * (mat.alpha * (1.0f - froth)) + pale * froth) * (1.0f / both);
+			s.foam = froth;
+			s.cover = both;
+			n = Normalize(n + Vec3(Scene::Lumps(s.p.x * 1.9f, s.p.y * 1.9f) - 0.5f,
+				Scene::Lumps(s.p.y * 1.9f + 31.7f, s.p.x * 1.9f + 31.7f) - 0.5f, 0.0f) * (0.5f * froth));
+			s.glow = Vec3();
+		}
 	}
 	else if ((mat.flags & PT_MAT_WAVES) && sc.wave_strength > 0.0f)
 	{
@@ -694,7 +714,7 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 	s.n = n;
 
 	s.metallic = metallic;
-	if (mat.flags & PT_MAT_BLACK)
+	if ((mat.flags & PT_MAT_BLACK) && s.foam <= 0.0f)
 	{
 		s.kd = Vec3();
 		s.f0 = Vec3();
@@ -714,6 +734,8 @@ void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray
 Vec3 Emitted(const Surface &s, bool seen)
 {
 	const Material &m = *s.mat;
+	if (s.foam > 0.0f)
+		return Vec3();
 	if (m.emission_map)
 	{
 		if (!(m.flags & PT_MAT_EMIT_MAPPED))
@@ -740,44 +762,53 @@ static void WaterBounce(const Scene &sc, const Surface &s, Vec3 y, Vec3 e, Lit &
 {
 	if (s.medium)
 		return;
+	// The body the light would come off: of those whose surface the path
+	// crosses, the one nearest below. Only that one is tried, so that a map
+	// with many bodies costs no more rays than one with few.
+	const World::Water *body = nullptr;
+	Vec3 q;		// where the path meets the surface
 	for (const World::Water &b : sc.world->waters)
 	{
-		if (s.p.z <= b.z + 1.0f || y.z <= b.z + 1.0f || s.p.z - b.z > 512.0f)
+		if (!b.top || s.p.z <= b.z + 1.0f || y.z <= b.z + 1.0f || s.p.z - b.z > 512.0f || (body && b.z <= body->z))
 			continue;
 		const Vec3 image(y.x, y.y, 2.0f * b.z - y.z);
 		const Vec3 d = image - s.p;
-		const Vec3 q = s.p + d * ((b.z - s.p.z) / d.z);		// where the path meets the surface
-		if (q.x < b.min_x || q.x > b.max_x || q.y < b.min_y || q.y > b.max_y)
+		const Vec3 at = s.p + d * ((b.z - s.p.z) / d.z);
+		if (at.x < b.min_x || at.x > b.max_x || at.y < b.min_y || at.y > b.max_y || !sc.Wet(*b.mat, at))
 			continue;
-
-		const float len2 = Dot(d, d);
-		const Vec3 wi = d * (1.0f / std::sqrt(len2));
-		const float m = 1.0f + wi.z;	// 1 - cosine of the angle at the water
-		const float fresnel = 0.02f + 0.98f * m * m * m * m * m;
-		const float gain = fresnel * sc.Caustic(*b.mat, q);
-		if (gain <= 0.001f)
-			continue;
-
-		// e was for the straight path; this one is as long as the way to the image
-		const Vec3 straight = y - s.p;
-		const Lit add = Reflect(s, wi, e * (gain * Dot(straight, straight) / len2));
-		if (Importance(s, add) <= 0.0f)
-			continue;
-
-		// both legs must be clear
-		const Vec3 above = q + Vec3(0.0f, 0.0f, 0.1f);
-		if (Visible(sc, s, above, rng) <= 0.0f)
-			continue;
-		Surface at{};
-		at.medium = true;
-		at.p = above;
-		if (Visible(sc, at, y, rng) <= 0.0f)
-			continue;
-
-		out.diffuse += add.diffuse;
-		out.specular += add.specular;
-		return;		// one body will do
+		body = &b;
+		q = at;
 	}
+	if (!body)
+		return;
+
+	const Vec3 d = Vec3(y.x, y.y, 2.0f * body->z - y.z) - s.p;
+	const float len2 = Dot(d, d);
+	const Vec3 wi = d * (1.0f / std::sqrt(len2));
+	const float m = 1.0f + wi.z;	// 1 - cosine of the angle at the water
+	const float fresnel = 0.02f + 0.98f * m * m * m * m * m;
+	const float gain = fresnel * sc.Caustic(*body->mat, q);
+	if (gain <= 0.001f)
+		return;
+
+	// e was for the straight path; this one is as long as the way to the image
+	const Vec3 straight = y - s.p;
+	const Lit add = Reflect(s, wi, e * (gain * Dot(straight, straight) / len2));
+	if (Importance(s, add) <= 0.0f)
+		return;
+
+	// both legs must be clear
+	const Vec3 above = q + Vec3(0.0f, 0.0f, 0.1f);
+	if (Visible(sc, s, above, rng) <= 0.0f)
+		return;
+	Surface at{};
+	at.medium = true;
+	at.p = above;
+	if (Visible(sc, at, y, rng) <= 0.0f)
+		return;
+
+	out.diffuse += add.diffuse;
+	out.specular += add.specular;
 }
 
 #ifdef PT_AVX2_KERNELS
@@ -1088,6 +1119,25 @@ Lit DirectFrameAll(const Scene &sc, const Surface &s, Rng &rng)
 		}
 	}
 	return sum;
+}
+
+float FrameLightLevel(const Scene &sc, const Surface &s, Vec3 flash_light, Vec3 eye, Vec3 dir, float reach)
+{
+	float level = Luminance(flash_light);
+	for (const Light &l : sc.frame->lights)
+	{
+		if (l.radius > 0.0f)
+			level += Importance(s, PointLight(s, l, 1.0f));
+		if (sc.fog_density > 0.0f)
+		{
+			const Vec3 d = l.origin - eye;
+			const float t0 = Dot(d, dir);
+			const float h = std::max(std::sqrt(std::max(Dot(d, d) - t0 * t0, 0.0f)), 1.0f);
+			level += Luminance(l.emission) * sc.fog_density * (0.25f * kInvPi)
+				* (std::atan((reach - t0) / h) + std::atan(t0 / h)) / h;
+		}
+	}
+	return level;
 }
 
 // keeps a sampled direction on the outside of the real surface

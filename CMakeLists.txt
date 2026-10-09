@@ -148,7 +148,7 @@ if(Vulkan_FOUND AND Vulkan_glslc_FOUND AND Q2_ARCH STREQUAL x64)
 	set(PT_SHADER_DIR ${CMAKE_BINARY_DIR}/pt_shaders)
 	file(MAKE_DIRECTORY ${PT_SHADER_DIR})
 	set(PT_SHADER_INC)
-	foreach(shader blit.vert blit.frag trace.comp temporal.comp atrous.comp compose.comp
+	foreach(shader blit.vert blit.frag trace.comp temporal.comp change.comp atrous.comp compose.comp
 			bloom.comp grade.comp resolve.comp)
 		add_custom_command(
 			OUTPUT ${PT_SHADER_DIR}/${shader}.inc

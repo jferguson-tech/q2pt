@@ -107,6 +107,14 @@ typedef struct pt_material_s
 								   light going through, R / 255 * 4; 0 = none. A
 								   is 0 where the picture covers no liquid, and
 								   the waves' surface is not looked for there */
+	int			foam_map;		/* handle + 1 of the froth on the liquid; 0 =
+								   none. R is how much of the surface it covers,
+								   G how old it is (0 fresh, 255 old: older froth
+								   lies in thinner strings), B and A how fast the
+								   liquid carries it in x and y, units per second
+								   + 128. It is drawn as a pale layer of bubbles
+								   over the liquid, which shows through where it
+								   is thin */
 	float		wave_rect[4];	/* the maps cover world x, y from [0], [1] and are
 								   1 / [2], 1 / [3] across */
 	float		absorb[3];		/* liquids: share of light lost per unit of
@@ -329,6 +337,11 @@ typedef struct pt_view_s
 								   surface to be followed by, so its light
 								   trails what moves; fewer frames trail less
 								   and are noisier. Below 1 = as history */
+	float	react;				/* how readily what was gathered is let go where
+								   the light is found to have changed, so that it
+								   does not trail a light that moves, flashes or
+								   goes out: 0 = never, 1 = at once. Such places
+								   are noisier for a few frames. RTX only */
 	float	bloom;				/* glow around what is brighter than white; 0 = none */
 	float	bloom_max;			/* the most over white that anything adds to the
 								   glow, in whites: up to half of this it adds

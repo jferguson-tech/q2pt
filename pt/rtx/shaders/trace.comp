@@ -180,6 +180,8 @@ void main()
 			break;
 		}
 		MakeSurface(hit, base, origin, dir, fr.settings2.y != 0, surf);
+		if (view_mode == 0)
+			AddFroth(surf);
 		tint *= Fade(absorb, hit.t - entered);
 		entered = hit.t;
 		if (view_mode >= VIEW_LIGHTING)
@@ -199,6 +201,7 @@ void main()
 				imageStore(img_noisy[1], pixel, vec4(0.0));
 				imageStore(img_noisy[2], pixel, vec4(0.0));
 				imageStore(img_extra, pixel, vec4(SurfaceChannel(view_mode, surf), 1.0));
+				imageStore(img_flash[now], pixel, vec4(0.0));
 				return;
 			}
 		}
@@ -222,7 +225,7 @@ void main()
 		// Glass and water are clear materials with a tint painted on. The
 		// boundary reflects some of the light, more at a glancing angle, and
 		// lets the rest in; water bends it on the way.
-		bool bent = false;
+		bool bent = false, shut = false;
 		if ((surf.mat.flags & MAT_BLACK) == 0u && surf.roughness < LIGHT_SAMPLED_ROUGHNESS)
 		{
 			const bool waves = (surf.mat.flags & MAT_WAVES) != 0u;
@@ -247,15 +250,34 @@ void main()
 			// with reflections off the light simply all goes through
 			if (reflections < 1 && fresnel < 1.0)
 				fresnel = 0.0;
-			if (fresnel > 0.0)
+			// froth is wet and shines, but less than the liquid under it
+			const float shine = fresnel * (1.0 - 0.75 * surf.froth);
+			shut = fresnel >= 1.0;
+			// Froth is matt, and lit by the room as well as by its lamps.
+			// Half the rays that would have gone to look for what the
+			// surface mirrors go to look for that light instead; from under
+			// the liquid it is the light above that comes through.
+			const bool scatter = surf.froth > 0.0 && Rand() < 0.5;
+			const float chosen = surf.froth > 0.0 ? 0.5 : 1.0;
+			if (shine > 0.0 || scatter)
 			{
 				vec3 mirror = surf.n * (2.0 * dot(surf.n, surf.wo)) - surf.wo;
 				if (dot(mirror, surf.ng) < 0.0)
 					mirror -= surf.ng * (2.0 * dot(mirror, surf.ng));
+				float side = 1.0;
+				if (scatter)
+				{
+					side = surf.tri_n.z < -0.5 ? -1.0 : 1.0;
+					mirror = SampleDiffuse(surf) * side;
+				}
 				float reached;
-				const float weight = through * fresnel;
-				front_mirror += ClampSample(Radiance(surf.p + surf.ng * RAY_OFFSET, mirror, true, 1, fr.settings.w, reached),
-					max_sample) * weight;
+				const float weight = scatter ? 0.0 : through * shine;
+				const vec3 found = ClampSample(Radiance(surf.p + surf.ng * (side * RAY_OFFSET), mirror, !scatter, 1, fr.settings.w, reached),
+					max_sample);
+				if (scatter)
+					front_mirror += found * surf.kd * (through * (1.0 - shine) * (shut ? 1.0 : surf.mat.alpha) / chosen);
+				else
+					front_mirror += found * (weight / chosen);
 
 				// A reflection appears to sit behind the glass, as far again
 				// as the thing reflected is in front. That is where to look
@@ -266,7 +288,7 @@ void main()
 					over_pos = eye + eye_dir * (travelled + hit.t + min(reached, 100000.0));
 				}
 			}
-			through *= 1.0 - fresnel;
+			through *= 1.0 - shine;
 
 			// going in, the liquid starts soaking up light; coming out, it stops
 			if (waves)
@@ -287,12 +309,21 @@ void main()
 		}
 
 		// the painted tint: covers its share of what is behind and shows lit itself
-		const float share = through * surf.mat.alpha;
+		// where the liquid lets nothing out, froth has all that it does not mirror
+		const float cover = shut && surf.froth > 0.0 ? 1.0 : surf.mat.alpha;
+		const float share = through * cover;
+		if (surf.froth > 0.0 && surf.tri_n.z < -0.5)
+		{
+			// froth seen from under the liquid: what lights it is above,
+			// and comes through it
+			surf.n = -surf.n;
+			surf.ng = -surf.ng;
+		}
 		if ((surf.mat.bits & BIT_EMISSIVE) != 0u && surf.front)
 			front_add += Emitted(surf, true) * share;
 		if (share > 0.0 && MaxComponent(surf.kd) > 0.0)
 			front_diffuse += surf.kd * (DirectWorld(surf, true).diffuse + DirectFrameOne(surf).diffuse) * (INV_PI * share);
-		through *= 1.0 - surf.mat.alpha;
+		through *= 1.0 - cover;
 		if (!bent)
 			tmin = hit.t + 0.01;
 	}
@@ -328,6 +359,7 @@ void main()
 		imageStore(img_noisy[1], pixel, vec4(0.0));
 		imageStore(img_noisy[2], pixel, vec4(over, 0.0));
 		imageStore(img_extra, pixel, vec4(beyond, 1.0));
+		imageStore(img_flash[now], pixel, vec4(0.0));
 		return;
 	}
 
@@ -356,7 +388,8 @@ void main()
 	const Lit flash = DirectFrameAll(surf);
 	// (the matte part has what the shine leaves here too, by the shine's
 	// share on the whole, which has no noise in it)
-	vec3 extra = front_add + (surf.kd * (1.0 - SpecularAlbedo(surf)) * flash.diffuse * INV_PI + flash.specular) * tint * through;
+	vec3 flash_light = (surf.kd * (1.0 - SpecularAlbedo(surf)) * flash.diffuse * INV_PI + flash.specular) * tint * through;
+	vec3 extra = front_add + flash_light;
 	if ((surf.mat.bits & BIT_EMISSIVE) != 0u && surf.front)
 		extra += Emitted(surf, true) * tint * through;
 	extra *= direct_on;
@@ -373,7 +406,11 @@ void main()
 		kd *= kept;
 		ks *= kept;
 		extra *= kept;
+		flash_light *= kept;
 	}
+	// what the frame's lights put here, to be compared with last frame's
+	imageStore(img_flash[now], pixel, vec4(FrameLightLevel(surf, flash_light * direct_on, eye, eye_dir,
+		have_layer ? layer_depth : hit.t, fog)));
 
 	// a specular path costs as much as a diffuse one; where the lobe reflects
 	// little, take it only some of the time
@@ -385,11 +422,14 @@ void main()
 	vec3 sum_d = vec3(0.0), sum_s = vec3(0.0);
 	vec2 moments_d = vec2(0.0), moments_s = vec2(0.0);	// the paths' luminance and its square, summed
 	float spec_reach = -1.0;		// how far the last specular path went before its first hit
+
+	const int NO_PATH = 0, ON_MATTE = 1, ON_SHINE = 2;
+	const vec3 from = surf.p + surf.ng * RAY_OFFSET;
 	for (int k = 0; k < paths; k++)
 	{
 		// The shine takes its share of the light first and the matte part
 		// has what is left, so the two together never reflect more than
-		// falls on them: see Radiance. The share is that of one way the
+		// falls on them: see PathGoOn. The share is that of one way the
 		// light could be mirrored, which is the way followed below.
 		vec3 mirrored, shine;
 		if (!has_specular || !SampleSpecular(surf, mirrored, shine))
@@ -402,8 +442,6 @@ void main()
 
 		if (bounces > 0 && indirect_on > 0.0)
 		{
-			const vec3 from = surf.p + surf.ng * RAY_OFFSET;
-			float reached;
 			// The reflection is followed only some of the time, and counts
 			// for more when it is. The matte part gives up as much as the
 			// reflection counts for, and nothing when it is not followed, so
@@ -411,20 +449,63 @@ void main()
 			// share, or the matte part would have to give up more than it has.
 			const float chance = spec_chance > 0.0 ? min(1.0, max(spec_chance, MaxComponent(shine))) : 0.0;
 			const bool follow = chance > 0.0 && Rand() < chance && MaxComponent(shine) > 0.0;
+			const vec3 kept = follow ? 1.0 - shine * (1.0 / chance) : vec3(1.0);
+
+			// A path off the matte part and then, if it is followed, one off
+			// the shine (see Radiance), in one loop: a step of whichever the
+			// pixel is on to a turn. The card runs the pixels of a tile in
+			// step, every one waiting while any other has work to do in a part
+			// of the shader. With a loop for each path they all waited out
+			// the longest of each, and most paths are short; here a pixel
+			// whose first path has ended is on its second while others are
+			// still on their first. What a pixel does, and the order it does
+			// it in, is as it was.
+			int stage = NO_PATH;
+			Path path;
+			rays_followed = 0;
 			if (has_diffuse)
 			{
-				const vec3 kept = follow ? 1.0 - shine * (1.0 / chance) : vec3(1.0);
-				rays_followed = 0;
-				d += kept * Radiance(from, SampleDiffuse(surf), false, 1, bounces, reached);
-				followed_d = rays_followed;
+				path = PathFrom(from, SampleDiffuse(surf), false, 1, bounces);
+				stage = ON_MATTE;
 			}
-			if (follow)
+			else if (follow)
 			{
-				rays_followed = 0;
-				sp += shine * Radiance(from, mirrored, !surf.light_sampled_spec, 1, fr.settings.w, reached)
-					/ spec_albedo * (1.0 / chance);
-				followed_s = rays_followed;
-				spec_reach = reached;
+				path = PathFrom(from, mirrored, !surf.light_sampled_spec, 1, fr.settings.w);
+				stage = ON_SHINE;
+			}
+			while (stage != NO_PATH)
+			{
+				Surface s;
+				bool shiny;
+				if (PathMeet(path, s, shiny))
+				{
+					vec3 its_mirrored, its_shine;
+					if (!shiny || !SampleSpecular(s, its_mirrored, its_shine))
+						its_shine = vec3(0.0);
+					const Lit world = DirectWorld(s, false), frame = DirectFrameOne(s);
+					PathGoOn(path, s, its_mirrored, its_shine, world, frame);
+				}
+				if (!path.ended)
+					continue;
+				if (stage == ON_MATTE)
+				{
+					d += kept * path.radiance;
+					followed_d = rays_followed;
+					stage = NO_PATH;
+					if (follow)
+					{
+						rays_followed = 0;
+						path = PathFrom(from, mirrored, !surf.light_sampled_spec, 1, fr.settings.w);
+						stage = ON_SHINE;
+					}
+				}
+				else
+				{
+					sp += shine * path.radiance / spec_albedo * (1.0 / chance);
+					followed_s = rays_followed;
+					spec_reach = path.reached;
+					stage = NO_PATH;
+				}
 			}
 		}
 		else if (furnace)

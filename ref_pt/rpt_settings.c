@@ -61,6 +61,7 @@ static cvar_t	*pt_fog;					// haze and light shafts
 static cvar_t	*pt_fog_density;
 static cvar_t	*pt_fog_samples;		// points along each view ray where the air's light is looked for
 static cvar_t	*pt_fog_history;		// frames of the air's light kept while things change
+static cvar_t	*pt_react;				// how readily kept light is let go where the light has changed, 0 = never
 static cvar_t	*pt_sky;				// sky brightness
 static cvar_t	*pt_lamp_glow;			// how bright lamp fixtures look to the eye
 static cvar_t	*pt_surface_light;		// scales the light from glowing surfaces
@@ -79,6 +80,8 @@ static cvar_t	*pt_water_cell;			// size of a simulation cell, in map units
 static cvar_t	*pt_water_caustics;		// strength of the light patterns waves throw under and beside water; 0 = none
 static cvar_t	*pt_water_height;		// how tall the simulated waves are, 1 = normal
 static cvar_t	*pt_water_damping;		// how fast waves die down, 1 = normal
+static cvar_t	*pt_water_foam;			// how readily simulated water froths and sprays, 1 = normal, 0 = never
+static cvar_t	*pt_water_shore;		// how much froth lies along its banks, 0 = none
 static cvar_t	*pt_waves;				// ripple strength on liquids
 
 // materials: scale what rpt_material.c decides
@@ -97,7 +100,7 @@ float	r_detailglow = 1;
 int		r_watermode = 2;
 int		r_normalflip;
 float	r_waterreach;
-float	r_watercell = 8, r_waterwaves = 1, r_watercaustics = 0, r_waterdamping = 1;
+float	r_watercell = 8, r_waterwaves = 1, r_watercaustics = 0, r_waterdamping = 1, r_waterfoam = 1, r_watershore = 0.75f;
 float	r_bumpscale = 1, r_roughscale = 1, r_metalscale = 1;
 int		r_materialmaps = 1;
 float	r_materialdelight = 1;
@@ -186,6 +189,7 @@ void R_InitSettings (void)
 	pt_fog_density = ri.Cvar_Get ("pt_fog_density", "0.0004", CVAR_ARCHIVE);
 	pt_fog_samples = ri.Cvar_Get ("pt_fog_samples", "2", CVAR_ARCHIVE);
 	pt_fog_history = ri.Cvar_Get ("pt_fog_history", "6", CVAR_ARCHIVE);
+	pt_react = ri.Cvar_Get ("pt_react", "0", CVAR_ARCHIVE);
 	pt_sky = ri.Cvar_Get ("pt_sky", "2", CVAR_ARCHIVE);
 	pt_lamp_glow = ri.Cvar_Get ("pt_lamp_glow", "1.5", CVAR_ARCHIVE);
 	pt_surface_light = ri.Cvar_Get ("pt_surface_light", "1", CVAR_ARCHIVE);
@@ -203,6 +207,8 @@ void R_InitSettings (void)
 	pt_water_cell = ri.Cvar_Get ("pt_water_cell", "8", CVAR_ARCHIVE);
 	pt_water_caustics = ri.Cvar_Get ("pt_water_caustics", "0", CVAR_ARCHIVE);
 	pt_water_damping = ri.Cvar_Get ("pt_water_damping", "1", CVAR_ARCHIVE);
+	pt_water_foam = ri.Cvar_Get ("pt_water_foam", "1", CVAR_ARCHIVE);
+	pt_water_shore = ri.Cvar_Get ("pt_water_shore", "0.75", CVAR_ARCHIVE);
 	pt_water_height = ri.Cvar_Get ("pt_water_height", "2", CVAR_ARCHIVE);
 
 	pt_bump = ri.Cvar_Get ("pt_bump", "1", CVAR_ARCHIVE);
@@ -295,6 +301,8 @@ qboolean R_UpdateSettings (void)
 	r_normalflip = pt_normal_flip->value != 0;	// takes effect when the materials are next made
 	r_watercaustics = pt_water_caustics->value;
 	r_waterdamping = pt_water_damping->value;
+	r_waterfoam = pt_water_foam->value;
+	r_watershore = pt_water_shore->value;
 
 	// these change what the map's liquids are made of
 	if ((int)pt_water->value != r_watermode || (pt_water_cell->value >= 2 && pt_water_cell->value != r_watercell))
@@ -431,6 +439,7 @@ void R_ViewSettings (pt_view_t *view)
 	view->fog_density = pt_fog_density->value;
 	view->fog_samples = pt_fog_samples->value;
 	view->fog_history = pt_fog_history->value;
+	view->react = pt_react->value;
 
 	if (R_Offline ())
 		R_OfflineSettings (view);

@@ -56,6 +56,7 @@ void main()
 		else if (debug == 7) c = vec3(min(imageLoad(img_kept[now * 3], pixel).a, 32.0) / 64.0);
 		else if (debug == 8) c = vec3(min(imageLoad(img_kept[now * 3 + 2], pixel).a, 32.0) / 64.0);
 		else if (debug == 10) c = vec3(surface.a * 0.002);
+		else if (debug == 13) c = vec3(Changed(pixel), imageLoad(img_change[3], pixel / 8).y / 12.0, 0.0);
 		else if (debug == 12) c = vec3((pass.source == 0 ? sqrt(GatheredVariance(0, pixel, diffuse.a)) : diffuse.a) * 4.0);
 	}
 	if (fr.bases.x == VIEW_BOUNCES)

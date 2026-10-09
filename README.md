@@ -56,12 +56,24 @@ a second.*
   (emission).
 * Glass and liquids reflect and refract with a Fresnel term.
 * Three ways to draw water: classic (the original swimming texture), realistic
-  (rippled, reflecting and refracting) and simulated (a wave simulation per
-  pool, with wakes from the player and whatever moves at the surface). A
-  simulated surface is drawn where its waves stand, not as a level sheet
-  with a pattern of tilts on it: crests show in outline and hide what is
-  behind them, and the water rises and falls against walls and whatever
-  stands in it.
+  (rippled, reflecting and refracting) and simulated (a shallow water
+  simulation per pool: waves run as fast as the depth under them allows, so
+  they slow and bunch up over a shallow bed, pass round what stands in the
+  water and slosh between its banks; the player and whatever moves at the
+  surface push a wave ahead of them and leave a wake, and water the map
+  calls flowing carries its waves downstream). A simulated surface is drawn
+  where its waves stand, not as a level sheet with a pattern of tilts on
+  it: crests show in outline and hide what is behind them, and the water
+  rises and falls against walls and whatever stands in it. Where it is
+  beaten it froths: foam lies in the wake of whatever moves through it
+  fast, where something falls in, where waves stand steep or break and
+  where a stream runs up against a bank. It is a pale layer of bubbles
+  that the water shows through and still shines through a little, closed
+  where it is thick and fresh and opening into rings and strings as it
+  thins and ages; it rides along on the water and is gone in a few seconds.
+  A faint line of it comes and goes along the banks. A hard splash throws
+  up spray that falls back and leaves rings (`pt_water_foam`,
+  `pt_water_shore`).
 * Fog and light shafts from single scattering along the view ray.
 * A ball of light to throw (**F**): a lamp behind six round steel plates. It
   bounces, rolls down slopes, knocks into the others and comes to rest, and
@@ -133,7 +145,11 @@ compute shaders that trace with ray queries. The map and everything that moves
 are held in acceleration structures, the moving part rebuilt every frame. The
 shaders follow the CPU tracer function for function, and the lights and the
 tables for finding them are built by the CPU tracer's own code, so the two
-light a map the same way. It has the lighting, materials, glass and liquids,
+light a map the same way. Where the shaders go about it differently it is
+for the card's sake, which runs the pixels of a tile in step, each waiting
+while any other has work to do: lights are picked from tables that need no
+search, and the paths of a pixel are followed in one loop. The light a pixel
+gets is the same. It has the lighting, materials, glass and liquids,
 fog, the three water modes, the denoiser, anti-aliasing, auto exposure, bloom,
 tone mapping, screenshots and offline rendering.
 
@@ -141,12 +157,17 @@ Measured with `pt_bench demo1` on an RTX 4090 beside a 16 core Ryzen 7950X,
 at 800x600 with one path per pixel, three bounces and the filter on: 176
 frames a second, where the CPU renderer manages 10. Offline rendering is
 about four times faster than on a 32 core, 64 thread CPU; the figures are
-under *Offline demo rendering*.
+under *Offline demo rendering*. (The RTX figures here and below are from
+before its tracing was made about twice as fast, as measured on an RTX 4060
+Laptop, and have not been taken again on the RTX 4090.)
 
 Its denoiser works as the CPU renderer's does: how far a pixel is smoothed
 follows from the noise measured in it, gathered over frames beside the light,
 not from how long it has been in view, and a pixel whose noise has settled is
-left as it is.
+left as it is. Light that comes and goes, a muzzle flash, an explosion, a
+bolt flying past, does not trail: what the frame's lights put on a pixel is
+known exactly, and where that changes from one frame to the next the
+gathered light starts afresh to the same degree, in both renderers.
 
 Like the CPU renderer it can trace a smaller picture than the window and
 build the full size one from it over a few frames (`pt_scale`). The same
@@ -263,10 +284,13 @@ Some console commands and variables:
 | `pt_bounces`, `pt_samples`, `pt_light_samples` | path length, paths per pixel per frame (also a slider in the menu, 1 to 16), lights weighed per point |
 | `pt_reflections 0`-`2` | none, glass and water, every shiny surface |
 | `pt_water 0`-`2` | classic, realistic, simulated |
+| `pt_water_foam` | simulated water: how readily it froths and throws up spray, `1` = as made, `0` = never. Lava never does |
+| `pt_water_shore` | how much foam lies along the banks of simulated water, coming and going with the waves: `0.75` as made, `0` = none, `1` = a good deal. Needs `pt_water_foam` above 0 |
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
+| `pt_react` | RTX: how readily light gathered over frames is let go where the lighting is found to have changed, so that it does not trail behind a light that moves, flashes or goes out: `0` = never (the default), `1` = at once. Such places are noisier for a few frames; `pt_debug 13` shows where it acts |
 | `pt_fog_history`, `pt_fog_samples` | the light in the air: how many frames of it are kept while things change (6; the rest of the lighting keeps `pt_history`, 8), and at how many points along each view ray it is looked for every frame (2). The air has no surface to be followed by, so its light trails what moves: fewer frames trail less and are noisier, more points are less noisy and cost a shadow ray each |
 | `pt_bloom_max` | the most that anything adds to the glow, in times white over white (4): up to half of it a bright thing adds all it has, then less and less, so that a lamp hundreds of times white glows like a strong lamp and does not drown the picture. `0` = no limit |
-| `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time. `pt_history` is how many frames of lighting are blended while things change (8): more is smoother, and leaves light behind what moves for longer |
+| `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time. `pt_history` is how many frames of lighting are blended while things change (8): more is smoother, and leaves light behind what moves for longer. A flash or an explosion is not held back by it: where the light the frame's lights put on a pixel changes by a quarter of its whole light or more, its history starts afresh, and by less, it is cut back in proportion |
 | `pt_reflection_history 0`-`1` | what mirrors and glass show is followed from frame to frame where it appears to be, behind the surface, rather than where the surface is; on unless set, for comparison |
 | `pt_filter 0`-`2`, `pt_filter_cycle` (**F7**) | the picture as the paths alone make it, noise and all: `0` every frame on its own, `1` the same but frames add up while you stand still, `2` (the default) blended over time and filtered |
 | `pt_view 0`-`13`, `pt_view_cycle` (number pad **+**, and **-** to step back) | the scene drawn some other way than as it is, for checking the renderer and for pictures; each means the same in both path tracers. The keys and the menu's row step through all of them but `3`, which is typed in the console. Not kept in the config; offline rendering and screenshots honour it, and changing it starts the picture afresh |
@@ -282,7 +306,7 @@ Some console commands and variables:
 | `cl_maxfps` | the most frames a second the game runs at: 200 unless set (the game's own setting, which was 90 and in effect 83) |
 | `pt_stats 0` | hide the performance info, which is on by default (never shown in offline renders) |
 | `pt_simd 0`-`1` | CPU renderer: the build for AVX2 where the processor has it, or the one for any processor, to compare the two |
-| `pt_debug 1`-`12` | one part of the picture on its own; `12` is the noise the filter measured in the diffuse light, as it stands after filtering (the standard deviation, times 4) |
+| `pt_debug 1`-`13` | one part of the picture on its own; `12` is the noise the filter measured in the diffuse light, as it stands after filtering (the standard deviation, times 4) |
 | `pt_bump`, `pt_roughness`, `pt_metallic` | scale how deep, how rough and how metallic every surface is taken to be; 1 unless set. Below 1, `pt_metallic` makes what is metal less than metal |
 | `pt_material_maps 0`-`1`, `pt_material_toggle` (**F11**) | normal, roughness and metal maps read from each texture's painted light and colours, and the lit part of a lamp or a screen told from its frame (`1`, the default), or things as they were before: plain maps, which take brightness for height and give the whole of a texture one number for metal (half for what its name says is metal, less for what the name says nothing of), a light of the map's that gives off its light all over, frame and all, and a screen that glows wherever it is bright. The key switches between the two while playing; the level's surfaces are made again, which takes a moment |
 | `pt_metal_edge` | how many texels of a texture the edge between its metal and the rest is dithered over: `3` unless set, `0` for a hard edge. Every texel is metal or not whatever this is; a wider edge only scatters them further. The maps are made again when it changes |
@@ -312,7 +336,7 @@ flowchart TD
         api(["pt/include/pt.h<br/>the C interface"])
         cpu["pt/cpu<br/>BVH, path tracer, denoiser<br/>SSE and AVX2"]
         rtx["pt/rtx<br/>Vulkan compute shaders,<br/>ray queries"]
-        water["pt/water<br/>wave simulation"]
+        water["pt/water<br/>shallow water simulation"]
         material["pt/material<br/>normal and roughness maps<br/>from a texture's colours"]
         png["pt/png<br/>PNG writer"]
     end
@@ -331,7 +355,7 @@ pt/         the path tracing core (MIT): knows nothing about Quake 2
   include/pt.h    the C interface a host program uses
   cpu/            CPU backend: BVH, path tracer, denoiser, output
   rtx/            Vulkan backend: the same tracer as compute shaders
-  water/          height field wave simulation
+  water/          shallow water simulation
   material/       normal, roughness and metal maps from a texture's colours,
                   and the lit part of a lamp's picture
   png/            PNG writer

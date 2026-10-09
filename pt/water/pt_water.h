@@ -1,12 +1,19 @@
 /* SPDX-License-Identifier: MIT */
 /* Copyright (c) 2026 Jonathan Ferguson */
 /*
-A height field wave simulation for one flat body of liquid, and the two
-pictures a renderer needs from it: which way the surface tilts, and where
-the waves gather light on whatever lies below (caustics).
+A shallow water simulation for one flat body of liquid, and the two pictures
+a renderer needs from it: where the surface stands and which way it tilts,
+and where the waves gather light on whatever lies below (caustics) and
+where they have beaten the surface to froth.
 
-It knows nothing about any renderer. The host steps it, pokes it where
-things touch the surface, and hands the pictures on as textures.
+Each cell of a grid holds how high the surface stands and how fast the
+liquid flows across to its neighbours. Waves travel as fast as the depth
+under them lets them, so they slow, bunch up and turn over a shallow bed,
+pass round whatever stands in the liquid, and slosh between its banks.
+
+It knows nothing about any renderer. The host says where there is liquid
+and how deep, steps it, pokes it where things touch the surface, and hands
+the pictures on as textures.
 */
 #ifndef PT_WATER_H
 #define PT_WATER_H
@@ -42,14 +49,62 @@ off the rest as off a bank.
 */
 void pt_water_cover(pt_water_t *w, const float a[2], const float b[2], const float c[2]);
 
+/*
+Says how deep the liquid is: a triangle of whatever lies under the surface,
+x, y and z, with z counted from the level of the liquid, so negative below
+it. The shallowest thing under each cell is its bed. Until the first call
+the liquid is taken to be 96 units deep everywhere; after that, wherever no
+triangle was given.
+*/
+void pt_water_bed(pt_water_t *w, const float a[3], const float b[3], const float c[3]);
+
+/*
+The liquid over this triangle is in a stream running at vx, vy units per
+second, which carries the shape of the surface along with it.
+*/
+void pt_water_current(pt_water_t *w, const float a[2], const float b[2], const float c[2], float vx, float vy);
+
 /* push the surface down around a point: amount is in units of height */
 void pt_water_disturb(pt_water_t *w, float x, float y, float radius, float amount);
 
 /*
-Advance by dt seconds. speed is how fast waves travel, in units per second;
-damping is the share of a wave's motion lost per second (0-1).
+Something of this radius at the surface has been moving at vx, vy for dt
+seconds: the surface rises ahead of it and sinks behind, and the liquid it
+passes through is dragged along. amount is how much of it is in the liquid,
+in units of height.
 */
-void pt_water_step(pt_water_t *w, float dt, float speed, float damping);
+void pt_water_move(pt_water_t *w, float x, float y, float radius, float vx, float vy, float amount, float dt);
+
+/*
+Froth. amount is how readily it forms, 1 being usual and 0, as it is to
+begin with, not at all; life is how many seconds it takes half of it to
+go. It forms by itself where waves stand steep or break and where a stream
+runs into something, drifts with the liquid, grows old and goes, and
+shows in the foam picture. shore is how much of it there always is where
+the liquid laps against its banks, 0 for none and 1 for a good deal; that
+comes and goes with the waves.
+*/
+void pt_water_foaming(pt_water_t *w, float amount, float life, float shore);
+
+/* something has beaten the surface to froth around a point: amount is how
+   much of the middle of it is covered, 1 being all */
+void pt_water_churn(pt_water_t *w, float x, float y, float radius, float amount);
+
+/*
+Advance by dt seconds. Waves travel at the square root of gravity times the
+depth, in units per second; damping is the share of the liquid's motion
+lost per second (0-1).
+*/
+void pt_water_step(pt_water_t *w, float dt, float gravity, float damping);
+
+/*
+Where a wave has broken hard enough to throw up spray since this was last
+asked: at most PT_WATER_SPRAY_MAX places, each x, y and how hard,
+upwards of 0.2. Returns how many; they stay valid until the next call that
+changes the simulation.
+*/
+#define PT_WATER_SPRAY_MAX	32
+int pt_water_spray(pt_water_t *w, const float **at);
 
 /*
 The pictures, width * height pixels of R,G,B,A bytes, row 0 at min_y.
@@ -57,6 +112,9 @@ waves: R and G are the slopes in x and y, B and A the height.
 caustics: R, G and B are how much the waves brighten the light going
 through at that point, 1 meaning unchanged; `strength` scales the effect.
 A is 255 where there is liquid, there or in a cell next to it, and else 0.
+foam: R is how much of the cell froth covers. G is how old it is, 0 just
+made to 1. B and A are how fast the liquid under it is moving in x and y:
+units per second + 128, from 1 to 255.
 Both stay valid until the next call that changes the simulation.
 */
 const uint32_t *pt_water_waves(pt_water_t *w, float wave_scale);
@@ -69,6 +127,7 @@ float pt_water_height_at(const pt_water_t *w, float x, float y, float wave_scale
 /* how far the surface stood from level, at most, in the picture last made */
 float pt_water_reach(const pt_water_t *w);
 const uint32_t *pt_water_caustics(pt_water_t *w, float strength);
+const uint32_t *pt_water_foam(pt_water_t *w);
 
 #ifdef __cplusplus
 }

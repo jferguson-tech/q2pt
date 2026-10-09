@@ -33,6 +33,8 @@ struct Surface
 	float			alpha;		// GGX width, roughness squared
 	bool			light_sampled_spec;
 	bool			medium;		// not a surface at all but a point in the air: no facing, scatters evenly
+	float			foam = 0.0f;	// how much of a liquid's surface froth covers here; it is in colour and cover already
+	float			cover = 1.0f;	// how much of what is behind it the surface hides: the material's alpha, and the froth's
 
 	// how much the specular lobe reflects in total towards wo, roughly
 	Vec3 SpecularAlbedo() const;
@@ -70,7 +72,8 @@ bool Closest(const Scene &sc, Ray &ray, Rng &rng, bool camera, bool cross, Hit &
 
 // smooth: filter the textures, for surfaces the eye sees directly. Further
 // along a path the nearest texel is as good and cheaper.
-void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth = false);
+// froth: whether to look for it on a simulated liquid, as only the eye's own rays do
+void MakeSurface(const Scene &sc, const Tri &tri, const Hit &hit, const Ray &ray, Surface &s, bool smooth = false, bool froth = false);
 // in this view mode the material is solid whatever its alpha says. Clay: all
 // that is solid, and liquids. The white furnace: everything.
 bool ViewSolid(int mode, const Material &mat);
@@ -94,6 +97,12 @@ Lit DirectWorld(const Scene &sc, const Surface &s, Rng &rng, bool first_hit);
 // point is drawn on the ball, and what comes of it is as noisy as the rest.
 Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng);
 Lit DirectFrameAll(const Scene &sc, const Surface &s, Rng &rng);
+// How much the frame's lights put on a pixel, with no noise in it: what the
+// point lights put on the surface (flash_light, as lit), what the balls
+// would with nothing in the way, and what all of them light the air in front
+// of it by, along the view ray to reach. Compared from frame to frame, it
+// says where light has changed and by how much.
+float FrameLightLevel(const Scene &sc, const Surface &s, Vec3 flash_light, Vec3 eye, Vec3 dir, float reach);
 Lit DirectFrameBall(const Scene &sc, const Surface &s, Rng &rng);
 
 // light arriving at a point in the air from one sampled light and the sky,

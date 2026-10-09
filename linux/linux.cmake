@@ -155,7 +155,7 @@ if(Vulkan_FOUND AND (PT_GLSLC OR PT_GLSLANG))
 	set(PT_SHADER_DIR ${CMAKE_BINARY_DIR}/pt_shaders)
 	file(MAKE_DIRECTORY ${PT_SHADER_DIR})
 	set(PT_SHADER_INC)
-	foreach(shader blit.vert blit.frag trace.comp temporal.comp atrous.comp compose.comp
+	foreach(shader blit.vert blit.frag trace.comp temporal.comp change.comp atrous.comp compose.comp
 			bloom.comp grade.comp resolve.comp)
 		set(src ${CMAKE_SOURCE_DIR}/pt/rtx/shaders/${shader})
 		set(out ${PT_SHADER_DIR}/${shader}.inc)
