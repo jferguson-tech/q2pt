@@ -616,6 +616,12 @@ typedef struct
 #define	RF_SHELL_HALF_DAM	0x00020000
 #define RF_USE_DISGUISE		0x00040000
 //ROGUE
+// A ball of light (the game's g_lightball.c). The path tracers draw it
+// themselves, as a lamp in a metal cage; the other renderers draw the model it
+// was given. skinnum holds its colour and brightness: red, green and blue in
+// the three low bytes, half the light's intensity in the top one.
+#define RF_LIGHTBALL		0x00080000
+#define	LIGHTBALL_RADIUS	8
 
 // player_state_t->refdef flags
 #define	RDF_UNDERWATER		1		// warp the screen as apropriate

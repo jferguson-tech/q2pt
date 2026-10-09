@@ -135,6 +135,7 @@ struct Light
 	int			style;		// point lights: which light style scales it
 	Vec3		dir;		// spotlights: where it points
 	float		cone_cos;	// and how wide; 0 = all round
+	float		radius = 0.0f;	// the frame's: above 0 a ball of light, not a point
 };
 
 // For each cell of a coarse grid, the lights that matter most there. Sampling
@@ -177,11 +178,13 @@ struct World
 	float					sky_scale = 1.0f;
 	bool					has_waves = false;
 
-	// a simulated body of liquid: where its surface is and which material carries its maps
+	// a simulated body of liquid: where its surface is, a material that
+	// carries its maps, and whether any of it is seen from above
 	struct Water
 	{
 		float			min_x, min_y, max_x, max_y, z;
 		const Material	*mat;
+		bool			top;
 	};
 	std::vector<Water>		waters;
 
@@ -206,7 +209,7 @@ struct Frame
 	std::vector<Tri>		tris;
 	std::vector<Vec3>		prev;		// 3 per triangle: its corners last frame; may be empty
 	Bvh						bvh;
-	std::vector<Light>		lights;		// point lights only
+	std::vector<Light>		lights;		// points and balls, no triangles
 	bool					has_held = false;	// something in it is carried by the eye (PT_MAT_HELD)
 	uint32_t				hash = 0;	// changes when anything in it does
 };
@@ -235,13 +238,19 @@ struct Scene
 	int			light_samples = 8;
 	float		max_sample = 40.0f;
 	float		wave_strength = 1.0f;
+	float		wave_reach = 0.0f;
+	// simulated liquids are met where their waves stand, not at their triangles
+	bool		swell = false;
+	bool Swells(const Tri &t) const { return swell && t.mat->wave_map && std::fabs(t.n.z) > 0.99f; }
 	bool		filter_textures = true;
 	int			reflections = 2;
 	int			view_mode = 0;
+	float		metal_colour = 0.0f;	// see pt_view_t
 	int			reflection_bounces = 3;
 	float		reflection_rate = 1.0f;
 	bool		refraction = true;
 	float		fog_density = 0.0f;		// 0 = clear air
+	int			fog_samples = 1;		// points along a view ray where the air's light is looked for
 
 	const Tri &TriAt(uint32_t index) const
 	{
@@ -263,6 +272,19 @@ struct Scene
 	{
 		u = (p.x - m.wave_rect[0]) * m.wave_rect[2];
 		v = (p.y - m.wave_rect[1]) * m.wave_rect[3];
+	}
+
+	// is there liquid at p, of the body whose maps the material carries
+	bool Wet(const Material &m, Vec3 p) const
+	{
+		const Texture *t = Map(m.caustic_map);
+		if (!t)
+			return true;
+		float u, v;
+		WaveCoord(m, p, u, v);
+		if (u < 0.0f || v < 0.0f || u >= 1.0f || v >= 1.0f)
+			return false;
+		return (t->pixels[(size_t)(v * (float)t->height) * t->width + (size_t)(u * (float)t->width)] >> 24) >= 128;
 	}
 
 	// how much the waves brighten light passing through the surface at p

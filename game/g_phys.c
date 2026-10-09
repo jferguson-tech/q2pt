@@ -955,6 +955,9 @@ void G_RunEntity (edict_t *ent)
 	case MOVETYPE_FLYMISSILE:
 		SV_Physics_Toss (ent);
 		break;
+	case MOVETYPE_BALL:
+		SV_Physics_Ball (ent);
+		break;
 	default:
 		gi.error ("SV_Physics: bad movetype %i", (int)ent->movetype);			
 	}

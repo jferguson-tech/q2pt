@@ -1610,7 +1610,7 @@ void M_PtSwitch_f (void)
 	} switches[] = {
 		{ NULL, NULL, 0, 0, 0 },
 		{ "pt_taa",				"1",	CVAR_ARCHIVE,	0, 1 },
-		{ "pt_history",			"32",	CVAR_ARCHIVE,	1, 32 },
+		{ "pt_history",			"8",	CVAR_ARCHIVE,	1, 8 },
 		{ "pt_denoise",			"4",	CVAR_ARCHIVE,	0, 4 },
 		{ "pt_auto_exposure",	"1",	CVAR_ARCHIVE,	0, 1 },
 		{ "pt_scale",			"0.5",	CVAR_ARCHIVE,	1, 0.5f },
@@ -4720,6 +4720,9 @@ void M_Init (void)
 		Key_SetBinding (K_KP_PLUS, "pt_view_cycle");
 	if ( !keybindings[K_KP_MINUS] )
 		Key_SetBinding (K_KP_MINUS, "pt_view_cycle -1");
+	// a ball of light, thrown (the game's throwlight command)
+	if ( !keybindings['f'] )
+		Key_SetBinding ('f', "throwlight");
 	Cmd_AddCommand ("menu_game", M_Menu_Game_f);
 		Cmd_AddCommand ("menu_loadgame", M_Menu_LoadGame_f);
 		Cmd_AddCommand ("menu_savegame", M_Menu_SaveGame_f);

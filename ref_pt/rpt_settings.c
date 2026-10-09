@@ -48,6 +48,7 @@ static cvar_t	*pt_tonemap;				// 0 filmic, 1 neutral, 2 clipped like the origina
 static cvar_t	*pt_saturation;
 static cvar_t	*pt_contrast;
 static cvar_t	*pt_bloom;				// glow around bright things, 0 = none
+static cvar_t	*pt_bloom_max;			// the most over white that anything adds to it, 0 = no limit
 static cvar_t	*pt_texture_filter;		// 0: the original's blocky texels
 static cvar_t	*pt_threads;			// 0 = all
 
@@ -58,6 +59,9 @@ static cvar_t	*pt_light_samples;		// lights weighed per shading point
 static cvar_t	*pt_firefly_clamp;		// brightest a single path may be
 static cvar_t	*pt_fog;					// haze and light shafts
 static cvar_t	*pt_fog_density;
+static cvar_t	*pt_fog_samples;		// points along each view ray where the air's light is looked for
+static cvar_t	*pt_fog_history;		// frames of the air's light kept while things change
+static cvar_t	*pt_react;				// how readily kept light is let go where the light has changed, 0 = never
 static cvar_t	*pt_sky;				// sky brightness
 static cvar_t	*pt_lamp_glow;			// how bright lamp fixtures look to the eye
 static cvar_t	*pt_surface_light;		// scales the light from glowing surfaces
@@ -82,7 +86,10 @@ static cvar_t	*pt_waves;				// ripple strength on liquids
 static cvar_t	*pt_bump;
 static cvar_t	*pt_roughness;
 static cvar_t	*pt_metallic;
-static cvar_t	*pt_material_maps;		// 1: relief and roughness read from each picture's painted light, 0: brightness as height
+static cvar_t	*pt_material_maps;		// 1: relief, roughness and metal read from each picture's painted light, 0: brightness as height
+static cvar_t	*pt_material_delight;	// how much of that painted light is taken out of the colours, 0 - 1
+static cvar_t	*pt_metal_colour;		// how much of the light metal read from a picture reflects, see pt_view_t
+static cvar_t	*pt_metal_edge;			// texels of a picture that the edge between its metal and the rest is dithered over
 
 float	r_skyscale = 2;
 float	r_lampglow = 1.5f;
@@ -90,9 +97,12 @@ float	r_surfacelight = 1, r_pointlight = 1, r_liquidglow = 0.25f;
 float	r_detailglow = 1;
 int		r_watermode = 2;
 int		r_normalflip;
+float	r_waterreach;
 float	r_watercell = 8, r_waterwaves = 1, r_watercaustics = 0, r_waterdamping = 1;
 float	r_bumpscale = 1, r_roughscale = 1, r_metalscale = 1;
 int		r_materialmaps = 1;
+float	r_materialdelight = 1;
+float	r_metaledge = 3;
 
 #define	NUM_PRESETS	4
 
@@ -114,6 +124,18 @@ static struct
 };
 
 #define	NUM_PRESET_VARS	(sizeof(presets) / sizeof(presets[0]))
+
+// pt_material_delight, held to what it can mean
+static float R_MaterialDelight (void)
+{
+	return pt_material_delight->value < 0 ? 0 : (pt_material_delight->value > 1 ? 1 : pt_material_delight->value);
+}
+
+// pt_metal_edge, likewise
+static float R_MetalEdge (void)
+{
+	return pt_metal_edge->value < 0 ? 0 : (pt_metal_edge->value > 16 ? 16 : pt_metal_edge->value);
+}
 
 /*
 ===============
@@ -145,7 +167,7 @@ void R_InitSettings (void)
 	pt_filter = ri.Cvar_Get ("pt_filter", "2", CVAR_ARCHIVE);
 	pt_show_filter = ri.Cvar_Get ("pt_show_filter", "0", 0);
 	pt_denoise = ri.Cvar_Get ("pt_denoise", "4", CVAR_ARCHIVE);
-	pt_history = ri.Cvar_Get ("pt_history", "32", CVAR_ARCHIVE);
+	pt_history = ri.Cvar_Get ("pt_history", "8", CVAR_ARCHIVE);
 	pt_reflection_history = ri.Cvar_Get ("pt_reflection_history", "1", CVAR_ARCHIVE);
 	pt_exposure = ri.Cvar_Get ("pt_exposure", "2", CVAR_ARCHIVE);
 	pt_auto_exposure = ri.Cvar_Get ("pt_auto_exposure", "1", CVAR_ARCHIVE);
@@ -153,6 +175,7 @@ void R_InitSettings (void)
 	pt_saturation = ri.Cvar_Get ("pt_saturation", "1", CVAR_ARCHIVE);
 	pt_contrast = ri.Cvar_Get ("pt_contrast", "1", CVAR_ARCHIVE);
 	pt_bloom = ri.Cvar_Get ("pt_bloom", "0.3", CVAR_ARCHIVE);
+	pt_bloom_max = ri.Cvar_Get ("pt_bloom_max", "4", CVAR_ARCHIVE);
 	pt_texture_filter = ri.Cvar_Get ("pt_texture_filter", "1", CVAR_ARCHIVE);
 	pt_threads = ri.Cvar_Get ("pt_threads", "0", CVAR_ARCHIVE);
 
@@ -162,6 +185,9 @@ void R_InitSettings (void)
 	pt_firefly_clamp = ri.Cvar_Get ("pt_firefly_clamp", "40", CVAR_ARCHIVE);
 	pt_fog = ri.Cvar_Get ("pt_fog", "1", CVAR_ARCHIVE);
 	pt_fog_density = ri.Cvar_Get ("pt_fog_density", "0.0004", CVAR_ARCHIVE);
+	pt_fog_samples = ri.Cvar_Get ("pt_fog_samples", "2", CVAR_ARCHIVE);
+	pt_fog_history = ri.Cvar_Get ("pt_fog_history", "6", CVAR_ARCHIVE);
+	pt_react = ri.Cvar_Get ("pt_react", "0", CVAR_ARCHIVE);
 	pt_sky = ri.Cvar_Get ("pt_sky", "2", CVAR_ARCHIVE);
 	pt_lamp_glow = ri.Cvar_Get ("pt_lamp_glow", "1.5", CVAR_ARCHIVE);
 	pt_surface_light = ri.Cvar_Get ("pt_surface_light", "1", CVAR_ARCHIVE);
@@ -179,12 +205,15 @@ void R_InitSettings (void)
 	pt_water_cell = ri.Cvar_Get ("pt_water_cell", "8", CVAR_ARCHIVE);
 	pt_water_caustics = ri.Cvar_Get ("pt_water_caustics", "0", CVAR_ARCHIVE);
 	pt_water_damping = ri.Cvar_Get ("pt_water_damping", "1", CVAR_ARCHIVE);
-	pt_water_height = ri.Cvar_Get ("pt_water_height", "1", CVAR_ARCHIVE);
+	pt_water_height = ri.Cvar_Get ("pt_water_height", "2", CVAR_ARCHIVE);
 
 	pt_bump = ri.Cvar_Get ("pt_bump", "1", CVAR_ARCHIVE);
 	pt_roughness = ri.Cvar_Get ("pt_roughness", "1", CVAR_ARCHIVE);
 	pt_metallic = ri.Cvar_Get ("pt_metallic", "1", CVAR_ARCHIVE);
 	pt_material_maps = ri.Cvar_Get ("pt_material_maps", "1", CVAR_ARCHIVE);
+	pt_material_delight = ri.Cvar_Get ("pt_material_delight", "1", CVAR_ARCHIVE);
+	pt_metal_colour = ri.Cvar_Get ("pt_metal_colour", "0.05", CVAR_ARCHIVE);
+	pt_metal_edge = ri.Cvar_Get ("pt_metal_edge", "3", CVAR_ARCHIVE);
 	pt_material_cache = ri.Cvar_Get ("pt_material_cache", "1", CVAR_ARCHIVE);
 
 	r_skyscale = pt_sky->value;
@@ -199,6 +228,8 @@ void R_InitSettings (void)
 	r_roughscale = pt_roughness->value;
 	r_metalscale = pt_metallic->value;
 	r_materialmaps = pt_material_maps->value != 0;
+	r_materialdelight = R_MaterialDelight ();
+	r_metaledge = R_MetalEdge ();
 }
 
 /*
@@ -289,17 +320,33 @@ qboolean R_UpdateSettings (void)
 	}
 
 	if (pt_bump->value != r_bumpscale || pt_roughness->value != r_roughscale
-		|| pt_metallic->value != r_metalscale || (pt_material_maps->value != 0) != r_materialmaps)
+		|| pt_metallic->value != r_metalscale || (pt_material_maps->value != 0) != r_materialmaps
+		|| R_MaterialDelight () != r_materialdelight || R_MetalEdge () != r_metaledge)
 	{
 		r_bumpscale = pt_bump->value;
 		r_roughscale = pt_roughness->value;
 		r_metalscale = pt_metallic->value;
 		r_materialmaps = pt_material_maps->value != 0;
+		r_materialdelight = R_MaterialDelight ();
+		r_metaledge = R_MetalEdge ();
 		R_MaterialsChanged ();		// the generated maps hold the old values
 		reload = true;
 	}
 
 	return reload;
+}
+
+/*
+===============
+R_MetalColour
+
+pt_metal_colour: what metal read from a picture is taken to reflect, see
+pt_view_t
+===============
+*/
+float R_MetalColour (void)
+{
+	return pt_metal_colour->value > 0 ? pt_metal_colour->value : 0;
 }
 
 /*
@@ -364,6 +411,8 @@ void R_ViewSettings (pt_view_t *view)
 	view->reflection_rate = pt_reflection_rate->value;
 	view->refraction = pt_refraction->value != 0;
 	view->wave_strength = pt_waves->value;
+	view->wave_reach = r_waterreach;
+	view->metal_colour = R_MetalColour ();
 
 	view->light_samples = pt_light_samples->value;
 	view->firefly_clamp = pt_firefly_clamp->value;
@@ -379,8 +428,12 @@ void R_ViewSettings (pt_view_t *view)
 	view->saturation = pt_saturation->value;
 	view->contrast = pt_contrast->value;
 	view->bloom = pt_bloom->value;
+	view->bloom_max = pt_bloom_max->value;
 	view->fog = pt_fog->value != 0;
 	view->fog_density = pt_fog_density->value;
+	view->fog_samples = pt_fog_samples->value;
+	view->fog_history = pt_fog_history->value;
+	view->react = pt_react->value;
 
 	if (R_Offline ())
 		R_OfflineSettings (view);

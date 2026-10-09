@@ -63,6 +63,12 @@ typedef struct
 	vec3_t		lerp_origin;		// for trails (variable hz)
 
 	int			fly_stoptime;
+
+	// a ball of light (RF_LIGHTBALL): which way up it has rolled, where it
+	// was when last drawn, and when that was (0 = never)
+	vec3_t		ball_axis[3];
+	vec3_t		ball_origin;
+	int			ball_time;
 } centity_t;
 
 #define MAX_CLIENTWEAPONMODELS		20		// PGM -- upped from 16 to fit the chainfist vwep
