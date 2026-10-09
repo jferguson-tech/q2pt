@@ -94,6 +94,12 @@ Lit DirectWorld(const Scene &sc, const Surface &s, Rng &rng, bool first_hit);
 // point is drawn on the ball, and what comes of it is as noisy as the rest.
 Lit DirectFrameOne(const Scene &sc, const Surface &s, Rng &rng);
 Lit DirectFrameAll(const Scene &sc, const Surface &s, Rng &rng);
+// How much the frame's lights put on a pixel, with no noise in it: what the
+// point lights put on the surface (flash_light, as lit), what the balls
+// would with nothing in the way, and what all of them light the air in front
+// of it by, along the view ray to reach. Compared from frame to frame, it
+// says where light has changed and by how much.
+float FrameLightLevel(const Scene &sc, const Surface &s, Vec3 flash_light, Vec3 eye, Vec3 dir, float reach);
 Lit DirectFrameBall(const Scene &sc, const Surface &s, Rng &rng);
 
 // light arriving at a point in the air from one sampled light and the sky,
