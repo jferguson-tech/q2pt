@@ -1110,6 +1110,25 @@ Lit DirectFrameAll(const Scene &sc, const Surface &s, Rng &rng)
 	return sum;
 }
 
+float FrameLightLevel(const Scene &sc, const Surface &s, Vec3 flash_light, Vec3 eye, Vec3 dir, float reach)
+{
+	float level = Luminance(flash_light);
+	for (const Light &l : sc.frame->lights)
+	{
+		if (l.radius > 0.0f)
+			level += Importance(s, PointLight(s, l, 1.0f));
+		if (sc.fog_density > 0.0f)
+		{
+			const Vec3 d = l.origin - eye;
+			const float t0 = Dot(d, dir);
+			const float h = std::max(std::sqrt(std::max(Dot(d, d) - t0 * t0, 0.0f)), 1.0f);
+			level += Luminance(l.emission) * sc.fog_density * (0.25f * kInvPi)
+				* (std::atan((reach - t0) / h) + std::atan(t0 / h)) / h;
+		}
+	}
+	return level;
+}
+
 // keeps a sampled direction on the outside of the real surface
 Vec3 AboveSurface(const Surface &s, Vec3 wi)
 {

@@ -199,6 +199,7 @@ void main()
 				imageStore(img_noisy[1], pixel, vec4(0.0));
 				imageStore(img_noisy[2], pixel, vec4(0.0));
 				imageStore(img_extra, pixel, vec4(SurfaceChannel(view_mode, surf), 1.0));
+				imageStore(img_flash[now], pixel, vec4(0.0));
 				return;
 			}
 		}
@@ -328,6 +329,7 @@ void main()
 		imageStore(img_noisy[1], pixel, vec4(0.0));
 		imageStore(img_noisy[2], pixel, vec4(over, 0.0));
 		imageStore(img_extra, pixel, vec4(beyond, 1.0));
+		imageStore(img_flash[now], pixel, vec4(0.0));
 		return;
 	}
 
@@ -356,7 +358,8 @@ void main()
 	const Lit flash = DirectFrameAll(surf);
 	// (the matte part has what the shine leaves here too, by the shine's
 	// share on the whole, which has no noise in it)
-	vec3 extra = front_add + (surf.kd * (1.0 - SpecularAlbedo(surf)) * flash.diffuse * INV_PI + flash.specular) * tint * through;
+	vec3 flash_light = (surf.kd * (1.0 - SpecularAlbedo(surf)) * flash.diffuse * INV_PI + flash.specular) * tint * through;
+	vec3 extra = front_add + flash_light;
 	if ((surf.mat.bits & BIT_EMISSIVE) != 0u && surf.front)
 		extra += Emitted(surf, true) * tint * through;
 	extra *= direct_on;
@@ -373,7 +376,11 @@ void main()
 		kd *= kept;
 		ks *= kept;
 		extra *= kept;
+		flash_light *= kept;
 	}
+	// what the frame's lights put here, to be compared with last frame's
+	imageStore(img_flash[now], pixel, vec4(FrameLightLevel(surf, flash_light * direct_on, eye, eye_dir,
+		have_layer ? layer_depth : hit.t, fog)));
 
 	// a specular path costs as much as a diffuse one; where the lobe reflects
 	// little, take it only some of the time
