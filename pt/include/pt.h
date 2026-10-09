@@ -97,6 +97,14 @@ typedef struct pt_material_s
 								   light going through, R / 255 * 4; 0 = none. A
 								   is 0 where the picture covers no liquid, and
 								   the waves' surface is not looked for there */
+	int			foam_map;		/* handle + 1 of the froth on the liquid; 0 =
+								   none. R is how much of the surface it covers,
+								   G how old it is (0 fresh, 255 old: older froth
+								   lies in thinner strings), B and A how fast the
+								   liquid carries it in x and y, units per second
+								   + 128. It is drawn as a pale layer of bubbles
+								   over the liquid, which shows through where it
+								   is thin */
 	float		wave_rect[4];	/* the maps cover world x, y from [0], [1] and are
 								   1 / [2], 1 / [3] across */
 	float		absorb[3];		/* liquids: share of light lost per unit of

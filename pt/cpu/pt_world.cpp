@@ -45,6 +45,7 @@ void Material::Set(const pt_material_t &src, const Texture *tex, const Texture *
 	emission_seen = src.emission_seen;
 	wave_map = src.wave_map;
 	caustic_map = src.caustic_map;
+	foam_map = src.foam_map;
 	for (int k = 0; k < 4; k++)
 		wave_rect[k] = src.wave_rect[k];
 	absorb = Vec3(src.absorb);
