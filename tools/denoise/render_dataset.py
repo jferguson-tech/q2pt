@@ -78,9 +78,9 @@ def run_job(args, m, tag, blur, fog, clips, frames, fps, paths, tour_tag, seed, 
         chosen = []
         rng = random.Random('%s/flash/%d' % (name, seed))
         for new, old in enumerate(keep, 1):
-            # the six lines to arrive in come first: from two before the clip to its last
-            # line, so that some clips open in the flash and most have the dark before it
-            at = 6 + rng.choice([-2, -1, 0, 0, 1, 1, 2, 3])
+            # the six lines to arrive in come first, and a line is three frames of a clip: a few
+            # clips open in the flash, most have the dark before it for a quarter to three quarters
+            at = 6 + rng.choice([-1, 0, 1, 1, 2, 2, 3, 3])
             for n, line in enumerate(lines[(old - 1) * each:old * each]):
                 head, mark = line.rsplit(' ', 1)
                 if flash:
@@ -179,6 +179,7 @@ def main():
     ap.add_argument('--timeout', type=int, default=7200)
     ap.add_argument('--renderer', default='ptrtx', help='ptrtx or ptcpu')
     ap.add_argument('--dim', action='store_true', help="instead of the usual jobs: every map with its lights turned down")
+    ap.add_argument('--most', type=int, default=0, help='with --dark: no more than this many clips a map, the darkest')
     ap.add_argument('--flash', action='store_true', help='with --dark: a BFG is fired in every dark clip')
     ap.add_argument('--dark', type=int, default=0, help='instead of the usual jobs: try this many clips a map and render the dark ones')
     args = ap.parse_args()
@@ -208,7 +209,7 @@ def main():
         if args.dark:
             tag, blur, fog, frames, fps, paths, more = DARK_JOB
             for m in maps:
-                keep = dark_clips(args, m, args.dark)
+                keep = dark_clips(args, m, args.dark)[:args.most or None]
                 print('%s: %d dark of %d' % (m, len(keep), args.dark), flush=True)
                 if keep:
                     run_job(args, m, FLASH_TAG if args.flash else tag, blur, fog, args.dark, frames, fps, args.paths or paths, tag, args.seed,
