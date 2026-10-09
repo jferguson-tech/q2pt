@@ -53,7 +53,13 @@ typedef struct
 {
 	int		body;
 	float	p[3][2];
+	float	stream[2];		// which way the liquid flows here, or 0, 0
 } watertri_t;
+
+#define	WATER_GRAVITY	386.0f	// a unit is about an inch: waves 64 units deep run at about 160 a second
+#define	LAVA_GRAVITY	54.0f	// heavy liquids move slowly
+#define	STREAM_SPEED	48.0f	// units a second: what the map calls flowing
+#define	BODY_AMOUNT		1.75f	// how much of a player or a monster is in the liquid, as pt_water_move counts it
 
 static waterbody_t	w_bodies[MAX_WATER_BODIES];
 static int			w_numbodies;
@@ -127,7 +133,7 @@ void R_WaterAbsorb (image_t *image, const char *name, float *absorb)
 		absorb[i] = (1.03f - sum[i] / max) * strength;
 }
 
-static void W_AddShape (int body, float points[][3], int numpoints)
+static void W_AddShape (int body, float points[][3], int numpoints, const float *stream)
 {
 	watertri_t	*t;
 	int			i;
@@ -146,6 +152,7 @@ static void W_AddShape (int body, float points[][3], int numpoints)
 		t->p[0][0] = points[0][0];   t->p[0][1] = points[0][1];
 		t->p[1][0] = points[i-1][0]; t->p[1][1] = points[i-1][1];
 		t->p[2][0] = points[i][0];   t->p[2][1] = points[i][1];
+		t->stream[0] = stream[0];    t->stream[1] = stream[1];
 	}
 }
 
@@ -164,7 +171,7 @@ The body a level liquid face at height z belongs to, made if need be.
 Returns -1 if there is no room for another.
 ===============
 */
-int R_WaterBody (image_t *image, const char *name, float z, float points[][3], int numpoints)
+int R_WaterBody (image_t *image, const char *name, float z, float points[][3], int numpoints, const float *stream)
 {
 	waterbody_t	*b;
 	float		mins[2], maxs[2];
@@ -197,13 +204,13 @@ int R_WaterBody (image_t *image, const char *name, float z, float points[][3], i
 			if (maxs[j] > b->maxs[j])
 				b->maxs[j] = maxs[j];
 		}
-		W_AddShape (i, points, numpoints);
+		W_AddShape (i, points, numpoints, stream);
 		return i;
 	}
 
 	if (w_numbodies == MAX_WATER_BODIES)
 		return -1;
-	W_AddShape (w_numbodies, points, numpoints);
+	W_AddShape (w_numbodies, points, numpoints, stream);
 	b = &w_bodies[w_numbodies];
 	memset (b, 0, sizeof(*b));
 	b->image = image;
@@ -231,6 +238,49 @@ void R_WaterSetMaterial (int body, int material)
 			return;
 	if (b->nummaterials < MAX_BODY_MATERIALS)
 		b->materials[b->nummaterials++] = material;
+}
+
+/*
+===============
+W_Sound
+
+Tells each simulation how deep its liquid is: whatever of the map faces up
+from under its surface is its bed
+===============
+*/
+static void W_Sound (void)
+{
+	waterbody_t	*b;
+	const float	*positions, *p;
+	float		tri[3][3], lo[3], hi[3], nz;
+	int			i, j, k, count;
+
+	count = R_WorldTriangles (&positions);
+	for (i=0, p=positions ; i<count ; i++, p+=9)
+	{
+		// counter clockwise from the front: this is which way it faces
+		nz = (p[3] - p[0]) * (p[7] - p[1]) - (p[4] - p[1]) * (p[6] - p[0]);
+		if (nz <= 0)
+			continue;
+		for (k=0 ; k<3 ; k++)
+		{
+			lo[k] = p[k] < p[3+k] ? (p[k] < p[6+k] ? p[k] : p[6+k]) : (p[3+k] < p[6+k] ? p[3+k] : p[6+k]);
+			hi[k] = p[k] > p[3+k] ? (p[k] > p[6+k] ? p[k] : p[6+k]) : (p[3+k] > p[6+k] ? p[3+k] : p[6+k]);
+		}
+		for (j=0, b=w_bodies ; j<w_numbodies ; j++, b++)
+		{
+			if (!b->sim || lo[2] > b->z - 0.5f || hi[0] < b->mins[0] || lo[0] > b->maxs[0]
+				|| hi[1] < b->mins[1] || lo[1] > b->maxs[1])
+				continue;
+			for (k=0 ; k<3 ; k++)
+			{
+				tri[k][0] = p[k*3];
+				tri[k][1] = p[k*3+1];
+				tri[k][2] = p[k*3+2] - b->z;
+			}
+			pt_water_bed (b->sim, tri[0], tri[1], tri[2]);
+		}
+	}
 }
 
 /*
@@ -290,8 +340,14 @@ void R_WaterFinish (void)
 	{
 		root = &w_bodies[w_bodies[w_tris[i].body].parent];
 		if (root->sim)
+		{
 			pt_water_cover (root->sim, w_tris[i].p[0], w_tris[i].p[1], w_tris[i].p[2]);
+			if (w_tris[i].stream[0] || w_tris[i].stream[1])
+				pt_water_current (root->sim, w_tris[i].p[0], w_tris[i].p[1], w_tris[i].p[2],
+					w_tris[i].stream[0] * STREAM_SPEED, w_tris[i].stream[1] * STREAM_SPEED);
+		}
 	}
+	W_Sound ();
 	free (w_tris);
 	w_tris = NULL;
 	w_numtris = w_maxtris = 0;
@@ -357,6 +413,7 @@ void R_WaterFrame (refdef_t *fd)
 	entity_t	*e;
 	particle_t	*p;
 	vec3_t		eye;
+	vec3_t		by;
 	float		dt, speed, amount, moved, feet, d[2];
 	int			i, j, splashes;
 
@@ -383,9 +440,12 @@ void R_WaterFrame (refdef_t *fd)
 				d[0] = eye[0] - w_lasteye[0];
 				d[1] = eye[1] - w_lasteye[1];
 				speed = sqrt (d[0]*d[0] + d[1]*d[1]) / dt;
-				amount = 0.2f + speed * 0.01f;
-				if (amount > 3)
-					amount = 3;
+				if (speed < 1000)	// not a teleport
+					pt_water_move (b->sim, eye[0], eye[1], 20, d[0] / dt, d[1] / dt, BODY_AMOUNT, dt);
+				// and it splashes as it goes; nobody stands quite still in water
+				amount = 0.2f + speed * 0.006f;
+				if (amount > 2)
+					amount = 2;
 				pt_water_disturb (b->sim, eye[0], eye[1], 18, amount * dt * 16);
 			}
 
@@ -396,13 +456,16 @@ void R_WaterFrame (refdef_t *fd)
 					continue;
 				if (fabs (e->origin[2] - b->z) > 28 || !W_Over (b, e->origin))
 					continue;
-				moved = R_EntityMoved (j, e);
-				if (moved < 0.25f)
+				moved = R_EntityMoved (j, e, by);
+				if (moved < 0.25f || moved > 1000 * dt)
 					continue;
-				amount = moved * 0.15f;
+				pt_water_move (b->sim, e->origin[0], e->origin[1], 16, by[0] / dt, by[1] / dt, BODY_AMOUNT, dt);
+				// what falls in or climbs out makes a splash of its own
+				amount = fabs (by[2]) * 0.15f;
 				if (amount > 3)
 					amount = 3;
-				pt_water_disturb (b->sim, e->origin[0], e->origin[1], 14, amount);
+				if (amount > 0.05f)
+					pt_water_disturb (b->sim, e->origin[0], e->origin[1], 14, amount);
 			}
 
 			// splashes and bubbles show up as particles at the surface
@@ -428,7 +491,7 @@ void R_WaterFrame (refdef_t *fd)
 					10 + (rand () & 7), b->lava ? 0.5f : 0.25f);
 
 			// heavy liquids move slowly and settle fast
-			pt_water_step (b->sim, dt, b->lava ? 60 : 160, r_waterdamping * (b->lava ? 0.9f : 0.45f));
+			pt_water_step (b->sim, dt, b->lava ? LAVA_GRAVITY : WATER_GRAVITY, r_waterdamping * (b->lava ? 0.9f : 0.45f));
 		}
 
 		rpt.backend->texture_update (rpt.backend, b->wave_texture, pt_water_waves (b->sim, r_waterwaves));

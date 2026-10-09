@@ -164,6 +164,9 @@ void main()
 	{
 		const float inv = 1.0 / wsum;
 		kept_frames = min(frames * inv + 1.0, max_history);
+		// where the light is not what it was, what was gathered is let go
+		if (fr.liquid.y > 0.0)
+			kept_frames = max(mix(kept_frames, 1.0, Changed(pixel) * fr.liquid.y), 1.0);
 		for (int k = 0; k < 3; k++)
 		{
 			hist[k] *= inv;

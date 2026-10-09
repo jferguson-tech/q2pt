@@ -386,20 +386,24 @@ std::unique_ptr<World> BuildWorld(const pt_world_t *in)
 	}
 	w->bvh.Build(soup.data(), (uint32_t)in->num_triangles, Marks(w->tris).data());
 
-	// the simulated liquid surfaces, for the light they throw back up
+	// The simulated bodies of liquid, for finding where their waves stand
+	// and for the light they throw back up. A body is whatever shows one
+	// wave picture, of however many materials its faces are made.
 	for (const Tri &t : w->tris)
 	{
-		if (!t.mat->caustic_map || t.n.z < 0.99f)
+		if (!t.mat->wave_map || std::fabs(t.n.z) < 0.99f)
 			continue;
 		World::Water *body = nullptr;
 		for (World::Water &b : w->waters)
-			if (b.mat == t.mat)
+			if (b.mat->wave_map == t.mat->wave_map && std::fabs(b.z - t.p0.z) <= 1.0f)
 				body = &b;
 		if (!body)
 		{
-			w->waters.push_back({FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX, t.p0.z, t.mat});
+			w->waters.push_back({FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX, t.p0.z, t.mat, false});
 			body = &w->waters.back();
 		}
+		if (t.n.z > 0.0f)
+			body->top = true;
 		const Vec3 corner[3] = {t.p0, t.p0 + t.e1, t.p0 + t.e2};
 		for (const Vec3 &c : corner)
 		{

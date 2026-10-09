@@ -178,11 +178,13 @@ struct World
 	float					sky_scale = 1.0f;
 	bool					has_waves = false;
 
-	// a simulated body of liquid: where its surface is and which material carries its maps
+	// a simulated body of liquid: where its surface is, a material that
+	// carries its maps, and whether any of it is seen from above
 	struct Water
 	{
 		float			min_x, min_y, max_x, max_y, z;
 		const Material	*mat;
+		bool			top;
 	};
 	std::vector<Water>		waters;
 
@@ -270,6 +272,19 @@ struct Scene
 	{
 		u = (p.x - m.wave_rect[0]) * m.wave_rect[2];
 		v = (p.y - m.wave_rect[1]) * m.wave_rect[3];
+	}
+
+	// is there liquid at p, of the body whose maps the material carries
+	bool Wet(const Material &m, Vec3 p) const
+	{
+		const Texture *t = Map(m.caustic_map);
+		if (!t)
+			return true;
+		float u, v;
+		WaveCoord(m, p, u, v);
+		if (u < 0.0f || v < 0.0f || u >= 1.0f || v >= 1.0f)
+			return false;
+		return (t->pixels[(size_t)(v * (float)t->height) * t->width + (size_t)(u * (float)t->width)] >> 24) >= 128;
 	}
 
 	// how much the waves brighten light passing through the surface at p

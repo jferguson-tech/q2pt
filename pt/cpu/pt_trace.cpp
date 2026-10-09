@@ -735,44 +735,53 @@ static void WaterBounce(const Scene &sc, const Surface &s, Vec3 y, Vec3 e, Lit &
 {
 	if (s.medium)
 		return;
+	// The body the light would come off: of those whose surface the path
+	// crosses, the one nearest below. Only that one is tried, so that a map
+	// with many bodies costs no more rays than one with few.
+	const World::Water *body = nullptr;
+	Vec3 q;		// where the path meets the surface
 	for (const World::Water &b : sc.world->waters)
 	{
-		if (s.p.z <= b.z + 1.0f || y.z <= b.z + 1.0f || s.p.z - b.z > 512.0f)
+		if (!b.top || s.p.z <= b.z + 1.0f || y.z <= b.z + 1.0f || s.p.z - b.z > 512.0f || (body && b.z <= body->z))
 			continue;
 		const Vec3 image(y.x, y.y, 2.0f * b.z - y.z);
 		const Vec3 d = image - s.p;
-		const Vec3 q = s.p + d * ((b.z - s.p.z) / d.z);		// where the path meets the surface
-		if (q.x < b.min_x || q.x > b.max_x || q.y < b.min_y || q.y > b.max_y)
+		const Vec3 at = s.p + d * ((b.z - s.p.z) / d.z);
+		if (at.x < b.min_x || at.x > b.max_x || at.y < b.min_y || at.y > b.max_y || !sc.Wet(*b.mat, at))
 			continue;
-
-		const float len2 = Dot(d, d);
-		const Vec3 wi = d * (1.0f / std::sqrt(len2));
-		const float m = 1.0f + wi.z;	// 1 - cosine of the angle at the water
-		const float fresnel = 0.02f + 0.98f * m * m * m * m * m;
-		const float gain = fresnel * sc.Caustic(*b.mat, q);
-		if (gain <= 0.001f)
-			continue;
-
-		// e was for the straight path; this one is as long as the way to the image
-		const Vec3 straight = y - s.p;
-		const Lit add = Reflect(s, wi, e * (gain * Dot(straight, straight) / len2));
-		if (Importance(s, add) <= 0.0f)
-			continue;
-
-		// both legs must be clear
-		const Vec3 above = q + Vec3(0.0f, 0.0f, 0.1f);
-		if (Visible(sc, s, above, rng) <= 0.0f)
-			continue;
-		Surface at{};
-		at.medium = true;
-		at.p = above;
-		if (Visible(sc, at, y, rng) <= 0.0f)
-			continue;
-
-		out.diffuse += add.diffuse;
-		out.specular += add.specular;
-		return;		// one body will do
+		body = &b;
+		q = at;
 	}
+	if (!body)
+		return;
+
+	const Vec3 d = Vec3(y.x, y.y, 2.0f * body->z - y.z) - s.p;
+	const float len2 = Dot(d, d);
+	const Vec3 wi = d * (1.0f / std::sqrt(len2));
+	const float m = 1.0f + wi.z;	// 1 - cosine of the angle at the water
+	const float fresnel = 0.02f + 0.98f * m * m * m * m * m;
+	const float gain = fresnel * sc.Caustic(*body->mat, q);
+	if (gain <= 0.001f)
+		return;
+
+	// e was for the straight path; this one is as long as the way to the image
+	const Vec3 straight = y - s.p;
+	const Lit add = Reflect(s, wi, e * (gain * Dot(straight, straight) / len2));
+	if (Importance(s, add) <= 0.0f)
+		return;
+
+	// both legs must be clear
+	const Vec3 above = q + Vec3(0.0f, 0.0f, 0.1f);
+	if (Visible(sc, s, above, rng) <= 0.0f)
+		return;
+	Surface at{};
+	at.medium = true;
+	at.p = above;
+	if (Visible(sc, at, y, rng) <= 0.0f)
+		return;
+
+	out.diffuse += add.diffuse;
+	out.specular += add.specular;
 }
 
 #ifdef PT_AVX2_KERNELS

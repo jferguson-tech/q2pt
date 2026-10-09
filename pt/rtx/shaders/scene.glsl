@@ -121,9 +121,9 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	vec4	output_f;		// saturation, contrast, bloom, nothing has changed since last frame
 	ivec4	frame_has;		// smooth normals, where things were last frame, which of each pair of images is this frame's, anti-aliasing
 	ivec4	size;			// xy: of the picture being traced; z: simulated bodies of liquid
-	vec4	water_rect[8];	// each body's extent: min x, min y, max x, max y
-	vec4	water_at[8];	// x: the height of its surface; y: the material that carries its maps; z: its wave picture; w: its caustic picture
-	vec4	water_wave[8];	// where its pictures lie: the material's wave_rect
+	vec4	water_rect[24];	// each body's extent: min x, min y, max x, max y
+	vec4	water_at[24];	// x: the height of its surface; y: a material that carries its maps, or less than 0: none of it is seen from above; z: its wave picture; w: its caustic picture
+	vec4	water_wave[24];	// where its pictures lie: the material's wave_rect
 	ivec4	out_size;		// xy: of the finished picture, the size of the view
 	vec4	open_origin;	// motion blur: the eye as the shutter opened; w: there is blur
 	vec4	open_forward;
@@ -131,7 +131,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	vec4	open_up;
 	ivec4	held;			// x: first triangle of the frame carried by the eye (the weapon in hand); y: how many; z: reflections are followed where they appear to be
 	vec4	painted;		// x: what a metal painted dark reflects, see pt_view_t's metal_colour; y: the most over white that adds to the glow, 0 = no limit; z: points along a view ray where the air's light is looked for; w: frames of it kept while things change
-	vec4	liquid;			// x: how far from level the waves of simulated liquids reach
+	vec4	liquid;			// x: how far from level the waves of simulated liquids reach; y: how readily what was gathered is let go where the light has changed, see change.comp
 } fr;
 
 // the map and what moves, each as three corners per triangle, what goes with
@@ -183,6 +183,23 @@ layout(set = 0, binding = 31, rgba32f) uniform image2D img_over;		// xyz: the sa
 layout(set = 0, binding = 32, rg32f) uniform image2D img_moments[6];
 // how much the frame's lights put on the pixel, see FrameLightLevel, by parity
 layout(set = 0, binding = 33, r32f) uniform image2D img_flash[2];
+// Where the light has changed, in blocks of 8 pixels: [0] to [2] each
+// channel's sums over a block, [3].x how far what was gathered there is to
+// be let go, 0 to 1, and .y how far apart the sums were. See change.comp.
+layout(set = 0, binding = 34, rgba32f) uniform image2D img_change[4];
+
+// how far what was gathered at a pixel is to be let go: the blocks' values,
+// smoothly from one block to the next
+float Changed(ivec2 pixel)
+{
+	const ivec2 blocks = (fr.size.xy + 7) / 8;
+	const vec2 at = (vec2(pixel) + 0.5) / 8.0 - 0.5;
+	const ivec2 b0 = ivec2(floor(at));
+	const vec2 a = at - vec2(b0);
+	const ivec2 lo = clamp(b0, ivec2(0), blocks - 1), hi = clamp(b0 + 1, ivec2(0), blocks - 1);
+	return mix(mix(imageLoad(img_change[3], lo).x, imageLoad(img_change[3], ivec2(hi.x, lo.y)).x, a.x),
+		mix(imageLoad(img_change[3], ivec2(lo.x, hi.y)).x, imageLoad(img_change[3], hi).x, a.x), a.y);
+}
 
 float Luminance(vec3 c)
 {
@@ -1021,41 +1038,55 @@ void WaterBounce(Surface s, vec3 y, vec3 e, inout Lit lit)
 {
 	if (s.medium)
 		return;
+	// The body the light would come off: of those whose surface the path
+	// crosses, the one nearest below. Only that one is tried, so that a map
+	// with many bodies costs no more rays than one with few.
+	int body = -1;
+	float z = -1.0e30;
+	vec3 q = vec3(0.0);		// where the path meets the surface
 	for (int i = 0; i < fr.size.z; i++)
 	{
+		const float level = fr.water_at[i].x;
+		if (fr.water_at[i].y < 0.0 || s.p.z <= level + 1.0 || y.z <= level + 1.0 || s.p.z - level > 512.0 || level <= z)
+			continue;
+		const vec3 d = vec3(y.xy, 2.0 * level - y.z) - s.p;
+		const vec3 at = s.p + d * ((level - s.p.z) / d.z);
 		const vec4 rect = fr.water_rect[i];
-		const float z = fr.water_at[i].x;
-		if (s.p.z <= z + 1.0 || y.z <= z + 1.0 || s.p.z - z > 512.0)
+		if (at.x < rect.x || at.x > rect.z || at.y < rect.y || at.y > rect.w)
 			continue;
-		const vec3 image = vec3(y.xy, 2.0 * z - y.z);
-		const vec3 d = image - s.p;
-		const vec3 q = s.p + d * ((z - s.p.z) / d.z);		// where the path meets the surface
-		if (q.x < rect.x || q.x > rect.z || q.y < rect.y || q.y > rect.w)
+		// the caustic picture also says where there is liquid at all
+		const int caustics = int(fr.water_at[i].w);
+		if (caustics >= 0 && Texel(caustics, (at.xy - fr.water_wave[i].xy) * fr.water_wave[i].zw, false).a < 0.5)
 			continue;
-
-		const float len2 = dot(d, d);
-		const vec3 wi = d * inversesqrt(len2);
-		const float m = 1.0 + wi.z;	// 1 - cosine of the angle at the water
-		const float fresnel = 0.02 + 0.98 * m * m * m * m * m;
-		const float gain = fresnel * Caustic(world_materials.m[int(fr.water_at[i].y)], q);
-		if (gain <= 0.001)
-			continue;
-
-		// e was for the straight path; this one is as long as the way to the image
-		const vec3 straight = y - s.p;
-		const Lit add = Reflect(s, wi, e * (gain * dot(straight, straight) / len2));
-		if (Importance(s, add) <= 0.0)
-			continue;
-
-		// both legs must be clear
-		const vec3 above = q + vec3(0.0, 0.0, 0.1);
-		if (Visible(Leave(s), above) <= 0.0 || Visible(above, y) <= 0.0)
-			continue;
-
-		lit.diffuse += add.diffuse;
-		lit.specular += add.specular;
-		return;		// one body will do
+		body = i;
+		z = level;
+		q = at;
 	}
+	if (body < 0)
+		return;
+
+	const vec3 d = vec3(y.xy, 2.0 * z - y.z) - s.p;
+	const float len2 = dot(d, d);
+	const vec3 wi = d * inversesqrt(len2);
+	const float m = 1.0 + wi.z;	// 1 - cosine of the angle at the water
+	const float fresnel = 0.02 + 0.98 * m * m * m * m * m;
+	const float gain = fresnel * Caustic(world_materials.m[int(fr.water_at[body].y)], q);
+	if (gain <= 0.001)
+		return;
+
+	// e was for the straight path; this one is as long as the way to the image
+	const vec3 straight = y - s.p;
+	const Lit add = Reflect(s, wi, e * (gain * dot(straight, straight) / len2));
+	if (Importance(s, add) <= 0.0)
+		return;
+
+	// both legs must be clear
+	const vec3 above = q + vec3(0.0, 0.0, 0.1);
+	if (Visible(Leave(s), above) <= 0.0 || Visible(above, y) <= 0.0)
+		return;
+
+	lit.diffuse += add.diffuse;
+	lit.specular += add.specular;
 }
 
 // The map's lights. A handful of candidates are weighed by the light they
