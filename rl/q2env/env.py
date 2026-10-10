@@ -98,24 +98,29 @@ class Q2VecEnv:
     """Many players, each in a server process of its own, stepped together.
 
     All the servers are set going before any is waited for, so they run side
-    by side on their own processor threads. An environment whose episode has
-    ended is reset on the next step, with the next seed of its own sequence;
-    that step returns the first observation of the new episode and the action
-    given for it is not used.
+    by side on their own processor threads. When an episode ends, its
+    environment is reset within the same call to step: the call reports how
+    the episode ended, and the observation it returns for that environment is
+    the first of the next episode, which takes the next seed of the
+    environment's own sequence.
     """
 
     def __init__(self, n, maps=("base1",), skill=1, time_limit=3000, guided=True,
-                 cpus=None, seed=0):
+                 cpus=None, seed=0, mode=L.MODE_EXPLORE, flags=0, back=None):
+        """mode, flags: as Engine.reset takes them. back: for each map, the
+        maps whose exits are not the way on; None for none."""
         self.n = n
         self.maps = tuple(maps)
         self.skill, self.time_limit, self.guided = skill, time_limit, guided
+        self.mode, self.flags, self.back = mode, flags, back or {}
+        self.current_map = [""] * n
+        self.current_seed = np.zeros(n, np.int64)
         self.single_observation_space = observation_space()
         self.single_action_space = action_space()
         self.engines = [Engine(cpu=cpus[i % len(cpus)] if cpus else None) for i in range(n)]
         self._seed = seed
         self._episodes = np.zeros(n, np.int64)
-        self._need_reset = np.ones(n, bool)
-        self._view = np.concatenate([e.block.reshape(1) for e in self.engines])  # for dtypes only
+        self.info = [None] * n
         self.obs = {k: np.zeros((n,) + L.SHARED[k].shape, L.SHARED[k].base) for k in L.OBS_FIELDS}
         self.teacher = np.zeros((n, L.ACT_BRANCHES), np.int32)
         self.gain = np.zeros((n, L.GAIN_FLOATS), np.float32)
@@ -125,47 +130,67 @@ class Q2VecEnv:
     def _ask_reset(self, i):
         # each environment has its own run of seeds and takes the maps in turn
         k = int(self._episodes[i])
-        self.engines[i].ask_reset(self.maps[(i + k) % len(self.maps)],
-                                  (self._seed + i * 1000003 + k) & 0x7FFFFFFF,
-                                  self.skill, self.time_limit)
+        map = self.maps[(i + k) % len(self.maps)]
+        seed = (self._seed + i * 1000003 + k) & 0x7FFFFFFF
+        self.engines[i].ask_reset(map, seed, self.skill, self.time_limit, flags=self.flags,
+                                  mode=self.mode, back=self.back.get(map, ""))
+        self.current_map[i] = map
+        self.current_seed[i] = seed
         self._episodes[i] += 1
 
-    def _collect(self):
-        for i, e in enumerate(self.engines):
-            e.wait()
-            b = e.block
-            for k in L.OBS_FIELDS:
-                self.obs[k][i] = b[k]
-            self.teacher[i] = b["teacher"]
-            self.gain[i] = b["gain"]
-            self.done[i] = b["done"]
-            self.hash[i] = b["hash"]
-        if not self.guided:
-            self.obs["guide"][:] = 0
-        self._need_reset = self.done != L.DONE_NO
+    def _read(self, i):
+        b = self.engines[i].block
+        for k in L.OBS_FIELDS:
+            self.obs[k][i] = b[k]
+        self.teacher[i] = b["teacher"]
 
     def reset(self):
         for i in range(self.n):
             self._ask_reset(i)
-        self._collect()
+        for i, e in enumerate(self.engines):
+            e.wait()
+            self._read(i)
+        if not self.guided:
+            self.obs["guide"][:] = 0
         return self.obs
 
     def step(self, actions=None, teacher=None):
         """actions: (n, branches) choices. teacher: None, or a mask of the
-        environments in which the teacher's own action is played instead.
+        environments in which the teacher's own action is played instead;
+        with actions None the teacher plays in all of them.
 
-        Returns the observations, the gains, how each episode stands (DONE_),
-        and which environments were reset in this call."""
-        was_reset = self._need_reset.copy()
+        Returns the observations, the gains of the step, and how each
+        episode stands (DONE_). Where that is not DONE_NO the observation is
+        the first of a new episode. self.teacher holds the teacher's action
+        for each observation returned, and self.info what the game reported
+        at the end of each episode that ended in this call."""
         for i, e in enumerate(self.engines):
-            if was_reset[i]:
-                self._ask_reset(i)
-            elif teacher is not None and teacher[i]:
+            if actions is None or (teacher is not None and teacher[i]):
                 e.ask_step(None)
             else:
                 e.ask_step(actions[i])
-        self._collect()
-        return self.obs, self.gain, self.done, was_reset
+        ended = []
+        for i, e in enumerate(self.engines):
+            e.wait()
+            b = e.block
+            self.gain[i] = b["gain"]
+            self.done[i] = b["done"]
+            self.hash[i] = b["hash"]
+            if b["done"]:
+                ended.append(i)
+                self.info[i] = {"map": self.current_map[i], "seed": int(self.current_seed[i]),
+                                "done": int(b["done"]), "steps": int(b["step"]),
+                                "kills": int(b["monsters_killed"]), "health": float(b["self"][0]),
+                                "death_by": int(b["death_by"]), "death_means": int(b["death_means"])}
+                self._ask_reset(i)
+            else:
+                self._read(i)
+        for i in ended:
+            self.engines[i].wait()
+            self._read(i)
+        if not self.guided:
+            self.obs["guide"][:] = 0
+        return self.obs, self.gain, self.done
 
     def close(self):
         for e in self.engines:

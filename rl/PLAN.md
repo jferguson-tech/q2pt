@@ -259,13 +259,16 @@ of rays is set from what a step is measured to cost.
 (3), yaw change (bins, finer near zero), pitch change (bins), fire (2),
 weapon (keep, or one of the ten).
 
-**Policy**: an encoder for each part of the observation, a GRU, one head per
-action branch and a value head. `rl/q2rl/model.py`.
+**Policy** (`rl/q2rl/model.py`): the rays through three convolutions, the
+things in view through a shared network and a maximum over them, joined with
+the player's state, the guide and the last action, then a GRU of 256 units,
+one head per action branch and a value head. 596,000 weights.
 
 ## Training
 
 | step | file | what |
 | --- | --- | --- |
+| 0 | `rl/q2rl/data.py`, `evaluate.py` | recording play as shards on disk; evaluating a policy or the teacher on seeds held back |
 | 1 | `rl/q2rl/bc.py` | behaviour cloning on teacher rollouts |
 | 2 | `rl/q2rl/dagger.py` | the student drives a share of the steps, the teacher labels all of them, the data is added to and the student retrained |
 | 3 | `rl/q2rl/ppo.py` | PPO from the imitation weights: value head first with the policy frozen, then both, with a penalty for leaving the teacher's action that falls to zero |
