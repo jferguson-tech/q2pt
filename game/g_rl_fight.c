@@ -61,9 +61,12 @@ Fight_Target
 The monster to shoot: the nearest one in sight and in range that is alive
 and not on the player's side. One that has noticed the player counts as a
 third nearer than it is, so that it is dealt with before one still asleep.
-One behind the player counts as up to four times as far as one dead ahead.
+One behind the player counts as up to four times as far as one dead ahead,
+and the one picked a step ago as half as far.
 ================
 */
+static edict_t	*fight_last;		// the monster picked a step ago
+
 edict_t *Fight_Target (edict_t *ent, vec3_t eye)
 {
 	edict_t	*e, *best;
@@ -95,11 +98,16 @@ edict_t *Fight_Target (edict_t *ent, vec3_t eye)
 		// and one the view is on already counts as nearer than one it would
 		// have to swing round to, so that the aim stays on what it is on
 		d *= 1 + (1 - DotProduct (v, forward) / (VectorLength (v) + 1)) * 1.5f;
+		// and the one being fought already counts as half as far: with two
+		// about equally near, swinging from one to the other hits neither
+		if (e == fight_last)
+			d *= 0.5f;
 		if (d >= bestd || !Fight_Sees (ent, eye, e))
 			continue;
 		bestd = d;
 		best = e;
 	}
+	fight_last = best;
 	return best;
 }
 
@@ -114,12 +122,19 @@ as it goes now.
 */
 void Fight_Aim (edict_t *ent, edict_t *enemy, vec3_t eye, float *yaw, float *pitch, float *dist)
 {
-	vec3_t	p, d;
+	vec3_t	p, d, from;
 	float	speed, time;
 	char	*name;
 
+	// Where each will be when the shot is fired, which is a step from now:
+	// going sideways at a run, the player sees a monster a few yards off
+	// swing through several degrees in a step, and a view turned to where
+	// the monster was is never on it.
 	VectorAdd (enemy->absmin, enemy->absmax, p);
 	VectorScale (p, 0.5f, p);
+	VectorMA (p, RL_STEP_MSEC * 0.001f, enemy->velocity, p);
+	VectorMA (eye, RL_STEP_MSEC * 0.001f, ent->velocity, from);
+	eye = from;
 	VectorSubtract (p, eye, d);
 	*dist = VectorLength (d);
 
@@ -263,4 +278,42 @@ qboolean Fight_Reaches (edict_t *ent, vec3_t eye, edict_t *m)
 	VectorScale (p, 0.5f, p);
 	tr = gi.trace (from, NULL, NULL, p, ent, MASK_SHOT);
 	return tr.fraction >= 1 || tr.ent == m;
+}
+
+/*
+================
+Fight_Melee
+
+True for a monster that can only hurt from close by
+================
+*/
+qboolean Fight_Melee (edict_t *m)
+{
+	return m->classname && (!strcmp (m->classname, "monster_berserk") || !strcmp (m->classname, "monster_mutant")
+		|| !strcmp (m->classname, "monster_brain") || !strcmp (m->classname, "monster_flipper"));
+}
+
+/*
+================
+Fight_TimeToKill
+
+Seconds of steady hits the monster would take with the weapon in hand: its
+health over what the weapon does in a second, roughly
+================
+*/
+float Fight_TimeToKill (edict_t *ent, edict_t *m)
+{
+	static const struct { const char *name; float dps; } weapons[] =
+	{
+		{"Blaster", 20}, {"Shotgun", 40}, {"Super Shotgun", 100}, {"Machinegun", 80}, {"Chaingun", 200},
+		{"Grenade Launcher", 100}, {"Rocket Launcher", 120}, {"HyperBlaster", 200}, {"Railgun", 65},
+		{"BFG10K", 300}, {NULL, 0}
+	};
+	const char	*name = ent->client->pers.weapon ? ent->client->pers.weapon->pickup_name : "";
+	int		i;
+
+	for (i=0 ; weapons[i].name ; i++)
+		if (!strcmp (name, weapons[i].name))
+			return m->health / weapons[i].dps;
+	return m->health / 20.0f;
 }

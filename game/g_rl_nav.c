@@ -240,7 +240,7 @@ static int Nav_Near (vec3_t p, float xy, float z, int on, int high)
 	int		reachz = (int)ceil (z / NAV_CELL);
 
 	best = -1;
-	bestd = xy * xy;
+	bestd = xy * xy + z * z;
 	for (ix=-reach ; ix<=reach ; ix++)
 	for (iy=-reach ; iy<=reach ; iy++)
 	for (iz=-reachz ; iz<=reachz ; iz++)
@@ -262,6 +262,11 @@ static int Nav_Near (vec3_t p, float xy, float z, int on, int high)
 			if (dz > z)
 				continue;
 			d = (q[0]-p[0])*(q[0]-p[0]) + (q[1]-p[1])*(q[1]-p[1]);
+			if (d >= xy * xy)
+				continue;
+			// in water the nodes lie above one another: the nearest in depth too
+			if (nav_nodes[n].flags & NODE_WATER)
+				d += dz * dz;
 			// two hash cells can be one bucket: a node is then met twice, which does no harm
 			if (d < bestd || (d == bestd && best != -1 && n < best))
 			{

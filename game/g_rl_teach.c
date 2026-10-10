@@ -48,12 +48,16 @@ qboolean Fight_Clear (edict_t *ent, vec3_t eye);
 qboolean Fight_Reaches (edict_t *ent, vec3_t eye, edict_t *m);
 void Fight_Aim (edict_t *ent, edict_t *enemy, vec3_t eye, float *yaw, float *pitch, float *dist);
 int Fight_Weapon (edict_t *ent, float dist);
+qboolean Fight_Melee (edict_t *m);
+float Fight_TimeToKill (edict_t *ent, edict_t *m);
 
 // The view's turn may change by no more than this from one step to the
 // next, in degrees a step, so that it swings as a hand on a mouse does and
 // does not snap.
 #define	TEACH_YAW_ACCEL		12.0f
 #define	TEACH_PITCH_ACCEL	10.0f
+
+#define	TEACH_STAND			4.0f	// seconds a monster may take to kill and still be stood before
 
 #define	TEACH_ARRIVE		32.0f	// a goal is reached within this of it
 #define	TEACH_REPLAN		16		// steps between looks at the doors' states
@@ -200,14 +204,17 @@ has a node from which the way is shorter than the way from here.
 */
 static qboolean Teach_Try (edict_t *ent, nav_link_t *link, int *up)
 {
-	vec3_t	end, to;
+	vec3_t	end, to, from, left;
 	int		n;
 
 	if (!Nav_TryLink (ent, link, end, up))
 		return false;
 	Nav_NodeOrigin (link->to, to);
-	if (fabs (end[0] - to[0]) < 48 && fabs (end[1] - to[1]) < 48 && fabs (end[2] - to[2]) < 40)
-		return true;		// at the link's far node, near enough
+	VectorSubtract (ent->s.origin, to, from);
+	VectorSubtract (end, to, left);
+	if (fabs (left[0]) < 48 && fabs (left[1]) < 48 && fabs (left[2]) < 40
+		&& VectorLength (left) < VectorLength (from) - 4)
+		return true;		// at the link's far node, near enough, and nearer than now
 	n = Nav_NodeNear (end, 40, 32);
 	return n != -1 && teach_togo[n] < teach_togo[teach_anchor] - 0.01f;
 }
@@ -453,6 +460,8 @@ static void Teach_Plan (edict_t *ent)
 	teach_have_plan = Plan_Update (teach_anchor, teach_togo);
 	Nav_CostsFrom (teach_anchor, teach_reach);
 	teach_errand = Teach_Errand (ent);
+	if (teach_errand && gi.cvar ("rl_debug", "0", 0)->value)
+		gi.dprintf ("errand %s worth %.0f\n", teach_errand->classname, Teach_Wants (ent, teach_errand));
 	if (teach_errand)
 	{
 		n = Nav_NodeNear (teach_errand->s.origin, 28, 40);
@@ -482,9 +491,7 @@ static qboolean Teach_Dodge (edict_t *ent, vec3_t origin, edict_t *monster, floa
 	vec3_t		to, across, d, p, v;
 	qboolean	found = false, beside, melee;
 
-	melee = monster->classname && (!strcmp (monster->classname, "monster_berserk")
-		|| !strcmp (monster->classname, "monster_mutant") || !strcmp (monster->classname, "monster_brain")
-		|| !strcmp (monster->classname, "monster_flipper"));
+	melee = Fight_Melee (monster);
 	VectorSubtract (enemy, origin, to);
 	to[2] = 0;
 	VectorNormalize (to);
@@ -567,8 +574,8 @@ void Teach_Think (edict_t *ent)
 	float		yaw, pitch, want_yaw, want_pitch, err, best_err, dist, a, across;
 	float		aim_yaw, aim_pitch, aim_dist;
 	int			f, s, bf, bs, i, n, up, link_type;
-	qboolean	grounded, swimming, hold, ducked, snap, fire, have, exact, wary, launch, begun, stuck;
-	float		route_yaw, speed, c;
+	qboolean	grounded, swimming, hold, ducked, snap, fire, have, exact, wary, launch, begun, stuck, run;
+	float		route_yaw, speed, c, aim_err = 0;
 	trace_t		tr;
 
 	act[RL_ACT_FORWARD] = 1;
@@ -956,7 +963,9 @@ slanted:	;
 		err = RAD2DEG_F(atan2 (18, aim_dist));
 		if (err < 1.5f)
 			err = 1.5f;
-		fire = fabs (AngleDiff (aim_yaw, yaw)) < err && fabs (aim_pitch - pitch) < err * 1.5f;
+		// (whether it is, is looked at again below, once the view has turned)
+		aim_err = err;
+		fire = fabs (AngleDiff (aim_yaw, yaw)) < err + 30 && fabs (aim_pitch - pitch) < err * 1.5f + 20;
 		act[RL_ACT_WEAPON] = Fight_Weapon (ent, aim_dist);
 		if (fire && !Fight_Clear (ent, eye))
 		{	// a barrel in the line of fire, close by: no shot from here, and
@@ -977,7 +986,30 @@ slanted:	;
 		// So a jump or a drop is not begun with the view on a monster: the
 		// fight is finished at its top, or, if the shots do not reach, the
 		// view goes back to the way and the move is made unfought.
-		if (grounded && (link_type == NAV_WALK || link_type == NAV_DUCK || exact)
+		//
+		// And a monster that would take more than a few seconds to kill with
+		// the weapon in hand is not stood before at all, unless it fights
+		// hand to hand and has to be kept off: the feet keep to the route
+		// and the shots are for when it is more or less ahead. One well
+		// behind is left there, and the view goes back to the way.
+		run = link && !hold && !Fight_Melee (enemy) && Fight_TimeToKill (ent, enemy) > TEACH_STAND;
+		if (run)
+		{
+			VectorSubtract (enemy->s.origin, origin, p);
+			p[2] = 0;
+			VectorNormalize (p);
+			VectorSet (q, d[0], d[1], 0);
+			VectorNormalize (q);
+			if (DotProduct (p, q) < -0.2f)
+			{
+				want_yaw = route_yaw;
+				want_pitch = 0;
+				snap = true;
+				fire = false;
+				aim_err = 0;
+			}
+		}
+		else if (grounded && (link_type == NAV_WALK || link_type == NAV_DUCK || exact)
 			&& !(job && job->kind == PLAN_EXIT)
 			&& !(ent->health < 40 && teach_errand && teach_errand->item->pickup == Pickup_Health))
 		{
@@ -1000,11 +1032,13 @@ slanted:	;
 				want_pitch = 0;
 				snap = true;
 				fire = false;
+				aim_err = 0;
 			}
 		}
 	}
 	else if (rl_block->mode == RL_MODE_PLAY && grounded && (link_type == NAV_WALK || link_type == NAV_DUCK)
-		&& !(job && job->kind == PLAN_EXIT) && (enemy = Fight_Hunter (ent, eye)) != NULL)
+		&& !(job && job->kind == PLAN_EXIT) && (enemy = Fight_Hunter (ent, eye)) != NULL
+		&& (Fight_Melee (enemy) || Fight_TimeToKill (ent, enemy) <= TEACH_STAND))
 	{	// one is coming: wait for it, facing where it is
 		rl_block->fighting = enemy - g_edicts;
 		VectorSubtract (enemy->s.origin, eye, p);
@@ -1057,7 +1091,11 @@ slanted:	;
 	i = Teach_Turn (AngleDiff (want_yaw, yaw), teach_yaw_rate, rl_yaw_bins, RL_YAW_BINS, TEACH_YAW_ACCEL);
 	act[RL_ACT_YAW] = i;
 	yaw += rl_yaw_bins[i];
-	act[RL_ACT_PITCH] = Teach_Turn (want_pitch - pitch, teach_pitch_rate, rl_pitch_bins, RL_PITCH_BINS, TEACH_PITCH_ACCEL);
+	i = Teach_Turn (want_pitch - pitch, teach_pitch_rate, rl_pitch_bins, RL_PITCH_BINS, TEACH_PITCH_ACCEL);
+	act[RL_ACT_PITCH] = i;
+	// The shot goes where the view points once this step has turned it.
+	if (fire && aim_err > 0)
+		fire = fabs (AngleDiff (want_yaw, yaw)) < aim_err && fabs (want_pitch - pitch - rl_pitch_bins[i]) < aim_err * 1.5f;
 	act[RL_ACT_FIRE] = fire;
 
 	// Of the eight ways the feet can go, the one nearest the way to the
