@@ -118,9 +118,23 @@ start with the blaster only. All 39 maps took 2 min 21 s on 28 threads.
 | boss1 | 0 of 28 | 0 | 28 | standing still with no plan (28) |
 | boss2 | 0 of 28 | 28 | 0 | killed by jorg (28) |
 
-10 of 39 maps are at 26 of 28 or better; 2 more are partly done; 27 are at 3
-of 28 or worse. Nothing but base1 has been worked on. The failures fall into
-four kinds:
+10 of 39 maps are at 26 of 28 or better, but **only base1 of those is a map
+played through**. On the others the exit that leads on is at the start, or
+nearly, because in a hub the player arrives beside the way to the next map
+and the game expects it to go off for keys first:
+
+| map | time to the exit (median) | monsters killed |
+| --- | --- | --- |
+| base1 | 122 s | 15.9 of 17 |
+| fact3 | 31 s | 0 of 0 |
+| jail5 | 20 s | 2 of 56 |
+| mine3 | 5 s | 0 of 20 |
+| power2 | 3 s | 0 of 43 |
+| mine1, mine2, waste3, lab | 1 s | 0 |
+
+So the count that means anything is 1 map of 39, with base2 (6 of 28) and
+base3 (12 of 28) partly done. 27 maps are at 3 of 28 or worse. Nothing but
+base1 has been worked on. The failures fall into four kinds:
 
 * **No plan** (9 maps): the way out hangs on something the planner does not
   know: a train, a teleporter, a wall to be blown up, a lift worked by
@@ -136,8 +150,9 @@ four kinds:
 * **Standing and fighting** (train, jail3, city2): a monster it can see and
   aim at but does not kill.
 
-mine1, mine2, mine3, fact3, power2, waste3 and lab pass untouched; on some
-of these the exit that leads on is close to the start.
+Reaching "an exit that leads on" is too easy a test for a hub map. A fair
+one needs the unit played across its maps with the inventory kept, which is
+the stretch goal.
 
 ## Demos
 
