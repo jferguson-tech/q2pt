@@ -349,6 +349,4 @@ void RL_Perceive (edict_t *ent, float hurt)
 	RL_Rays (ent, eye, forward, left, up);
 	RL_Ents (ent, eye, forward, left, up);
 
-	// no route planner yet
-	memset (rl_block->guide, 0, sizeof(rl_block->guide));
 }

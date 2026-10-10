@@ -85,6 +85,40 @@ class Determinism(unittest.TestCase):
     def test_bunk1(self):
         self.check("bunk1")
 
+    def test_teacher_and_graph(self):
+        """The teacher driving gives the same run each time, and the same
+        whether the navigation graph was built for this run or read from
+        its file."""
+        import os
+        import tempfile
+
+        def teacher_run(engine):
+            engine.reset("base1", 77, time_limit=400, flags=L.FLAG_NOMONSTERS)
+            trace = [int(engine.block["hash"])]
+            while not engine.block["done"]:
+                engine.step(None)
+                trace.append((int(engine.block["hash"]), tuple(engine.block["teacher"])))
+            return trace
+
+        old = os.environ.get("Q2PT_RL_DATA")
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["Q2PT_RL_DATA"] = tmp        # an empty folder: the graph must be built
+            try:
+                with Engine() as e:
+                    built = teacher_run(e)
+                    self.assertGreater(int(e.block["nav_count"]), 1000)
+                    self.assertTrue((Path(tmp) / "nav" / "base1.nav").exists())
+                    again = teacher_run(e)
+                with Engine() as e:
+                    loaded = teacher_run(e)
+            finally:
+                if old is None:
+                    del os.environ["Q2PT_RL_DATA"]
+                else:
+                    os.environ["Q2PT_RL_DATA"] = old
+        self.assertEqual(built, again, "differs when repeated")
+        self.assertEqual(built, loaded, "differs between a graph built and a graph read")
+
     def test_demo_does_not_change_the_run(self):
         """Recording a demo must not alter what happens."""
         import tempfile

@@ -31,7 +31,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define G_RL_H
 
 #define	RL_MAGIC		0x314c5251		// "QRL1"
-#define	RL_VERSION		1
+#define	RL_VERSION		3
 
 // The player is moved by one command of this length in each server frame.
 #define	RL_STEP_MSEC	100
@@ -40,6 +40,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	RL_REQ_RESET	1		// load a map and start an episode
 #define	RL_REQ_STEP		2		// apply an action and run one server frame
 #define	RL_REQ_QUIT		3
+
+// Monsters take no notice of the player, as with the "notarget" cheat. For
+// measuring how well the player finds its way with nothing shooting at it;
+// never set for a run that counts as play.
+#define	RL_FLAG_NOTARGET	1
+
+// The map's monsters are taken out before the episode starts.
+#define	RL_FLAG_NOMONSTERS	2
 
 // how an episode ended
 #define	RL_DONE_NO		0
@@ -161,6 +169,7 @@ typedef struct
 	int		seed;
 	int		skill;			// 0-3
 	int		time_limit;		// steps; 0 for none
+	int		flags;			// RL_FLAG_
 	char	map[64];
 	char	demo[256];		// full path of a demo to record the episode into, or empty
 
@@ -188,6 +197,15 @@ typedef struct
 	float	angles[3];
 	int		monsters_total;
 	int		monsters_killed;
+	int		nav_count;		// nodes in the map's navigation graph
+	int		nav_node;		// the one the player is at, or -1
+	int		nav_goal;		// the one the teacher is making for
+	int		goals_reached;	// by the player, of those the explorer set
+	int		goals_failed;	// given up for taking too long
+	int		restart;		// the game asks for the reset to be done over
+	int		link_type;		// the kind of link the teacher is on (NAV_), or -1 with no way to go
+	int		link_ent;		// the door or lift that link depends on, or 0
+	float	route_left;		// seconds of route from here to the teacher's goal, or -1
 } rl_shared_t;
 
 // The name of the cvar in which the server leaves the block's address for
@@ -196,6 +214,12 @@ typedef struct
 
 #ifdef GAME_INCLUDE
 extern	rl_shared_t	*rl_block;
+
+#define	RAD2DEG_F(a)	((float)((a) * (180.0 / M_PI)))
+
+// g_rl_teach.c
+qboolean Teach_Reset (void);
+void Teach_Think (edict_t *ent);
 #endif
 
 #endif

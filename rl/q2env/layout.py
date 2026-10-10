@@ -9,10 +9,13 @@ header and compares every offset and constant with what is here.
 import numpy as np
 
 MAGIC = 0x314C5251
-VERSION = 1
+VERSION = 3
 STEP_MSEC = 100
 
 REQ_RESET, REQ_STEP, REQ_QUIT = 1, 2, 3
+# for testing navigation only, never for a run that counts as play
+FLAG_NOTARGET = 1       # monsters take no notice of the player
+FLAG_NOMONSTERS = 2     # the map's monsters are taken out
 DONE_NO, DONE_EXIT, DONE_DEATH, DONE_TIME = 0, 1, 2, 3
 DONE_NAMES = ("running", "exit", "death", "time")
 
@@ -47,7 +50,7 @@ SHARED = np.dtype([
     ("request", "<i4"),
     ("action", "<i4", (ACT_BRANCHES,)),
     ("act_teacher", "<i4"),
-    ("seed", "<i4"), ("skill", "<i4"), ("time_limit", "<i4"),
+    ("seed", "<i4"), ("skill", "<i4"), ("time_limit", "<i4"), ("flags", "<i4"),
     ("map", "S64"), ("demo", "S256"),
     # written by the game and the server
     ("error", "<i4"), ("error_text", "S128"),
@@ -64,6 +67,9 @@ SHARED = np.dtype([
     # not for the player
     ("origin", "<f4", (3,)), ("angles", "<f4", (3,)),
     ("monsters_total", "<i4"), ("monsters_killed", "<i4"),
+    ("nav_count", "<i4"), ("nav_node", "<i4"), ("nav_goal", "<i4"),
+    ("goals_reached", "<i4"), ("goals_failed", "<i4"), ("restart", "<i4"),
+    ("link_type", "<i4"), ("link_ent", "<i4"), ("route_left", "<f4"),
 ])
 
 # the fields that make up what the player perceives

@@ -264,10 +264,11 @@ qboolean SV_RL_IsClient (client_t *c)
 SV_RL_Reset
 
 Starts an episode: seeds the random numbers, loads the map with single-player
-rules and a freshly loaded game library, and puts the player in.
+rules and a freshly loaded game library, and puts the player in. The game
+can ask for all of that to be done once more (again is then true).
 ================
 */
-static void SV_RL_Reset (void)
+static void SV_RL_Reset (qboolean again)
 {
 	client_t	*cl;
 	edict_t		*ent;
@@ -345,7 +346,10 @@ static void SV_RL_Reset (void)
 	SZ_Clear (&cl->netchan.message);
 	SZ_Clear (&cl->datagram);
 
+	rl->restart = 0;
 	SV_RL_Game ("reset");
+	if (rl->restart && !again)
+		SV_RL_Reset (true);
 }
 
 // --------------------------------------------------------------------- frame
@@ -391,7 +395,7 @@ int SV_RL_BeginFrame (int msec)
 		switch (rl->request)
 		{
 		case RL_REQ_RESET:
-			SV_RL_Reset ();
+			SV_RL_Reset (false);
 			SV_RL_Reply ();
 			break;
 

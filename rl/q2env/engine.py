@@ -29,16 +29,27 @@ def run_dir():
     return Path(os.environ.get("Q2PT_RUN", REPO / "run"))
 
 
+def data_dir():
+    """Where datasets, weights, demos, logs and the navigation graphs go:
+    never in the repository."""
+    return Path(os.environ.get("Q2PT_RL_DATA", Path.home() / "q2pt-rl"))
+
+
 class Engine:
-    def __init__(self, cpu=None, log=None):
+    def __init__(self, cpu=None, log=None, extra=()):
         """cpu: a processor thread to keep the server on, or None.
-        log: a file for the server's console output, or None to drop it."""
+        log: a file for the server's console output, or None to drop it.
+        extra: more words for the server's command line."""
         run = run_dir()
         exe = run / "q2ded"
         if not exe.exists():
             raise EngineError(f"{exe} is not built: cmake --build build/linux --target q2ded game")
         if not (run / "baseq2" / "pak0.pak").exists():
             raise EngineError(f"no game data in {run / 'baseq2'}")
+
+        # where the game keeps the navigation graph it builds of each map
+        nav = data_dir() / "nav"
+        nav.mkdir(parents=True, exist_ok=True)
 
         fd, self._shm = tempfile.mkstemp(prefix="q2rl-", dir="/dev/shm")
         os.ftruncate(fd, L.SHARED.itemsize)
@@ -57,8 +68,8 @@ class Engine:
                 os.sched_setaffinity(0, {cpu})
 
         self.proc = subprocess.Popen(
-            [str(exe), "+set", "rl_shm", self._shm,
-             "+set", "rl_fd_in", str(to_r), "+set", "rl_fd_out", str(from_w)],
+            [str(exe), "+set", "rl_shm", self._shm, "+set", "rl_nav", str(nav),
+             "+set", "rl_fd_in", str(to_r), "+set", "rl_fd_out", str(from_w), *extra],
             cwd=run, pass_fds=(to_r, from_w), preexec_fn=pin,
             stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
         os.close(to_r)
@@ -82,16 +93,17 @@ class Engine:
         if self.block["error"]:
             raise EngineError(self.block["error_text"].decode(errors="replace"))
 
-    def reset(self, map, seed, skill=1, time_limit=0, demo=""):
-        self.ask_reset(map, seed, skill, time_limit, demo)
+    def reset(self, map, seed, skill=1, time_limit=0, demo="", flags=0):
+        self.ask_reset(map, seed, skill, time_limit, demo, flags)
         self.wait()
 
-    def ask_reset(self, map, seed, skill=1, time_limit=0, demo=""):
+    def ask_reset(self, map, seed, skill=1, time_limit=0, demo="", flags=0):
         b = self.block
         b["map"] = map.encode()
         b["seed"] = seed
         b["skill"] = skill
         b["time_limit"] = time_limit
+        b["flags"] = flags
         b["demo"] = str(demo).encode()
         self.ask(L.REQ_RESET)
 

@@ -247,13 +247,7 @@ static void RL_Observe (qboolean reset)
 	RL_Perceive (ent, rl_taken);
 	rl_dealt = rl_taken = 0;
 
-	// no teacher yet: it would stand still
-	memset (rl_block->teacher, 0, sizeof(rl_block->teacher));
-	rl_block->teacher[RL_ACT_FORWARD] = 1;
-	rl_block->teacher[RL_ACT_STRAFE] = 1;
-	rl_block->teacher[RL_ACT_UP] = 1;
-	rl_block->teacher[RL_ACT_YAW] = RL_YAW_BINS/2;
-	rl_block->teacher[RL_ACT_PITCH] = RL_PITCH_BINS/2;
+	Teach_Think (ent);
 
 	VectorCopy (ent->s.origin, rl_block->origin);
 	if (ent->client)
@@ -290,6 +284,21 @@ void RL_Command (void)
 		// the game library can have random numbers of its own, apart from
 		// the server's that were seeded before the map was loaded
 		srand ((unsigned)rl_block->seed);
+		// Building the navigation graph moves doors and lifts about. They are
+		// put back, but not into the same places in the server's lists, so
+		// the episode is begun again from a clean map, with the graph on file.
+		if (rl_block->flags & RL_FLAG_NOTARGET)
+			g_edicts[1].flags |= FL_NOTARGET;
+		if (rl_block->flags & RL_FLAG_NOMONSTERS)
+		{
+			edict_t	*e;
+			int		i;
+
+			for (i=game.maxclients+1, e=g_edicts+i ; i<globals.num_edicts ; i++, e++)
+				if (e->inuse && (e->svflags & SVF_MONSTER))
+					G_FreeEdict (e);
+		}
+		rl_block->restart = Teach_Reset () && gi.cvar ("rl_nav", "", 0)->string[0];
 		RL_Observe (true);
 	}
 }

@@ -203,12 +203,19 @@ replay would not be the same run.
 All of it is in the game library (`game/g_rl_*.c`), written from the map
 format and the engine's own functions.
 
-* **Navigation graph** (`g_rl_nav.c`), built per map on first use and cached
-  in `~/q2pt-rl/nav/`. Nodes are sampled on standable ground with hull
-  traces; a link exists where a scripted sequence of 100 ms moves through
-  `gi.Pmove` (walk, jump, drop, swim, climb) takes a ghost player from one
-  node to the other. Lifts, doors and trains become links with a condition
-  (the mover's state) attached. No recorded play is used.
+* **Navigation graph** (`g_rl_nav.c`), built per map on first use and kept
+  in `~/q2pt-rl/nav/`. It is grown from where the player starts: a ghost of
+  the player is put at a node at rest and moved through `gi.Pmove` in 100 ms
+  steps, forward on each of 16 headings, and where that is stopped or falls,
+  with a jump and crouched; in water, rising, level and sinking; at a ladder,
+  up it. Where the ghost comes to stand becomes a node and the move a link.
+  A link is kept only if the move also works from 6 units behind the node
+  and 4 to either side. Doors and lifts have two places, home and away: the
+  graph is grown with all at home, then with each group of them away, and a
+  link found near one is marked with the end it needs. A node on a lift has
+  a twin at the lift's other end, joined by the ride. No recorded play is
+  used. Buttons, keys, trains and walls that can be shot away are not
+  handled yet.
 * **Planner** (`g_rl_plan.c`): reads the spawned entities (doors, buttons,
   keys, triggers and their targets, lifts, the exit) and builds the chain of
   sub-goals that opens the way to `target_changelevel`. It is recomputed from
