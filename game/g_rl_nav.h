@@ -116,6 +116,7 @@ qboolean Nav_MoverSelf (edict_t *e);
 qboolean Nav_StepSafe (edict_t *ent, vec3_t dir, qboolean ducked);
 extern	float	nav_step_drop;		// how far down such a step may end; a stair unless changed
 extern	int		nav_step_node;		// the node the last one that passed ended at
+extern	float	*nav_step_togo;		// if set, costs by node: no trial may end where there is no way on
 
 // the same for a player in the air, the feet going along dir until it lands
 qboolean Nav_AirSafe (edict_t *ent, vec3_t dir);

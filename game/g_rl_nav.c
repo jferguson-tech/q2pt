@@ -1283,6 +1283,7 @@ lip that lava laps at all fail in the way they would fail the player.
 ================
 */
 float	nav_step_drop = 20;		// how far down a trial step may end
+float	*nav_step_togo;			// if set, costs by node: a trial may not end where there is no way on
 int		nav_step_node;			// the node the last trial step that passed ended at
 
 qboolean Nav_StepSafe (edict_t *ent, vec3_t dir, qboolean ducked)
@@ -1322,7 +1323,7 @@ qboolean Nav_StepSafe (edict_t *ent, vec3_t dir, qboolean ducked)
 	if (rest && dir && fabs (g.origin[0] - ent->s.origin[0]) + fabs (g.origin[1] - ent->s.origin[1]) < 6)
 		rest = false;
 	nav_step_node = rest ? Nav_Near (g.origin, 40, 32, -1, 0) : -1;
-	if (nav_step_node == -1)
+	if (nav_step_node == -1 || (dir && nav_step_togo && nav_step_togo[nav_step_node] >= NAV_FAR))
 		rest = false;
 	if (gi.cvar ("rl_debug", "0", 0)->value > 1)
 		gi.dprintf ("   step? yaw %.0f: %i steps to %.1f %.1f %.1f ground %i vel %.0f %.0f rest %i\n", yaw, i,
@@ -1449,8 +1450,12 @@ qboolean Nav_AirSafe (edict_t *ent, vec3_t dir)
 	}
 	nav_pass = pass;
 	nav_num_skip = 0;
-	if (ok && rest && Nav_Near (g.origin, 40, 32, -1, 0) == -1)
-		rest = false;
+	if (ok && rest)
+	{
+		i = Nav_Near (g.origin, 40, 32, -1, 0);
+		if (i == -1 || (nav_step_togo && nav_step_togo[i] >= NAV_FAR))
+			rest = false;
+	}
 	if (gi.cvar ("rl_debug", "0", 0)->value > 1)
 		gi.dprintf ("   air? yaw %.0f%s: ok %i rest %i at %.1f %.1f %.1f\n", yaw, dir ? "" : " (still)", ok, rest,
 			g.origin[0], g.origin[1], g.origin[2]);

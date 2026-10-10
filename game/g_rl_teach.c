@@ -210,6 +210,9 @@ static int Teach_Try (edict_t *ent, nav_link_t *link, int *up)
 
 	if (!Nav_TryLink (ent, link, end, up))
 		return 0;
+	// one that goes nowhere is shut by something, and is no better
+	if (fabs (end[0] - ent->s.origin[0]) + fabs (end[1] - ent->s.origin[1]) + fabs (end[2] - ent->s.origin[2]) < 6)
+		return 0;
 	Nav_NodeOrigin (link->to, to);
 	VectorSubtract (ent->s.origin, to, from);
 	VectorSubtract (end, to, left);
@@ -420,6 +423,9 @@ static edict_t *Teach_Errand (edict_t *ent)
 		// only one that lies at a node, with nothing between the two
 		n = Nav_NodeNear (e->s.origin, 28, 40);
 		if (n == -1 || teach_reach[n] >= NAV_FAR)
+			continue;
+		// nothing is dived for: the air does not last
+		if (nav_nodes[n].flags & NODE_WATER)
 			continue;
 		if (teach_have_plan && teach_togo[n] >= NAV_FAR)
 			continue;
@@ -664,6 +670,9 @@ void Teach_Think (edict_t *ent)
 	else
 		teach_last_togo = NAV_FAR;
 
+	// trial steps are not to end in a hole there is no way out of
+	nav_step_togo = have && teach_togo[teach_anchor] < NAV_FAR ? teach_togo : NULL;
+
 	// ---- the feet: along the route, or to the job at hand
 	hold = true;
 	snap = true;
@@ -777,8 +786,9 @@ void Teach_Think (edict_t *ent)
 			else if (speed > 20)
 				hold = true;
 			else if (!tried && rl_block->mode == RL_MODE_PLAY)
-			{	// standing on the node, and still it ends in harm: the link
-				// is struck out, and the way is worked out again without it
+			{	// standing on the node, and still it ends in harm or goes
+				// nowhere: the link is struck out, and the way is worked
+				// out again without it
 				nav_link_bad[link - nav_links] = 1;
 				teach_planned = -1000;
 				hold = true;
