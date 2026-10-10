@@ -270,9 +270,10 @@ since a switch behind bars shows only in part. Returns false when none does.
 qboolean Plan_ShotAt (edict_t *e, vec3_t eye, vec3_t out)
 {
 	static const float	at[3] = {0.5f, 0.2f, 0.8f};
+	static const float	off[5][2] = {{0, 0}, {4, 0}, {-4, 0}, {0, 4}, {0, -4}};
 	edict_t	*player = &g_edicts[1];
 	trace_t	tr;
-	int		i, j, k;
+	int		i, j, k, m;
 	vec3_t	dir, from, end;
 	float	len;
 
@@ -286,12 +287,20 @@ qboolean Plan_ShotAt (edict_t *e, vec3_t eye, vec3_t out)
 		// The shot leaves the gun, which is held a hand to the right of the
 		// eye and a hand below it, and flies the way the eye looks: so it
 		// is the gun's line that has to be clear, as far as the thing.
+		// And clear by a margin: the view settles to within a third of a
+		// degree, which far off is a few units to any side.
 		VectorSubtract (out, eye, dir);
 		len = VectorNormalize (dir);
-		VectorSet (from, eye[0] + 8 * dir[1], eye[1] - 8 * dir[0], eye[2] - 8);
-		VectorMA (from, len + 64, dir, end);
-		tr = gi.trace (from, NULL, NULL, end, player, MASK_SHOT);
-		if (tr.ent == e)
+		for (m=0 ; m<5 ; m++)
+		{
+			VectorSet (from, eye[0] + (8 + off[m][0]) * dir[1], eye[1] - (8 + off[m][0]) * dir[0],
+				eye[2] - 8 + off[m][1]);
+			VectorMA (from, len + 64, dir, end);
+			tr = gi.trace (from, NULL, NULL, end, player, MASK_SHOT);
+			if (tr.ent != e)
+				break;
+		}
+		if (m == 5)
 			return true;
 	}
 	return false;

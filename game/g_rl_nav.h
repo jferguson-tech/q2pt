@@ -111,6 +111,8 @@ qboolean Nav_MoverSelf (edict_t *e);
 // along dir (or none, for NULL) and then stop, and be standing on a floor
 // out of harm's way.
 qboolean Nav_StepSafe (edict_t *ent, vec3_t dir, qboolean ducked);
+extern	float	nav_step_drop;		// how far down such a step may end; a stair unless changed
+extern	int		nav_step_node;		// the node the last one that passed ended at
 
 // the same for a player in the air, the feet going along dir until it lands
 qboolean Nav_AirSafe (edict_t *ent, vec3_t dir);

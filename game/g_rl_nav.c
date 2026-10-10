@@ -1262,10 +1262,14 @@ and speed as they are: one step with the feet going along dir (none when
 dir is NULL), then up to five with the feet still, which is more than
 stopping takes. The step is
 safe when nothing on the way hurts and the player comes to rest standing,
-no more than a stair below where it began, at a place the graph has a node. A ledge too narrow to stop on, a slope too steep to stand on and a
+no more than a stair below where it began (nav_step_drop), at a place the
+graph has a node (nav_step_node). A ledge too narrow to stop on, a slope too steep to stand on and a
 lip that lava laps at all fail in the way they would fail the player.
 ================
 */
+float	nav_step_drop = 20;		// how far down a trial step may end
+int		nav_step_node;			// the node the last trial step that passed ended at
+
 qboolean Nav_StepSafe (edict_t *ent, vec3_t dir, qboolean ducked)
 {
 	ghost_t	g;
@@ -1291,7 +1295,7 @@ qboolean Nav_StepSafe (edict_t *ent, vec3_t dir, qboolean ducked)
 	for (i=0 ; i<6 && !rest ; i++)
 	{
 		Ghost_Step (&g, yaw, i || !dir ? 0 : 400, ducked ? -400 : 0);
-		if (Nav_Hurts (&g) || Haz_At (g.origin, ducked) || top - g.origin[2] > 20)
+		if (Nav_Hurts (&g) || Haz_At (g.origin, ducked) || top - g.origin[2] > nav_step_drop)
 			break;
 		rest = (i || !dir) && g.ground && g.velocity[0]*g.velocity[0] + g.velocity[1]*g.velocity[1] < 60*60;
 	}
@@ -1299,7 +1303,8 @@ qboolean Nav_StepSafe (edict_t *ent, vec3_t dir, qboolean ducked)
 	// and somewhere the graph knows: a ledge it has no node on is one it
 	// found no way off
 	nav_num_skip = 0;
-	if (rest && Nav_Near (g.origin, 40, 32, -1, 0) == -1)
+	nav_step_node = rest ? Nav_Near (g.origin, 40, 32, -1, 0) : -1;
+	if (nav_step_node == -1)
 		rest = false;
 	if (gi.cvar ("rl_debug", "0", 0)->value > 1)
 		gi.dprintf ("   step? yaw %.0f: %i steps to %.1f %.1f %.1f ground %i vel %.0f %.0f rest %i\n", yaw, i,

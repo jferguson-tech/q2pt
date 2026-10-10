@@ -368,7 +368,7 @@ static float Teach_Wants (edict_t *ent, edict_t *e)
 		return 6;
 	}
 	if (it->flags & IT_WEAPON)
-		return client->pers.inventory[index] ? 0 : 10;
+		return client->pers.inventory[index] ? 0 : 45;	// the blaster alone does not get far
 	if (it->flags & IT_AMMO)
 	{
 		if (client->pers.inventory[index] >= 3 * it->quantity)
@@ -480,8 +480,11 @@ static qboolean Teach_Dodge (edict_t *ent, vec3_t origin, edict_t *monster, floa
 	int			i, k;
 	float		score, best, side;
 	vec3_t		to, across, d, p, v;
-	qboolean	found = false, beside;
+	qboolean	found = false, beside, melee;
 
+	melee = monster->classname && (!strcmp (monster->classname, "monster_berserk")
+		|| !strcmp (monster->classname, "monster_mutant") || !strcmp (monster->classname, "monster_brain")
+		|| !strcmp (monster->classname, "monster_flipper"));
 	VectorSubtract (enemy, origin, to);
 	to[2] = 0;
 	VectorNormalize (to);
@@ -528,7 +531,9 @@ static qboolean Teach_Dodge (edict_t *ent, vec3_t origin, edict_t *monster, floa
 		p[2] += ent->viewheight;
 		if (!beside && !Fight_Sees (ent, p, monster))
 			continue;
-		if (dist < 250)
+		if (melee && dist < 400)
+			score = 0.3f * score - 1.5f * DotProduct (d, to);	// it can only hit from close: keep away
+		else if (dist < 250)
 			score -= 0.7f * DotProduct (d, to);
 		else if (dist > 600)
 			score += 0.4f * DotProduct (d, to);
@@ -562,8 +567,8 @@ void Teach_Think (edict_t *ent)
 	float		yaw, pitch, want_yaw, want_pitch, err, best_err, dist, a, across;
 	float		aim_yaw, aim_pitch, aim_dist;
 	int			f, s, bf, bs, i, n, up, link_type;
-	qboolean	grounded, swimming, hold, ducked, snap, fire, have, exact, wary, launch, begun;
-	float		route_yaw, speed;
+	qboolean	grounded, swimming, hold, ducked, snap, fire, have, exact, wary, launch, begun, stuck;
+	float		route_yaw, speed, c;
 	trace_t		tr;
 
 	act[RL_ACT_FORWARD] = 1;
@@ -655,7 +660,7 @@ void Teach_Think (edict_t *ent)
 	hold = true;
 	snap = true;
 	fire = false;
-	launch = begun = false;
+	launch = begun = stuck = false;
 	up = 1;
 	link_type = NAV_WALK;
 	VectorClear (go);
@@ -887,7 +892,7 @@ void Teach_Think (edict_t *ent)
 				VectorInverse (side);
 			VectorScale (dir, -1, go);
 			if (!Nav_StepSafe (ent, go, ducked))
-				hold = true;		// no room behind either: stand
+				hold = stuck = true;		// no room behind either: stand
 			for (i=0 ; i<2 ; i++)
 			{
 				VectorMA (origin, 12, side, p);
@@ -897,7 +902,7 @@ void Teach_Think (edict_t *ent)
 					&& Nav_StepSafe (ent, side, ducked))
 				{
 					VectorCopy (side, go);
-					hold = false;
+					hold = stuck = false;
 					break;
 				}
 				VectorInverse (side);
@@ -1147,10 +1152,38 @@ slanted:	;
 			// from here when it was found, and to stand is to stay for good.
 			VectorSubtract (origin, at, side);
 			side[2] = 0;
-			if (!(link && !enemy && VectorLength (side) < 12
-				&& ent->velocity[0]*ent->velocity[0] + ent->velocity[1]*ent->velocity[1] < 20*20))
+			speed = sqrt (ent->velocity[0]*ent->velocity[0] + ent->velocity[1]*ent->velocity[1]);
+			if (!(link && !enemy && VectorLength (side) < 12 && speed < 20))
+			{
 				bf = bs = 0;
+				stuck = true;
+			}
 		}
+	}
+	speed = sqrt (ent->velocity[0]*ent->velocity[0] + ent->velocity[1]*ent->velocity[1]);
+	if (wary && stuck && !bf && !bs && !enemy && speed < 5 && teach_togo[teach_anchor] < NAV_FAR)
+	{
+		// Standing off the graph, on a perch it has no node on, with no step
+		// that keeps to the level: the step down that ends at the node
+		// nearest the goal, if any ends unhurt at one.
+		c = teach_togo[teach_anchor] + 5;
+		nav_step_drop = 72;
+		for (f=-1 ; f<=1 ; f++)
+			for (s=-1 ; s<=1 ; s++)
+			{
+				if (!f && !s)
+					continue;
+				across = (yaw + RAD2DEG_F(atan2 (-s, f))) * M_PI / 180;
+				VectorSet (side, cos (across), sin (across), 0);
+				if (!Nav_StepSafe (ent, side, false) || teach_togo[nav_step_node] >= c)
+					continue;
+				c = teach_togo[nav_step_node];
+				bf = f;
+				bs = s;
+			}
+		nav_step_drop = 20;
+		if (bf || bs)
+			up = 1;
 	}
 	if (wary && !bf && !bs && !Nav_StepSafe (ent, NULL, up == 0))
 	{	// sliding to somewhere it should not be: the way that stops it
