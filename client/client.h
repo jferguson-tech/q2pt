@@ -524,6 +524,13 @@ void CL_Download_f (void);
 void CL_InitRender (void);
 void CL_RenderFrame (void);
 qboolean CL_RenderBusy (void);
+
+//
+// cl_walk.c
+//
+void CL_WalkBegin (const char *map);
+void CL_WalkFrame (int frame, int fps);
+void CL_WalkEnd (void);
 void CL_RenderStop (void);
 qboolean CL_RenderStart (char *demo, int fps, int paths, float start, float duration);
 
