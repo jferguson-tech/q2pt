@@ -255,7 +255,8 @@ def pack(planes_path, out_path, prev_meta=None, level=6):
     left out, since rebuild_position and rebuild_picture give them back, and
     a motion plane is added when the previous frame's camera is given: for
     each pixel, where its surface was on the previous frame's picture less
-    where it is now, in pixels, NaN where it was off it or behind the eye.
+    where it is now, in pixels, NaN where it was behind the eye or more than
+    4096 pixels away (such a pixel is of no use and would not fit a half).
     Each plane is compressed with zstd on its own. Returns the bytes written."""
     import json
     import zstandard
@@ -264,7 +265,9 @@ def pack(planes_path, out_path, prev_meta=None, level=6):
     if prev_meta is not None:
         at = camera_pixels(p["position"], prev_meta)
         here = np.stack(np.meshgrid(np.arange(meta["_width"]), np.arange(meta["_height"])), axis=2)
-        keep["motion"] = (at - here).astype(np.float16)
+        motion = at - here
+        motion[np.any(~np.isfinite(motion) | (np.abs(motion) > 4096.0), axis=2)] = np.nan
+        keep["motion"] = motion.astype(np.float16)
     c = zstandard.ZstdCompressor(level=level)
     blobs, table = [], []
     at = 0

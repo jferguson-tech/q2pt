@@ -103,7 +103,9 @@ where it is, not where it was) and `picture` from the light planes
 (`rebuild_picture`). One is added when the frame follows another of the same
 burst: `motion`, two half floats, where each pixel's surface was on the
 previous frame's picture less where it is now, in pixels, NaN where it was
-off it or behind the eye; it comes from the position plane and the previous
+behind the eye or more than 4096 pixels off (a reader should take anything
+not finite as no motion; frames packed before this rule hold infinities
+there); it comes from the position plane and the previous
 frame's camera, so for what moves it is where the thing was. The first frame
 of a burst has no motion plane. A packed frame is 15 to 50 MB: the light
 planes are noise and compress little, the surface planes compress well.
