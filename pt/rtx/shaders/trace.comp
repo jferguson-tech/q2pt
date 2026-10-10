@@ -73,6 +73,17 @@ vec3 FogGlow(vec3 from, vec3 dir, float reach, float fog, float max_sample, vec3
 	return sum / float(max(count, 1)) + shaft;
 }
 
+// the export planes where the view meets no surface
+void ExportNone(ivec2 pixel)
+{
+	if (fr.size.w == 0)
+		return;
+	imageStore(img_export[0], pixel, vec4(0.0));
+	imageStore(img_export[1], pixel, vec4(-1.0, -1.0, 0.0, 0.0));
+	imageStore(img_export[2], pixel, vec4(0.0));
+	imageStore(img_export[3], pixel, vec4(0.0));
+}
+
 void main()
 {
 	const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -222,6 +233,7 @@ void main()
 				imageStore(img_noisy[2], pixel, vec4(0.0));
 				imageStore(img_extra, pixel, vec4(SurfaceChannel(view_mode, surf), 1.0));
 				imageStore(img_flash[now], pixel, vec4(0.0));
+				ExportNone(pixel);
 				return;
 			}
 		}
@@ -382,6 +394,7 @@ void main()
 		imageStore(img_noisy[2], pixel, vec4(over, 0.0));
 		imageStore(img_extra, pixel, vec4(beyond, 1.0));
 		imageStore(img_flash[now], pixel, vec4(0.0));
+		ExportNone(pixel);
 		return;
 	}
 
@@ -563,6 +576,17 @@ void main()
 	imageStore(img_over, pixel, vec4(over_pos, have_layer ? 1.0 : 0.0));
 	imageStore(img_albedo[0], pixel, vec4(kd, 1.0));
 	imageStore(img_albedo[1], pixel, vec4(ks, surf.roughness));
+	if (fr.size.w != 0)
+	{
+		// for export: see pt.h's PT_PLANE_
+		const vec3 given = ((surf.mat.bits & BIT_EMISSIVE) != 0u && surf.front) ? Emitted(surf, true) : vec3(0.0);
+		imageStore(img_export[0], pixel, vec4(given, surf.metallic));
+		imageStore(img_export[1], pixel, vec4(float(TriOf(hit).material), float(hit.tri), hit.moving ? 1.0 : 0.0, 0.0));
+		vec3 every_d, every_s;
+		DirectEveryLight(surf, every_d, every_s);
+		imageStore(img_export[2], pixel, vec4(every_d, 0.0));
+		imageStore(img_export[3], pixel, vec4(every_s, 0.0));
+	}
 	// how much the paths disagreed among themselves, the first measure of
 	// the noise in this pixel; one path alone can say nothing
 	const float inv_paths = 1.0 / float(paths);

@@ -176,7 +176,7 @@ const uint32_t kBitEmissive = 1, kBitSampled = 2, kBitSwell = 4;	// GpuMaterial:
 const uint32_t kNumInstances = 5;
 const uint32_t kMaskScene = 1, kMaskHeld = 2;
 const int kNumStyles = 256;							// light styles, at the start of the tables
-const uint32_t kNumBindings = 35;
+const uint32_t kNumBindings = 36;
 
 // The pictures kept per pixel between the passes, in the order the shaders'
 // bindings take them; see scene.glsl.
@@ -199,7 +199,8 @@ enum
 	kMoments = 31,	// 6
 	kFlash = 37,	// 2
 	kChange = 39,	// 4
-	kNumTargets = 43
+	kExport = 43,	// 4
+	kNumTargets = 47
 };
 
 const uint32_t kMaxTextures = 4096;
@@ -1614,7 +1615,9 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 		const bool flash = i >= kFlash && i < kFlash + 2;
 		// one value for each block of 8 by 8 pixels
 		const bool blocks = i >= kChange && i < kChange + 4;
-		const VkFormat format = (positions || gathered || blocks) ? VK_FORMAT_R32G32B32A32_SFLOAT
+		// the export planes carry indices, which must come back whole
+		const bool exported = i >= kExport && i < kExport + 4;
+		const VkFormat format = (positions || gathered || blocks || exported) ? VK_FORMAT_R32G32B32A32_SFLOAT
 			: moments ? VK_FORMAT_R32G32_SFLOAT : flash ? VK_FORMAT_R32_SFLOAT
 			: (i == kPicture ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R16G16B16A16_SFLOAT);
 
@@ -1662,7 +1665,7 @@ void MakeTargets(RtxBackend *s, int width, int height, int out_width, int out_he
 		{21, kExtra, 1}, {22, kKept, 6}, {23, kFilter, 6}, {24, kPicture, 1},
 		{26, kHdr, 1}, {27, kBloom, 2}, {28, kSteady, 2}, {29, kGraded, 1},
 		{30, kMirror, 2}, {31, kOver, 1}, {32, kMoments, 6}, {33, kFlash, 2},
-		{34, kChange, 4},
+		{34, kChange, 4}, {35, kExport, 4},
 	};
 	VkDescriptorImageInfo info[kNumTargets];
 	for (const auto &g : groups)
@@ -1744,6 +1747,7 @@ void CreateScene(RtxBackend *s)
 	bind[32].descriptorCount = 6;
 	bind[33].descriptorCount = 2;
 	bind[34].descriptorCount = 4;
+	bind[35].descriptorCount = 4;
 
 	VkDescriptorSetLayoutCreateInfo dlci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
 	dlci.bindingCount = kNumBindings;
@@ -2692,6 +2696,7 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	f.out_size[0] = s->out_width;
 	f.out_size[1] = s->out_height;
 	f.size[2] = s->num_waters;
+	f.size[3] = view->planes ? 1 : 0;
 	memcpy(f.water_rect, s->water_rect, sizeof(f.water_rect));
 	memcpy(f.water_at, s->water_at, sizeof(f.water_at));
 	memcpy(f.water_wave, s->water_wave, sizeof(f.water_wave));
@@ -3051,6 +3056,128 @@ void TextureUpdate(pt_backend_t *b, int handle, const uint32_t *pixels)
 
 // The picture last presented, put together again here: the traced picture
 // stretched over the view as the last pass stretches it, and the overlay.
+// ---- the planes of the last view, for export: see pt.h's PT_PLANE_
+
+int PlaneSize(pt_backend_t *b, int *width, int *height)
+{
+	RtxBackend *s = Self(b);
+	if (!s->targets[kSeen].image)
+		return 0;
+	*width = s->trace_width;
+	*height = s->trace_height;
+	return 1;
+}
+
+// a half precision float, as the card stores most pictures, as a float
+float HalfToFloat(uint16_t h)
+{
+	const uint32_t sign = (uint32_t)(h & 0x8000u) << 16;
+	uint32_t exponent = (h >> 10) & 0x1fu, mantissa = h & 0x3ffu;
+	uint32_t bits;
+	if (exponent == 0)
+	{
+		if (mantissa == 0)
+			bits = sign;
+		else
+		{
+			// below the smallest normal number: shift up until it is one
+			exponent = 1;
+			while ((mantissa & 0x400u) == 0)
+			{
+				mantissa <<= 1;
+				exponent--;
+			}
+			mantissa &= 0x3ffu;
+			bits = sign | ((exponent + 112) << 23) | (mantissa << 13);
+		}
+	}
+	else if (exponent == 31)
+		bits = sign | 0x7f800000u | (mantissa << 13);
+	else
+		bits = sign | ((exponent + 112) << 23) | (mantissa << 13);
+	float f;
+	memcpy(&f, &bits, sizeof(f));
+	return f;
+}
+
+int ReadPlane(pt_backend_t *b, int plane, float *out)
+{
+	RtxBackend *s = Self(b);
+	if (!s->targets[kSeen].image || !out)
+		return 0;
+	const int now = s->parity;
+
+	// which picture holds it, from which channel, how many, and whether the
+	// picture is at half precision
+	int target, first, count;
+	bool half = false;
+	switch (plane)
+	{
+	case PT_PLANE_POSITION:			target = kSeen; first = 0; count = 3; break;
+	case PT_PLANE_NORMAL:			target = kSurface + now; first = 0; count = 3; half = true; break;
+	case PT_PLANE_DEPTH:			target = kSurface + now; first = 3; count = 1; half = true; break;
+	case PT_PLANE_ALBEDO:			target = kAlbedo; first = 0; count = 3; half = true; break;
+	case PT_PLANE_SPECULAR:			target = kAlbedo + 1; first = 0; count = 3; half = true; break;
+	case PT_PLANE_ROUGHNESS:		target = kAlbedo + 1; first = 3; count = 1; half = true; break;
+	case PT_PLANE_EMISSION:			target = kExport; first = 0; count = 3; break;
+	case PT_PLANE_METALLIC:			target = kExport; first = 3; count = 1; break;
+	case PT_PLANE_MATERIAL:			target = kExport + 1; first = 0; count = 1; break;
+	case PT_PLANE_TRIANGLE:			target = kExport + 1; first = 1; count = 2; break;
+	case PT_PLANE_DIRECT_DIFFUSE:	target = kExport + 2; first = 0; count = 3; break;
+	case PT_PLANE_DIRECT_SPECULAR:	target = kExport + 3; first = 0; count = 3; break;
+	case PT_PLANE_RAY_DIFFUSE:		target = kNoisy; first = 0; count = 3; half = true; break;
+	case PT_PLANE_RAY_SPECULAR:		target = kNoisy + 1; first = 0; count = 3; half = true; break;
+	case PT_PLANE_LIGHT_DIFFUSE:	target = kKept + now * 3; first = 0; count = 3; break;
+	case PT_PLANE_LIGHT_SPECULAR:	target = kKept + now * 3 + 1; first = 0; count = 3; break;
+	case PT_PLANE_LIGHT_LAYERS:		target = kKept + now * 3 + 2; first = 0; count = 3; break;
+	case PT_PLANE_LIGHT_EXTRA:		target = kExtra; first = 0; count = 3; half = true; break;
+	case PT_PLANE_PICTURE:			target = kHdr; first = 0; count = 3; half = true; break;
+	default:
+		return 0;
+	}
+
+	try
+	{
+		TraceNow(s);
+		const int w = s->trace_width, h = s->trace_height;
+		const VkDeviceSize bytes = (VkDeviceSize)w * h * (half ? 8 : 16);
+		vkQueueWaitIdle(s->queue);
+		if (!s->readback.buffer || s->readback.size < bytes)
+		{
+			FreeBuffer(s, s->readback);
+			s->readback = MakeBuffer(s, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, true);
+		}
+		VkCommandBuffer cmd = BeginOnce(s);
+		VkBufferImageCopy region{};
+		region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+		region.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
+		vkCmdCopyImageToBuffer(cmd, s->targets[target].image, VK_IMAGE_LAYOUT_GENERAL, s->readback.buffer, 1, &region);
+		EndOnce(s);
+
+		const size_t pixels = (size_t)w * h;
+		if (half)
+		{
+			const uint16_t *in = static_cast<const uint16_t *>(s->readback.ptr);
+			for (size_t i = 0; i < pixels; i++)
+				for (int c = 0; c < count; c++)
+					out[i * count + c] = HalfToFloat(in[i * 4 + first + c]);
+		}
+		else
+		{
+			const float *in = static_cast<const float *>(s->readback.ptr);
+			for (size_t i = 0; i < pixels; i++)
+				for (int c = 0; c < count; c++)
+					out[i * count + c] = in[i * 4 + first + c];
+		}
+	}
+	catch (const Fail &f)
+	{
+		Logf(s, "RTX path tracer: %s\n", f.msg.c_str());
+		return 0;
+	}
+	return count;
+}
+
 int ReadPixels(pt_backend_t *b, uint32_t *pixels, int with_overlay)
 {
 	RtxBackend *s = Self(b);
@@ -3404,6 +3531,8 @@ extern "C" pt_backend_t *pt_rtx_create(const pt_create_t *ci, char *err, int err
 	s->base.perf = nullptr;
 #endif
 	s->base.read_pixels = ReadPixels;
+	s->base.plane_size = PlaneSize;
+	s->base.read_plane = ReadPlane;
 	s->textures.resize(kMaxTextures);
 	s->log = ci->log;
 	s->width = ci->width;

@@ -356,7 +356,45 @@ typedef struct pt_view_s
 								   all it has, then less and less. Keeps a lamp
 								   hundreds of times white from drowning the
 								   picture. 0 = no limit */
+
+	/* also make the planes that are only for export, see read_plane: what
+	   every light would put on each pixel with nothing in the way, and the
+	   surface's emission, metalness and identity. Costs a loop over every
+	   light per pixel: not for play */
+	int		planes;
 } pt_view_t;
+
+/*
+Per-pixel planes of the last view rendered, at the size it was traced, for
+making training data: see neural/README.md. Each is read with read_plane as
+floats, top row first, the channels of a pixel together. Light is linear,
+before exposure; where the view ends at the sky or nothing, depth is -1 and
+the surface planes are 0.
+*/
+#define PT_PLANE_POSITION			0	/* 3: where in the world the pixel's surface is; the sky: far along the ray */
+#define PT_PLANE_NORMAL				1	/* 3: shading normal, in the world */
+#define PT_PLANE_DEPTH				2	/* 1: distance along the eye ray to the first solid surface, -1 none */
+#define PT_PLANE_ALBEDO				3	/* 3: diffuse reflectance as the light is multiplied by it: with
+									   what the air and the liquid on the way let through */
+#define PT_PLANE_SPECULAR			4	/* 3: specular reflectance, the same way */
+#define PT_PLANE_ROUGHNESS			5	/* 1 */
+#define PT_PLANE_EMISSION			6	/* 3: radiance the surface gives off towards the eye */
+#define PT_PLANE_METALLIC			7	/* 1 */
+#define PT_PLANE_MATERIAL			8	/* 1: material index, -1 none */
+#define PT_PLANE_TRIANGLE			9	/* 2: triangle index, and 1 if it is of the frame (what moves) rather than the map */
+#define PT_PLANE_DIRECT_DIFFUSE		10	/* 3: what every light, the map's and the frame's, would put on the
+									   surface with nothing in the way: irradiance, to be times
+									   albedo / pi. Only with the view's planes set */
+#define PT_PLANE_DIRECT_SPECULAR	11	/* 3: the same through the specular lobe, as radiance. Only with planes */
+#define PT_PLANE_RAY_DIFFUSE		12	/* 3: the direct light this frame's paths found, with shadows, over
+									   albedo / pi: with one path and no bounces, one shadow ray's worth */
+#define PT_PLANE_RAY_SPECULAR		13	/* 3: the same through the specular lobe, over the specular reflectance */
+#define PT_PLANE_LIGHT_DIFFUSE		14	/* 3: the diffuse light gathered over the frames since restart, over albedo / pi */
+#define PT_PLANE_LIGHT_SPECULAR		15	/* 3: the specular light gathered, over the specular reflectance */
+#define PT_PLANE_LIGHT_LAYERS		16	/* 3: light of what is in front of the surface: glass, water, the air's glow */
+#define PT_PLANE_LIGHT_EXTRA		17	/* 3: exact light that is not gathered: emission and the frame's point lights */
+#define PT_PLANE_PICTURE			18	/* 3: the picture as put together, linear, at the view's exposure */
+#define PT_NUM_PLANES				19
 
 /* one part of the work on a view, and how long it took */
 typedef struct pt_stage_s
@@ -427,6 +465,13 @@ struct pt_backend_s
 	/* the picture last presented: width*height pixels, bytes R,G,B,A, top row
 	   first, with or without the overlay. Returns 0 if it cannot. */
 	int		(*read_pixels)(pt_backend_t *self, uint32_t *pixels, int with_overlay);
+
+	/* The planes of the last view rendered, PT_PLANE_: plane_size says how
+	   large they are, read_plane fills width*height*channels floats and
+	   returns how many channels, 0 if it cannot. NULL in a backend that has
+	   no planes to give. */
+	int		(*plane_size)(pt_backend_t *self, int *width, int *height);
+	int		(*read_plane)(pt_backend_t *self, int plane, float *out);
 };
 
 /* both return NULL on failure with a reason in err */

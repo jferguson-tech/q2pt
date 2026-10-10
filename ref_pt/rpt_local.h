@@ -229,6 +229,16 @@ qboolean R_Offline (void);
 void	R_OfflineSettings (pt_view_t *view);
 void	R_OfflineRender (refdef_t *fd, pt_view_t *view);
 void	R_OfflineFinish (void);
+const char *R_WorldName (void);
+
+//
+// rpt_export.c
+//
+void	R_InitExport (void);
+void	R_ShutdownExport (void);
+qboolean R_Exporting (void);
+void	R_ExportSettings (pt_view_t *view);
+qboolean R_ExportFrame (refdef_t *fd, pt_view_t *view, int passes, const char *dir, int frame);
 
 //
 // rpt_bench.c
