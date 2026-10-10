@@ -217,8 +217,32 @@ format and the engine's own functions.
   graph is grown with all at home, then with each group of them away, and a
   link found near one is marked with the end it needs. A node on a lift has
   a twin at the lift's other end, joined by the ride. No recorded play is
-  used. Buttons, keys, trains and walls that can be shot away are not
-  handled yet.
+  used. Trains, teleporters, walls that can be shot away and lifts worked
+  by `trigger_elevator` are not in the graph: a map whose way out needs one
+  has no plan.
+* **What hurts** (`g_rl_hazard.c`). The graph is grown through laser beams
+  as if they were not there. When it is loaded each link is given the beam
+  it passes through, worked out from the laser and what it is aimed at;
+  while that beam is on the link is shut, and the planner looks for what
+  switches the beam as it does for a door. Lava, slime and triggers that
+  hurt end a move when the graph is grown, so no link goes through them.
+* **Trial steps** (`Nav_StepSafe`, `Nav_TryLink`, `Nav_AirSafe` in
+  `g_rl_nav.c`). The player is not always on the graph: it dodges, backs
+  off, is knocked about, and arrives at a node at a run where the graph was
+  grown from a standing start. At 100 ms a step is 30 units and stopping
+  takes 17 more, so a ledge is a step away long before it looks it. So
+  before the feet are told anything on the ground, the step is tried with
+  `gi.Pmove` from the player's own place and speed, one step and then
+  stopping: it must come to rest on a floor, out of harm, no more than a
+  stair down, at a place the graph has a node with a way on. If it fails it
+  is tried crouched (a third as fast), then to either side, and then the
+  feet stay. A jump, a walk off an edge or a swim out of water is begun only
+  when a trial of the whole move from where the player is ends at the
+  link's far node or nearer the goal; until then the player goes to the
+  node, crouched, and stands. A link whose trial from its node, standing,
+  still ends in harm or goes nowhere is struck out for the episode and the
+  way is worked out without it. In the air the feet go the way meant only
+  if a trial of that lands safely.
 * **Planner** (`g_rl_plan.c`): starts from the exit, the triggers that fire a
   `target_changelevel`. If the way there is shut, the route that would be
   taken with every door and lift obliging is followed to the first that is
@@ -227,15 +251,26 @@ format and the engine's own functions.
   death fires it. If the way to those is shut too, the same is done from
   there, up to six deep. Worked out again from the world every 16 steps.
 * **Combat** (`g_rl_fight.c`): the nearest monster in sight within 900 units
-  that a shot can reach, one already aimed at preferred; aim at its middle,
-  led by its velocity for weapons that throw something; the weapon by
-  distance and ammunition; a dodge to a neighbouring node from which the
-  monster can still be seen, away from barrels. Items the player has a use
-  for are turned aside for (`g_rl_teach.c`).
+  that a shot can reach, the one fought a step ago preferred, monsters not
+  yet brought in by a trigger left out. The aim is taken on where the
+  monster and the player will be a step on, led further for weapons that
+  throw something, and the shot is fired when the view will be on it after
+  this step's turn. The weapon is the one that does most at the distance,
+  kept unless another does half as much again. A monster that would take
+  more than four seconds with what the player has is not stood before: the
+  feet keep to the route. Otherwise a dodge to a neighbouring node from
+  which the monster can still be seen, away from barrels; straight back
+  from one that fights hand to hand. Items the player has a use for are
+  turned aside for (`g_rl_teach.c`): a weapon it lacks is worth 45 seconds
+  of walking, but nothing is worth much when the way out is a few steps
+  off, nothing is dived for, and nothing is fetched from where the way out
+  cannot be taken up again.
 * **Statelessness**: the teacher's action is a function of the world as it is
   now (plus fixed per-map data), so it can label a state the student drove
   into. It is computed every step and returned with the observation whoever
-  is acting.
+  is acting. What it carries from one step to the next is not a plan: the
+  node the player was last at, how fast the view was turning, the item
+  being fetched, the monster being fought, and the links struck out.
 * **Output**: an action in the student's own action space, with turn rate and
   turn acceleration limited so that the view looks like play.
 
