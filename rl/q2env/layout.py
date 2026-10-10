@@ -9,7 +9,7 @@ header and compares every offset and constant with what is here.
 import numpy as np
 
 MAGIC = 0x314C5251
-VERSION = 5
+VERSION = 6
 STEP_MSEC = 100
 
 REQ_RESET, REQ_STEP, REQ_QUIT = 1, 2, 3
@@ -40,7 +40,8 @@ ENTS = 16
 ENT_FLOATS = 12
 KINDS = 15
 
-SELF_FLOATS = 32
+SELF_FLOATS = 48
+SELF_DROP, SELF_HARM, FOOT_WAYS = 32, 40, 8     # the ground about the feet: see g_rl.h
 GUIDE_FLOATS = 4
 GAIN_FLOATS = 8
 GAIN_PROGRESS, GAIN_DEALT, GAIN_TAKEN, GAIN_KILLS = 0, 1, 2, 3

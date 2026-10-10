@@ -40,7 +40,8 @@ class Features(nn.Module):
         scale = s.new_tensor([
             100, 100, 50, 200, 50, 50, 200, 50,         # health, armour, six kinds of ammunition
             10, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,        # weapon held, ten owned, ready
-            300, 300, 300, 90, 1, 1, 1, 3, 1, 50, 12, 4])
+            300, 300, 300, 90, 1, 1, 1, 3, 1, 50, 12, 4,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])  # the ground about the feet, as it comes
         me = s / scale
         weapon = F.one_hot(s[..., 8].long().clamp(0, L.WEAPONS), L.WEAPONS + 1).float()
 

@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "g_local.h"
 #include "g_rl.h"
+#include "g_rl_nav.h"
 
 // RL_ENT_TYPE of a monster is its place in this list, from 1. Items give
 // their place in the game's item list.
@@ -104,6 +105,32 @@ static void RL_Self (edict_t *ent, float hurt)
 	for (i=0 ; i<game.num_items ; i++)
 		if ((itemlist[i].flags & IT_KEY) && client->pers.inventory[i])
 			s[RL_SELF_KEYS] += 1;
+
+	// the ground about the feet
+	for (i=0 ; i<RL_FOOT_WAYS ; i++)
+	{
+		vec3_t	p, down, feet;
+		trace_t	tr;
+		float	a = (client->v_angle[YAW] + i * (360.0f / RL_FOOT_WAYS)) * M_PI / 180;
+
+		VectorSet (p, ent->s.origin[0] + RL_FOOT_REACH * cos (a), ent->s.origin[1] + RL_FOOT_REACH * sin (a),
+			ent->s.origin[2]);
+		VectorCopy (p, down);
+		down[2] -= 24 + RL_FOOT_DEPTH;
+		tr = gi.trace (p, NULL, NULL, down, ent, MASK_SOLID|CONTENTS_LAVA|CONTENTS_SLIME);
+		if (tr.startsolid)
+		{
+			s[RL_SELF_DROP + i] = -0.25f;
+			continue;
+		}
+		s[RL_SELF_DROP + i] = tr.fraction >= 1 ? 1 : (ent->s.origin[2] - 24 - tr.endpos[2]) / RL_FOOT_DEPTH;
+		if (s[RL_SELF_DROP + i] < -0.25f)
+			s[RL_SELF_DROP + i] = -0.25f;
+		VectorCopy (tr.endpos, feet);
+		feet[2] += 24;
+		if (tr.fraction < 1 && ((tr.contents & (CONTENTS_LAVA|CONTENTS_SLIME)) || Haz_At (feet, false)))
+			s[RL_SELF_HARM + i] = 1;
+	}
 }
 
 /*

@@ -280,6 +280,10 @@ format and the engine's own functions.
 
 * own status: health, armour, ammunition, the weapon held and those owned,
   velocity, view angles, on ground, in water;
+* what a glance down shows: for eight ways round the feet, a stride out,
+  how far below the feet the ground is and whether standing there would
+  hurt. With the view level the rays reach the ground no nearer than some
+  70 units, so without this a ledge the player stands at is unseen;
 * a fan of ray casts inside the field of view: for each, the distance and the
   kind of thing hit (world, liquid, door or lift, monster, item, sky);
 * the entities in the field of view with a clear line to the eye, nearest

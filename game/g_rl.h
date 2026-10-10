@@ -31,7 +31,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define G_RL_H
 
 #define	RL_MAGIC		0x314c5251		// "QRL1"
-#define	RL_VERSION		5
+#define	RL_VERSION		6
 
 // The player is moved by one command of this length in each server frame.
 #define	RL_STEP_MSEC	100
@@ -144,7 +144,16 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	RL_SELF_HURT		29	// damage taken in the last step
 #define	RL_SELF_AIR			30	// seconds of breath left under water, 12 when not
 #define	RL_SELF_KEYS		31	// how many keys are carried
-#define	RL_SELF_FLOATS		32
+// What a glance down shows: the ground a stride (RL_FOOT_REACH) from the
+// feet, eight ways round from dead ahead of the view, turning left. With
+// the view level the rays do not come down to the ground nearer than some
+// 70 units, and a ledge the player stands at is under them.
+#define	RL_SELF_DROP		32	// 32-39: how far below the feet the ground is there, 1 for RL_FOOT_DEPTH or more; -0.25 for a wall
+#define	RL_SELF_HARM		40	// 40-47: 1 if standing there would hurt: lava, slime, a beam, a trigger that hurts
+#define	RL_SELF_FLOATS		48
+#define	RL_FOOT_WAYS		8
+#define	RL_FOOT_REACH		40.0f
+#define	RL_FOOT_DEPTH		128.0f
 
 // Where the route planner would go next, for the player that is told.
 #define	RL_GUIDE_VALID		0
