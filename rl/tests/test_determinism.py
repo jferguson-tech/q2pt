@@ -119,6 +119,26 @@ class Determinism(unittest.TestCase):
         self.assertEqual(built, again, "differs when repeated")
         self.assertEqual(built, loaded, "differs between a graph built and a graph read")
 
+    def test_teacher_playing(self):
+        """The teacher playing the map through, monsters and all, gives the
+        same run each time, in one process and in another."""
+        def play(engine):
+            engine.reset("base1", 5, time_limit=3000, mode=L.MODE_PLAY)
+            trace = []
+            while not engine.block["done"]:
+                engine.step(None)
+                trace.append((int(engine.block["hash"]), tuple(engine.block["teacher"])))
+            return trace, int(engine.block["done"])
+
+        with Engine() as e:
+            first = play(e)
+            again = play(e)
+        with Engine() as e:
+            fresh = play(e)
+        self.assertGreater(len(first[0]), 300)
+        self.assertEqual(first, again, "differs when repeated in the same process")
+        self.assertEqual(first, fresh, "differs in a new process")
+
     def test_demo_does_not_change_the_run(self):
         """Recording a demo must not alter what happens."""
         import tempfile

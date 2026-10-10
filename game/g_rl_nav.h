@@ -59,6 +59,9 @@ typedef struct
 	byte	type;			// NAV_
 	byte	state;			// NAV_HOME or NAV_AWAY: where ent must be for the link to be there
 	short	ent;			// a door or lift the link depends on, or the one ridden; 0 for none
+	byte	heading;		// the way the move was made, in sixteenths of a turn from east
+	byte	steps;			// and how many steps it took
+	short	pad;
 } nav_link_t;
 
 extern	nav_node_t	*nav_nodes;
@@ -79,8 +82,21 @@ int Nav_Nearest (edict_t *ent, vec3_t origin);
 // the doors and lifts stand now. NAV_FAR where there is no way.
 #define	NAV_FAR		1e30f
 void Nav_CostsTo (int goal, float *togo);
+// to the nearest of several goals
+void Nav_CostsToAny (int *goals, int num, float *togo);
 // the same from a node to every other
 void Nav_CostsFrom (int start, float *cost);
+
+// See g_rl_nav.c: links that hang on movers that could yet be sent count as
+// there while nav_hopeful is set, but for the movers marked in nav_hopeless.
+extern	qboolean	nav_hopeful;
+extern	byte		nav_hopeless[MAX_EDICTS];
+
+// the movers that move together with e, itself among them
+int Nav_MoverGroup (edict_t *e, edict_t **list, int max);
+
+// the nearest node within xy and z of a point that is not on a mover, or -1
+int Nav_NodeNear (vec3_t p, float xy, float z);
 
 // True when the player's box, its bottom lifted by a stair's height, can be
 // slid in a straight line from p to q past everything in mask but pass.
@@ -93,5 +109,22 @@ qboolean Nav_MoverSelf (edict_t *e);
 
 // whether a link can be taken as things stand now
 qboolean Nav_LinkOpen (nav_link_t *l);
+
+// g_rl_plan.c: what the scripted player should do next to get out
+#define	PLAN_EXIT	1		// walk into the trigger that ends the map
+#define	PLAN_TOUCH	2		// walk into a button or a trigger
+#define	PLAN_SHOOT	3		// shoot a button or a door that opens to a shot
+#define	PLAN_PICKUP	4		// walk onto a key
+#define	PLAN_KILL	5		// a monster whose death opens the way
+
+typedef struct
+{
+	int		kind;
+	edict_t	*ent;
+} plan_job_t;
+
+qboolean Plan_Update (int anchor, float *togo);
+plan_job_t *Plan_JobAt (int node);
+void Plan_Point (plan_job_t *job, vec3_t out);
 
 #endif

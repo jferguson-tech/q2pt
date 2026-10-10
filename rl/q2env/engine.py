@@ -93,17 +93,21 @@ class Engine:
         if self.block["error"]:
             raise EngineError(self.block["error_text"].decode(errors="replace"))
 
-    def reset(self, map, seed, skill=1, time_limit=0, demo="", flags=0):
-        self.ask_reset(map, seed, skill, time_limit, demo, flags)
+    def reset(self, map, seed, skill=1, time_limit=0, demo="", flags=0, mode=0, back=""):
+        self.ask_reset(map, seed, skill, time_limit, demo, flags, mode, back)
         self.wait()
 
-    def ask_reset(self, map, seed, skill=1, time_limit=0, demo="", flags=0):
+    def ask_reset(self, map, seed, skill=1, time_limit=0, demo="", flags=0, mode=0, back=""):
+        """mode: what the teacher is out to do (layout.MODE_). back: the maps,
+        with spaces between, whose exits are not the way on."""
         b = self.block
         b["map"] = map.encode()
         b["seed"] = seed
         b["skill"] = skill
         b["time_limit"] = time_limit
         b["flags"] = flags
+        b["mode"] = mode
+        b["back"] = back.encode()
         b["demo"] = str(demo).encode()
         self.ask(L.REQ_RESET)
 

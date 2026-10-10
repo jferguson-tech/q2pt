@@ -204,46 +204,55 @@ static void SV_RL_DemoStart (char *name)
 SV_RL_SendClient
 
 Called by SV_SendClientMessages for the driven client in place of the
-network. While a demo is being recorded the frame is written to it:
+network. While a demo is being recorded the frame is written to it as one
+block, as one packet would have carried it:
 
-	the reliable messages (prints, changed configstrings, the inventory) in
-	a block of their own;
-	the frame, as a delta from the last one written, followed by the frame's
-	sounds and effects if they fit. On a real connection they are dropped
-	when they do not, and so they are here.
+	the reliable messages (prints, changed configstrings, the inventory);
+	the frame, as a delta from the last one written;
+	the frame's sounds and effects.
 
-A frame too large for a block is left out. The next is then a delta from the
-last one that was written, as after a lost packet.
+There is one block for every server frame and no more, because a server
+playing a demo back deals out one block a frame: a block with no frame in it
+would hold the picture still for a tenth of a second.
+
+A block holds MAX_MSGLEN bytes. When the three parts do not fit, the sounds
+and effects are left out, as on a real connection. If the frame does not fit
+after the reliable messages either, those go alone and the frame is skipped:
+the next is then a delta from the last one that was written, as after a lost
+packet.
 ================
 */
 void SV_RL_SendClient (client_t *c)
 {
-	byte		msg_buf[MAX_MSGLEN];
-	sizebuf_t	msg;
+	byte		msg_buf[MAX_MSGLEN], frame_buf[MAX_MSGLEN];
+	sizebuf_t	msg, frame;
 
 	// never timed out
 	c->lastmessage = svs.realtime;
 
 	if (rl_demo && sv.state == ss_game)
 	{
-		SV_RL_DemoBlock (&c->netchan.message);
+		SZ_Init (&msg, msg_buf, sizeof(msg_buf));
+		if (!c->netchan.message.overflowed)
+			SZ_Write (&msg, c->netchan.message.data, c->netchan.message.cursize);
 
 		SV_BuildClientFrame (c);
-
-		SZ_Init (&msg, msg_buf, sizeof(msg_buf));
-		msg.allowoverflow = true;
+		SZ_Init (&frame, frame_buf, sizeof(frame_buf));
+		frame.allowoverflow = true;
 		c->lastframe = rl_demo_last;
-		SV_WriteFrameToClient (c, &msg);
-		if (msg.overflowed)
+		SV_WriteFrameToClient (c, &frame);
+
+		if (frame.overflowed || msg.cursize + frame.cursize > msg.maxsize)
 			rl->demo_dropped++;
 		else
 		{
+			SZ_Write (&msg, frame.data, frame.cursize);
 			if (!c->datagram.overflowed && msg.cursize + c->datagram.cursize <= msg.maxsize)
 				SZ_Write (&msg, c->datagram.data, c->datagram.cursize);
-			SV_RL_DemoBlock (&msg);
 			rl_demo_last = sv.framenum;
 			rl->demo_frames++;
 		}
+		SV_RL_DemoBlock (&msg);
 	}
 
 	// SZ_Clear takes the overflowed mark off too: more than a block of

@@ -140,6 +140,13 @@ the full client here (RTX renderer, 10 frames a second): the view moves
 forward smoothly from frame to frame and the client reports no error. Looked
 at as stills only.
 
+**Corrected in report 3**: these two files as first written put the
+reliable messages in blocks of their own, about one for every five frames.
+A server playing a demo deals out one block per frame, so they played a
+fifth too long, with the picture held still a tenth of a second at a time.
+That did not show in stills. Both were recorded again after the fix; a copy
+taken before then should be thrown away.
+
 **To play one on the workstation**: copy it into `baseq2/demos/` and type
 `demomap explore_base1.dm2`, or `pt_render explore_base1`.
 

@@ -7,7 +7,7 @@ import numpy as np
 from .engine import data_dir
 
 MAGIC = 0x3156414E
-VERSION = 7
+VERSION = 9
 WALK, JUMP, DUCK, SWIM, CLIMB, RIDE = range(6)
 LINK_NAMES = ("walk", "jump", "duck", "swim", "climb", "ride")
 NODE_WATER, NODE_DUCK, NODE_MOVER, NODE_HIGH = 1, 2, 4, 8
@@ -15,7 +15,8 @@ NODE_WATER, NODE_DUCK, NODE_MOVER, NODE_HIGH = 1, 2, 4, 8
 NODE = np.dtype([("origin", "<i2", (3,)), ("flags", "u1"), ("pad", "u1"), ("ent", "<i2"),
                  ("pad2", "<i2"), ("first_link", "<i4"), ("num_links", "<i4")])
 LINK = np.dtype([("from", "<i4"), ("to", "<i4"), ("cost", "<f4"), ("type", "u1"),
-                 ("state", "u1"), ("ent", "<i2")])
+                 ("state", "u1"), ("ent", "<i2"),
+                 ("heading", "u1"), ("steps", "u1"), ("pad", "<i2")])
 
 
 class Nav:

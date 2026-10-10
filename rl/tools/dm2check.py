@@ -10,7 +10,11 @@ way the client reads it, and every byte must be accounted for. Checked as
 well: the header a recording client writes comes first (server data for a
 demo, configstrings, baselines, the command to load the map); frame numbers
 rise; every frame that is a delta names an earlier frame of this file no more
-than 12 frames back, which is as far as the server will delta from.
+than 12 frames back, which is as far as the server will delta from; and
+after the header nearly every block holds a frame. A server playing a demo
+deals out one block per frame of its own, so a block with no frame in it
+holds the picture still for a tenth of a second: more than one such block in
+a hundred fails the check.
 
 Prints one line of what the file holds, or what is wrong and where. Exits
 with 1 if any file fails. This reads the structure only: that the picture is
@@ -127,6 +131,9 @@ def check(path):
     got = {"serverdata": False, "configstrings": 0, "baselines": 0, "precache": False}
     largest = 0
     ended = False
+    empty = 0               # blocks after the header with no frame in them
+    header_blocks = None
+    frames_before = 0
 
     while pos < len(data):
         if pos + 4 > len(data):
@@ -241,6 +248,11 @@ def check(path):
         except Bad as e:
             raise Bad(f"block {blocks}, byte {r.i}: {e}") from None
         blocks += 1
+        if header_done and count["frames"] == frames_before and header_blocks is not None:
+            empty += 1
+        if header_done and header_blocks is None:
+            header_blocks = blocks
+        frames_before = count["frames"]
 
     if not ended:
         raise Bad("no end mark: the file was cut short")
@@ -251,6 +263,9 @@ def check(path):
         raise Bad("the header has no baselines")
     if not count["frames"]:
         raise Bad("no frames")
+    if empty * 100 > count["frames"]:
+        raise Bad(f"{empty} blocks after the header hold no frame: played back, the picture "
+                  f"would stand still for {empty / 10:.0f} s in all")
 
     return (f"{got['map']!r}: {count['frames']} frames ({count['frames'] / 10:.1f} s, "
             f"{count['full']} not delta), {blocks} blocks, largest {largest} bytes, "

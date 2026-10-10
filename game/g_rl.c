@@ -249,6 +249,14 @@ static void RL_Observe (qboolean reset)
 
 	Teach_Think (ent);
 
+	rl_block->death_means = rl_block->death_by = 0;
+	if (rl_block->done == RL_DONE_DEATH)
+	{
+		rl_block->death_means = meansOfDeath & ~MOD_FRIENDLY_FIRE;
+		if (ent->enemy && ent->enemy != ent)
+			rl_block->death_by = RL_MonsterType (ent->enemy);
+	}
+
 	VectorCopy (ent->s.origin, rl_block->origin);
 	if (ent->client)
 		VectorCopy (ent->client->v_angle, rl_block->angles);

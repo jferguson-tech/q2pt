@@ -177,13 +177,16 @@ written. `server/sv_rl.c`, on `rl_demo <file>` in a reset request:
    loop 1, player number 0, the map's name), every configstring, every
    baseline from `sv.baselines`, then `stufftext "precache\n"`, split into
    blocks under `MAX_MSGLEN`;
-2. each server frame, one block: the client's reliable messages (prints,
-   configstring changes, the inventory), then `SV_BuildClientFrame` and
-   `SV_WriteFrameToClient`, delta compressed against the last frame written,
-   then the unreliable messages (sounds, muzzle flashes, temporary
+2. each server frame, exactly one block: the client's reliable messages
+   (prints, configstring changes, the inventory), then `SV_BuildClientFrame`
+   and `SV_WriteFrameToClient`, delta compressed against the last frame
+   written, then the unreliable messages (sounds, muzzle flashes, temporary
    entities). If the block would pass `MAX_MSGLEN` the unreliable part is
-   left out, as it is on a real connection; if the frame alone is too large
-   it is skipped and the next one is a delta from the last one written;
+   left out, as it is on a real connection; if the frame does not fit after
+   the reliable part it is skipped and the next one is a delta from the last
+   one written. One block per frame matters: a server playing a demo deals
+   out one block per frame of its own, so a block without a frame holds the
+   picture still for a tenth of a second;
 3. a length of -1 at the end.
 
 Demos are at the server's 10 frames a second, as every Quake 2 demo is; the
@@ -216,12 +219,19 @@ format and the engine's own functions.
   a twin at the lift's other end, joined by the ride. No recorded play is
   used. Buttons, keys, trains and walls that can be shot away are not
   handled yet.
-* **Planner** (`g_rl_plan.c`): reads the spawned entities (doors, buttons,
-  keys, triggers and their targets, lifts, the exit) and builds the chain of
-  sub-goals that opens the way to `target_changelevel`. It is recomputed from
-  the current world state, not remembered.
-* **Combat** (`g_rl_fight.c`): target choice, aim with lead for projectile
-  weapons, weapon choice by range and ammunition, strafing, retreat, pickups.
+* **Planner** (`g_rl_plan.c`): starts from the exit, the triggers that fire a
+  `target_changelevel`. If the way there is shut, the route that would be
+  taken with every door and lift obliging is followed to the first that is
+  not, and the jobs become whatever sends that one: a button to touch or
+  shoot, a trigger to walk into, a key such a trigger wants, a monster whose
+  death fires it. If the way to those is shut too, the same is done from
+  there, up to six deep. Worked out again from the world every 16 steps.
+* **Combat** (`g_rl_fight.c`): the nearest monster in sight within 900 units
+  that a shot can reach, one already aimed at preferred; aim at its middle,
+  led by its velocity for weapons that throw something; the weapon by
+  distance and ammunition; a dodge to a neighbouring node from which the
+  monster can still be seen, away from barrels. Items the player has a use
+  for are turned aside for (`g_rl_teach.c`).
 * **Statelessness**: the teacher's action is a function of the world as it is
   now (plus fixed per-map data), so it can label a state the student drove
   into. It is computed every step and returned with the observation whoever

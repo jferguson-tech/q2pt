@@ -171,6 +171,24 @@ static void RL_Rays (edict_t *ent, vec3_t eye, vec3_t forward, vec3_t left, vec3
 
 /*
 ================
+RL_MonsterType
+
+A monster's place in rl_monsters, from 1, or 0 for anything else
+================
+*/
+int RL_MonsterType (edict_t *e)
+{
+	int		i;
+
+	if (e->classname)
+		for (i=0 ; rl_monsters[i] ; i++)
+			if (!strcmp (e->classname, rl_monsters[i]))
+				return i+1;
+	return 0;
+}
+
+/*
+================
 RL_Kind
 
 What sort of thing an entity is to look at, or RL_KIND_NONE for what is not
@@ -179,18 +197,11 @@ reported: the world's own brushes, triggers, and things with no model.
 */
 static int RL_Kind (edict_t *e, int *type)
 {
-	int		i;
-
 	*type = 0;
 
 	if (e->svflags & SVF_MONSTER)
 	{
-		for (i=0 ; rl_monsters[i] ; i++)
-			if (e->classname && !strcmp (e->classname, rl_monsters[i]))
-			{
-				*type = i+1;
-				break;
-			}
+		*type = RL_MonsterType (e);
 		return (e->health > 0 && !e->deadflag) ? RL_KIND_MONSTER : RL_KIND_CORPSE;
 	}
 

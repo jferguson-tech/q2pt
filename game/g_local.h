@@ -835,6 +835,7 @@ qboolean RL_Active (void);
 void RL_Command (void);
 void RL_Damage (edict_t *targ, edict_t *attacker, int take, int saved);
 void RL_Perceive (edict_t *ent, float hurt);
+int RL_MonsterType (edict_t *e);
 
 //============================================================================
 

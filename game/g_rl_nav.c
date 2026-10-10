@@ -51,7 +51,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "g_rl_nav.h"
 
 #define	NAV_FILE_MAGIC		0x3156414e		// "NAV1"
-#define	NAV_FILE_VERSION	7
+#define	NAV_FILE_VERSION	9
 
 // What stops the ghost is what stops the player. While the graph is built
 // the monsters are made not solid, so of the things with a box only those
@@ -388,7 +388,7 @@ A link that passes where a mover is, at either end of its travel, is marked
 with the mover and with the end it stood at when the link was found.
 ================
 */
-static void Nav_AddLink (int from, int to, int type, float cost, int ent)
+static void Nav_AddLink (int from, int to, int type, float cost, int ent, int heading, int steps)
 {
 	nav_link_t	*l;
 	nav_mover_t	*m;
@@ -404,6 +404,8 @@ static void Nav_AddLink (int from, int to, int type, float cost, int ent)
 	l->type = type;
 	l->cost = cost;
 	l->ent = ent;
+	l->heading = heading;
+	l->steps = steps > 255 ? 255 : steps;
 	if (ent)
 		return;
 
@@ -428,11 +430,12 @@ The ghost has come to rest at the end of a move from a node. Joins it to the
 node that is there, or makes one.
 ================
 */
-static void Nav_Arrive (int from, ghost_t *g, int type, int steps, float landing)
+static void Nav_Arrive (int from, ghost_t *g, int type, int steps, float landing, int heading)
 {
 	int			to, flags, on, high;
 	float		cost, hurt;
 	nav_mover_t	*m;
+	trace_t		tr;
 
 	// what it stands on, if that is a mover, and which end the mover is at
 	on = high = 0;
@@ -449,8 +452,14 @@ static void Nav_Arrive (int from, ghost_t *g, int type, int steps, float landing
 		flags = 0;
 		if (!g->ground && g->waterlevel >= 2)
 			flags |= NODE_WATER;
+		// crouched because there is no room to stand, not because the move
+		// that came here was made crouching
 		if (g->s.pm_flags & PMF_DUCKED)
-			flags |= NODE_DUCK;
+		{
+			tr = gi.trace (g->origin, tv(-16,-16,-24), tv(16,16,32), g->origin, nav_pass, NAV_MASK);
+			if (tr.startsolid || tr.allsolid)
+				flags |= NODE_DUCK;
+		}
 		if (on && high)
 			flags |= NODE_HIGH;
 		to = Nav_AddNode (g, flags, on ? g->ground_ent : NULL);
@@ -471,7 +480,7 @@ static void Nav_Arrive (int from, ghost_t *g, int type, int steps, float landing
 			return;
 		cost += hurt * 10;
 	}
-	Nav_AddLink (from, to, type, cost, 0);
+	Nav_AddLink (from, to, type, cost, 0, heading, steps);
 }
 
 /*
@@ -607,7 +616,7 @@ static qboolean Nav_Move (int from, float yaw, int type, int swim_up, qboolean *
 
 	if (fell && g.origin[2] < node->origin[2]*0.125f - 18)
 		*fell = true;
-	Nav_Arrive (from, &g, type, steps, landing);
+	Nav_Arrive (from, &g, type, steps, landing, (int)(yaw * NAV_HEADINGS / 360.0f + 0.5f) % NAV_HEADINGS);
 	return true;
 }
 
@@ -859,8 +868,8 @@ static void Nav_Twins (int group, qboolean away)
 		}
 		// the ride: its length at the mover's speed, and a wait before it starts
 		time = VectorLength (move) / (m->ent->moveinfo.speed > 0 ? m->ent->moveinfo.speed : 100) + 1;
-		Nav_AddLink (n, twin, NAV_RIDE, time, node->ent);
-		Nav_AddLink (twin, n, NAV_RIDE, time, node->ent);
+		Nav_AddLink (n, twin, NAV_RIDE, time, node->ent, 0, 0);
+		Nav_AddLink (twin, n, NAV_RIDE, time, node->ent, 0, 0);
 	}
 }
 
@@ -1014,7 +1023,11 @@ static void Nav_Index (void)
 				last->state = 0;
 			}
 			if (l->cost < last->cost)
+			{
 				last->cost = l->cost;
+				last->heading = l->heading;
+				last->steps = l->steps;
+			}
 			continue;
 		}
 		last = &nav_links[n++];
@@ -1188,10 +1201,25 @@ qboolean Nav_MoverSelf (edict_t *e)
 	return nav_mover_of[e - g_edicts] && nav_movers[nav_mover_of[e - g_edicts] - 1].self;
 }
 
+// While nav_hopeful is set a link counts as there if its door or lift could
+// be sent where the link needs it by something not yet done, such as a
+// button not yet pressed. Movers the planner has found no way to send are
+// in nav_hopeless, by entity number, and do not count.
+qboolean	nav_hopeful;
+byte		nav_hopeless[MAX_EDICTS];
+
+/*
+================
+Nav_LinkOpen
+
+Whether a link can be taken as the doors and lifts stand now
+================
+*/
 qboolean Nav_LinkOpen (nav_link_t *l)
 {
 	edict_t		*e;
-	qboolean	plat;
+	qboolean	self;
+	int			at;
 
 	if (!l->ent)
 		return true;
@@ -1199,24 +1227,45 @@ qboolean Nav_LinkOpen (nav_link_t *l)
 	if (!e->inuse || !nav_mover_of[l->ent])
 		return true;		// a door that is no longer there
 
-	plat = !strcmp (e->classname, "func_plat");
+	self = Nav_MoverSelf (e);
+	at = Nav_MoverAt (e);
 
-	// Only a lift that works by itself is ridden: how to send any other is
-	// not known here.
+	// A ride: on a mover that works by itself, or one that is on its way.
 	if (l->type == NAV_RIDE)
-		return plat && Nav_MoverSelf (e);
+		return self || !at || (nav_hopeful && !nav_hopeless[l->ent]);
 
-	if (Nav_MoverAt (e) == l->state)
+	// where the link needs it, or on its way
+	if (at == l->state || !at)
 		return true;
-	if (!Nav_MoverSelf (e))
-		return false;
+	if (!self)
+		return nav_hopeful && !nav_hopeless[l->ent];
 	// A door that works by itself opens as the player comes to it, and a
 	// lift comes back down by itself. But a lift goes up only under someone:
 	// a link that wants it up is there for the one who rode it, and for
 	// nobody else until it is up.
-	if (plat && l->state == NAV_AWAY)
+	if (l->state == NAV_AWAY && !strcmp (e->classname, "func_plat"))
 		return (nav_nodes[l->from].flags & NODE_MOVER) && nav_nodes[l->from].ent == l->ent;
 	return true;
+}
+
+/*
+================
+Nav_MoverGroup
+
+Lists the movers that move together with e. Returns how many.
+================
+*/
+int Nav_MoverGroup (edict_t *e, edict_t **list, int max)
+{
+	int		i, n, group;
+
+	if (!nav_mover_of[e - g_edicts])
+		return 0;
+	group = nav_movers[nav_mover_of[e - g_edicts] - 1].group;
+	for (i=0, n=0 ; i<nav_num_movers && n<max ; i++)
+		if (nav_movers[i].group == group)
+			list[n++] = nav_movers[i].ent;
+	return n;
 }
 
 /*
@@ -1276,27 +1325,38 @@ int Nav_Nearest (edict_t *ent, vec3_t origin)
 	return first;
 }
 
+int Nav_NodeNear (vec3_t p, float xy, float z)
+{
+	nav_num_skip = 0;
+	return Nav_Near (p, xy, z, 0, 0);
+}
+
 /*
 ================
 Nav_Costs
 
-Dijkstra's algorithm on a binary heap: backwards from a goal, over the links
-into each node, or forwards from a start, over the links out of it
+Dijkstra's algorithm on a binary heap: backwards from one or more goals, over
+the links into each node, or forwards from a start, over the links out of it
 ================
 */
-static void Nav_Costs (int goal, float *togo, qboolean forward);
+static void Nav_Costs (int *goals, int num_goals, float *togo, qboolean forward);
 
 void Nav_CostsTo (int goal, float *togo)
 {
-	Nav_Costs (goal, togo, false);
+	Nav_Costs (&goal, 1, togo, false);
+}
+
+void Nav_CostsToAny (int *goals, int num, float *togo)
+{
+	Nav_Costs (goals, num, togo, false);
 }
 
 void Nav_CostsFrom (int start, float *cost)
 {
-	Nav_Costs (start, cost, true);
+	Nav_Costs (&start, 1, cost, true);
 }
 
-static void Nav_Costs (int goal, float *togo, qboolean forward)
+static void Nav_Costs (int *goals, int num_goals, float *togo, qboolean forward)
 {
 	static int	*heap, *where;
 	static int	heap_for;
@@ -1316,13 +1376,17 @@ static void Nav_Costs (int goal, float *togo, qboolean forward)
 		togo[n] = NAV_FAR;
 		where[n] = -1;
 	}
-	if (goal < 0 || goal >= nav_num_nodes)
-		return;
-
-	togo[goal] = 0;
-	heap[0] = goal;
-	where[goal] = 0;
-	count = 1;
+	count = 0;
+	for (i=0 ; i<num_goals ; i++)
+	{
+		n = goals[i];
+		if (n < 0 || n >= nav_num_nodes || where[n] != -1)
+			continue;
+		// all at no cost, so in any order they are a heap
+		togo[n] = 0;
+		heap[count] = n;
+		where[n] = count++;
+	}
 
 	while (count)
 	{

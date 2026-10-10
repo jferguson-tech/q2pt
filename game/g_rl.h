@@ -31,7 +31,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define G_RL_H
 
 #define	RL_MAGIC		0x314c5251		// "QRL1"
-#define	RL_VERSION		3
+#define	RL_VERSION		5
 
 // The player is moved by one command of this length in each server frame.
 #define	RL_STEP_MSEC	100
@@ -48,6 +48,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 // The map's monsters are taken out before the episode starts.
 #define	RL_FLAG_NOMONSTERS	2
+
+// what the teacher does
+#define	RL_MODE_EXPLORE	0		// walks to one node after another
+#define	RL_MODE_PLAY	1		// plays the map through to its exit
 
 // how an episode ended
 #define	RL_DONE_NO		0
@@ -171,6 +175,8 @@ typedef struct
 	int		time_limit;		// steps; 0 for none
 	int		flags;			// RL_FLAG_
 	char	map[64];
+	char	back[256];		// maps, with spaces between, whose exits are not the way on
+	int		mode;			// RL_MODE_: what the teacher is out to do
 	char	demo[256];		// full path of a demo to record the episode into, or empty
 
 	// ---- written by the game and the server
@@ -206,6 +212,11 @@ typedef struct
 	int		link_type;		// the kind of link the teacher is on (NAV_), or -1 with no way to go
 	int		link_ent;		// the door or lift that link depends on, or 0
 	float	route_left;		// seconds of route from here to the teacher's goal, or -1
+	int		job_kind;		// what the teacher is on its way to do (PLAN_), or 0
+	int		job_ent;		// and to which entity
+	int		fighting;		// the entity the teacher is shooting at, or 0
+	int		death_means;	// when dead: how, as the game's MOD_ numbers have it
+	int		death_by;		// and by which monster, as RL_ENT_TYPE numbers them; 0 for none
 } rl_shared_t;
 
 // The name of the cvar in which the server leaves the block's address for
