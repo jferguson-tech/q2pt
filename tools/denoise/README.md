@@ -93,6 +93,11 @@ A tenth run (`results/stage10.md`), 8,000 more steps with all 92 of those
 clips where the ninth had 31, changed nothing that matters: 39.47 / 40.69 dB
 and SSIM 0.9422 / 0.9473.
 
+Adding multi-scale SSIM to the loss (`--ssim`, `results/stage11-probes.md`)
+did not close the gap in SSIM in four short runs. That file also has where
+the gap is: in the light of fog and glows, where the references are still
+noisy themselves and the network leaves a fine grain.
+
 Runs that did not help and were taken out again: the fifth
 (`results/stage5.md`) scaled each frame by the exposure the game would have
 reached by then, and was worse overall (38.48 dB at 16 paths). The seventh

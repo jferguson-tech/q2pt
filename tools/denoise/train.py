@@ -92,6 +92,7 @@ def gradients(x):
     return x[..., :, 1:] - x[..., :, :-1], x[..., 1:, :] - x[..., :-1, :]
 
 
+SSIM = 0.0       # --ssim
 SPIKE = 25.0     # --spike
 
 
@@ -128,6 +129,36 @@ def haze(item, scale, paths, length):
         item['ref_picture'][i, first:last + 1] += clean
 
 
+MS_WEIGHTS = (0.0448, 0.2856, 0.3001, 0.2363, 0.1333)
+
+
+def ms_ssim(a, b):
+    """Multi-scale SSIM of pictures [B,3,H,W] in 0-1, one figure for each:
+    the structure at five scales, halving each time, and the brightness at
+    the coarsest. The constants are evaluate.py's."""
+    k = torch.arange(11, dtype=a.dtype, device=a.device) - 5
+    g = torch.exp(-k * k / (2 * 1.5 * 1.5))
+    g = (g / g.sum()).view(1, 1, 11)
+
+    def blur(x):
+        c = x.shape[1]
+        x = F.conv2d(x, g[..., None].expand(c, 1, 11, 1), groups=c)
+        return F.conv2d(x, g[:, :, None].expand(c, 1, 1, 11), groups=c)
+
+    c1, c2 = 0.01 ** 2, 0.03 ** 2
+    out = 1.0
+    for n, weight in enumerate(MS_WEIGHTS):
+        if n:
+            a, b = F.avg_pool2d(a, 2), F.avg_pool2d(b, 2)
+        ma, mb = blur(a), blur(b)
+        va, vb, cov = blur(a * a) - ma * ma, blur(b * b) - mb * mb, blur(a * b) - ma * mb
+        cs = ((2 * cov + c2) / (va + vb + c2)).mean(dim=(1, 2, 3))
+        if n == len(MS_WEIGHTS) - 1:
+            cs = cs * ((2 * ma * mb + c1) / (ma * ma + mb * mb + c1)).mean(dim=(1, 2, 3))
+        out = out * torch.clamp(cs, min=1e-3) ** weight
+    return out
+
+
 def measure(light, f, ref, ref_light, expo, shift):
     """The losses that need one frame only: the picture and its parts, each
     error against the size of the answer, and the picture as it is shown.
@@ -152,7 +183,8 @@ def measure(light, f, ref, ref_light, expo, shift):
     # the squared error is what PSNR counts
     seen = F.l1_loss(shown, want) + 0.5 * (F.l1_loss(gx, rx) + F.l1_loss(gy, ry)) \
         + 10.0 * (F.mse_loss(shown, want) + F.mse_loss(off, off_want))
-    return whole, apart, seen, shown, want
+    alike = 1.0 - ms_ssim(shown, want).mean() if SSIM > 0 else shown.new_zeros(())
+    return whole, apart, seen, shown, want, alike
 
 
 def main():
@@ -170,10 +202,14 @@ def main():
     ap.add_argument('--favour-share', type=float, default=0.0, help='how often a clip is drawn from those jobs')
     ap.add_argument('--low', type=float, default=1 / 3, help='how often a clip is given at 4 paths a pixel')
     ap.add_argument('--spike', type=float, default=25.0, help='the most a pixel\'s relative error counts for')
+    ap.add_argument('--ssim', type=float, default=0.0, help='weight of multi-scale SSIM of the picture as shown')
+    ap.add_argument('--ssim-even', action='store_true', help='count the five scales alike: the usual weights make little of the finest')
     ap.add_argument('--start', default='', help='weights to begin from, of this network or of the one that only looked back')
     args = ap.parse_args()
-    global SPIKE
-    SPIKE = args.spike
+    global SPIKE, SSIM, MS_WEIGHTS
+    SPIKE, SSIM = args.spike, args.ssim
+    if args.ssim_even:
+        MS_WEIGHTS = (0.2,) * 5
 
     os.makedirs(args.out, exist_ok=True)
     device = torch.device('cuda')
@@ -198,8 +234,8 @@ def main():
     loader = torch.utils.data.DataLoader(data, batch_size=args.batch, num_workers=args.workers, drop_last=True,
                                          persistent_workers=True, prefetch_factor=4)
     log = open(os.path.join(args.out, 'log.txt'), 'a')
-    names = ('picture', 'parts', 'shown', 'change', 'backwards')
-    start, sums, count = time.time(), np.zeros(5), 0
+    names = ('picture', 'parts', 'shown', 'change', 'backwards', 'unlike')
+    start, sums, count = time.time(), np.zeros(6), 0
     while step < args.steps:
         for item in loader:
             item = {k: v.to(device, non_blocking=True) for k, v in item.items()}
@@ -230,8 +266,8 @@ def main():
                 f = frames[t]
                 with torch.autocast('cuda', dtype=torch.bfloat16):
                     light, state = model(f, item['paths'], scale, state, None, backwards=True)
-                whole, apart, seen, _, _ = measure(light, f, item['ref_picture'][:, t], item['ref_light'][:, t], expo, shift)
-                back = back + whole + 0.5 * apart + 0.2 * seen
+                whole, apart, seen, _, _, alike = measure(light, f, item['ref_picture'][:, t], item['ref_light'][:, t], expo, shift)
+                back = back + whole + 0.5 * apart + 0.2 * seen + SSIM * alike
                 # what the second pass is given is a fact to it, not something to change
                 state = (state[0].detach(), state[1])
                 if t:
@@ -243,17 +279,18 @@ def main():
             if random.random() < 0.1:
                 ahead = [None] * args.length         # it must still work alone
             state, last_out, last_ref = None, None, None
-            parts = torch.zeros(5, device=device)
+            parts = torch.zeros(6, device=device)
             for t in range(args.length):
                 if t and random.random() < 0.05:
                     state = None                             # a cut: learn to start again
                 f = frames[t]
                 with torch.autocast('cuda', dtype=torch.bfloat16):
                     light, state = model(f, item['paths'], scale, state, ahead[t])
-                whole, apart, seen, shown, want = measure(light, f, item['ref_picture'][:, t], item['ref_light'][:, t], expo, shift)
+                whole, apart, seen, shown, want, alike = measure(light, f, item['ref_picture'][:, t], item['ref_light'][:, t], expo, shift)
                 parts[0] += whole
                 parts[1] += apart
                 parts[2] += seen
+                parts[5] += alike
                 if last_out is not None:
                     # how the picture changes from frame to frame should be how the reference changes
                     moved, inside = warp(torch.cat([last_out, last_ref], dim=1), f['motion'])
@@ -261,7 +298,7 @@ def main():
                     parts[3] += (((shown - moved[:, 0:3]) - (want - moved[:, 3:6])).abs() * ok).mean()
                 last_out, last_ref = shown, want
             parts = parts / args.length
-            loss = parts[0] + 0.5 * parts[1] + 0.2 * parts[2] + 0.5 * parts[3]
+            loss = parts[0] + 0.5 * parts[1] + 0.2 * parts[2] + 0.5 * parts[3] + SSIM * parts[5]
             parts[4] = back.detach()
 
             loss.backward()
@@ -277,7 +314,7 @@ def main():
                 print(line, flush=True)
                 log.write(line + '\n')
                 log.flush()
-                start, sums, count = time.time(), np.zeros(5), 0
+                start, sums, count = time.time(), np.zeros(6), 0
             if step % 2000 == 0 or step == args.steps:
                 torch.save({'model': model.state_dict(), 'opt': opt.state_dict(), 'sched': sched.state_dict(), 'step': step},
                            os.path.join(args.out, 'last.pt'))
