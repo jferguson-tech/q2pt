@@ -25,12 +25,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from q2env import Engine, layout as L  # noqa: E402
+from q2env.maps import ORDER, back_of  # noqa: E402
 from q2env.nav import LINK_NAMES  # noqa: E402
-
-# the single-player maps in the order the game is played through
-ORDER = """base1 base2 base3 train bunk1 ware1 ware2 jail1 jail2 jail3 jail4 jail5 security
-mintro mine1 mine2 mine3 mine4 fact1 fact2 fact3 power1 power2 cool1 waste1 waste2 waste3
-biggun hangar1 hangar2 lab command strike space city1 city2 city3 boss1 boss2""".split()
 
 CPUS = list(range(8, 16)) + list(range(24, 32)) + list(range(2, 8)) + list(range(18, 24))
 
@@ -82,7 +78,7 @@ def play(map, seed, steps, skill, back, cpu):
 
 
 def measure(map, episodes, steps, skill):
-    back = " ".join(ORDER[:ORDER.index(map)]) if map in ORDER else ""
+    back = back_of(map)
     with ThreadPoolExecutor(len(CPUS)) as pool:
         jobs = [pool.submit(play, map, seed, steps, skill, back, CPUS[seed % len(CPUS)])
                 for seed in range(episodes)]

@@ -418,6 +418,9 @@ static edict_t *Teach_Errand (edict_t *ent)
 		if (!e->inuse || !e->item || e->solid != SOLID_TRIGGER || (e->svflags & SVF_NOCLIENT))
 			continue;
 		worth = Teach_Wants (ent, e);
+		// nothing is worth much of a walk when the way out is a few steps off
+		if (teach_have_plan && teach_togo[teach_anchor] < NAV_FAR && worth > 4 + 2 * teach_togo[teach_anchor])
+			worth = 4 + 2 * teach_togo[teach_anchor];
 		if (worth <= 0)
 			continue;
 		// only one that lies at a node, with nothing between the two

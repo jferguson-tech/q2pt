@@ -16,6 +16,7 @@ import numpy as np
 
 from . import layout as L
 from .engine import Engine
+from .maps import back_of
 
 
 def observation_space():
@@ -108,11 +109,13 @@ class Q2VecEnv:
     def __init__(self, n, maps=("base1",), skill=1, time_limit=3000, guided=True,
                  cpus=None, seed=0, mode=L.MODE_EXPLORE, flags=0, back=None):
         """mode, flags: as Engine.reset takes them. back: for each map, the
-        maps whose exits are not the way on; None for none."""
+        maps whose exits are not the way on; None for those that come before
+        it in the game."""
         self.n = n
         self.maps = tuple(maps)
         self.skill, self.time_limit, self.guided = skill, time_limit, guided
-        self.mode, self.flags, self.back = mode, flags, back or {}
+        self.mode, self.flags = mode, flags
+        self.back = {m: back_of(m) for m in self.maps} if back is None else back
         self.current_map = [""] * n
         self.current_seed = np.zeros(n, np.int64)
         self.single_observation_space = observation_space()

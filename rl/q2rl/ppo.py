@@ -92,10 +92,11 @@ if __name__ == "__main__":
     ap.add_argument("--teacher-steps", type=int, default=1_500_000)
     ap.add_argument("--eval-every", type=int, default=500_000)
     ap.add_argument("--unguided", action="store_true")
+    ap.add_argument("--seed", type=int, default=1, help="of the actions drawn, the batches and the episodes played")
     args = ap.parse_args()
 
     device = "cuda"
-    torch.manual_seed(1)
+    torch.manual_seed(args.seed)
     weights = data_dir() / "weights"
     if args.start:
         policy = load(weights / f"{args.start}.pt", device)
@@ -106,7 +107,7 @@ if __name__ == "__main__":
     opt = torch.optim.Adam(policy.parameters(), lr=args.lr)
     writer = SummaryWriter(data_dir() / "runs" / args.name)
 
-    env = Q2VecEnv(ENVS, maps=args.maps, time_limit=3000, cpus=CPUS, seed=7_000_000,
+    env = Q2VecEnv(ENVS, maps=args.maps, time_limit=4500, cpus=CPUS, seed=7_000_000 + 100_000 * args.seed,
                    mode=L.MODE_PLAY, guided=policy.guided)
     obs = env.reset()
     idle = torch.tensor(L.ACT_IDLE, device=device)

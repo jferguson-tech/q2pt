@@ -67,6 +67,12 @@ def evaluate(policy, episodes=100, maps=("base1",), device="cuda", sample=False,
     return results
 
 
+def by_map(results):
+    """The summary of each map's episodes, by map."""
+    maps = sorted({r["map"] for r in results})
+    return {m: summary([r for r in results if r["map"] == m]) for m in maps}
+
+
 def summary(results):
     won = sum(r["done"] == L.DONE_EXIT for r in results)
     ends = Counter(L.DONE_NAMES[r["done"]] for r in results)
@@ -78,14 +84,27 @@ def summary(results):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("policy")
-    ap.add_argument("--episodes", type=int, default=100)
+    ap.add_argument("policy", help="weights, or 'teacher'")
+    ap.add_argument("--episodes", type=int, default=100, help="in all, shared among the maps")
     ap.add_argument("--maps", nargs="+", default=["base1"])
-    ap.add_argument("--sample", action="store_true")
+    ap.add_argument("--sample", action="store_true", help="draw actions; otherwise the likeliest is taken")
+    ap.add_argument("--seed", type=int, default=EVAL_SEED)
+    ap.add_argument("--json", default="", help="a file to write the figures to")
     args = ap.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     policy = None if args.policy == "teacher" else load(args.policy, device)
-    s = summary(evaluate(policy, args.episodes, args.maps, device, args.sample))
-    print(f"{args.policy}: {s['exit']} of {s['episodes']} reached the exit ({100 * s['rate']:.0f}%), "
+    results = evaluate(policy, args.episodes, args.maps, device, args.sample, seed=args.seed)
+    s = summary(results)
+    how = "teacher" if policy is None else "sampled" if args.sample else "greedy"
+    print(f"{args.policy} ({how}): {s['exit']} of {s['episodes']} reached the exit ({100 * s['rate']:.0f}%), "
           f"{s['death']} died, {s['time']} ran out of time; {s['kills']:.1f} kills and "
           f"{s['steps'] / 10:.0f} s an episode")
+    maps = by_map(results)
+    for m, x in maps.items():
+        print(f"  {m}: {x['exit']} of {x['episodes']} ({100 * x['rate']:.0f}%), {x['death']} died, "
+              f"{x['time']} out of time")
+    if args.json:
+        import json
+        from pathlib import Path
+        Path(args.json).write_text(json.dumps({"policy": str(args.policy), "how": how, "seed": args.seed,
+                                               "all": s, "maps": maps}, indent=1))

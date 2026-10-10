@@ -82,13 +82,15 @@ def save(policy, path, **more):
     torch.save({"model": policy.state_dict(), "hidden": policy.hidden, "guided": policy.guided, **more}, path)
 
 
-def teacher_data(maps, episodes, name=None):
+def teacher_data(maps, episodes, name=None, seed=0):
     """The folder holding the teacher's own play on these maps, recorded now
-    if it was not before."""
-    out = data_dir() / "data" / (name or f"teacher_{'_'.join(maps)}_{episodes}")
+    if it was not before. seed picks which episodes: a run of its own for
+    each training seed."""
+    out = data_dir() / "data" / (name or f"teacher_{'_'.join(maps)}_{episodes}" + (f"_s{seed}" if seed else ""))
     if not (out / "episodes.json").exists():
         start = time.time()
-        results = collect(lambda obs, starts: (None, None), episodes, maps, out, TRAIN_SEED)
+        results = collect(lambda obs, starts: (None, None), episodes, maps, out, TRAIN_SEED + 50_000 * seed,
+                          time_limit=4500)
         won = sum(r["done"] == L.DONE_EXIT for r in results)
         print(f"recorded {len(results)} teacher episodes, {sum(r['steps'] for r in results)} steps, "
               f"{won} to the exit, in {time.time() - start:.0f} s", flush=True)
@@ -106,11 +108,12 @@ if __name__ == "__main__":
     ap.add_argument("--hidden", type=int, default=256)
     ap.add_argument("--unguided", action="store_true")
     ap.add_argument("--eval", type=int, default=100)
+    ap.add_argument("--seed", type=int, default=0, help="of the weights' start, the batches and the teacher's episodes")
     args = ap.parse_args()
 
     device = "cuda"
-    torch.manual_seed(0)
-    folder = teacher_data(args.maps, args.episodes)
+    torch.manual_seed(args.seed)
+    folder = teacher_data(args.maps, args.episodes, seed=args.seed)
     data = Dataset([folder])
     print(f"{data.steps} steps in {data.windows} windows", flush=True)
 
