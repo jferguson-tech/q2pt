@@ -539,7 +539,7 @@ void Teach_Think (edict_t *ent)
 	float		yaw, pitch, want_yaw, want_pitch, err, best_err, dist, a, across;
 	float		aim_yaw, aim_pitch, aim_dist;
 	int			f, s, bf, bs, i, n, up, link_type;
-	qboolean	grounded, swimming, hold, ducked, snap, fire, have, exact, wary, launch;
+	qboolean	grounded, swimming, hold, ducked, snap, fire, have, exact, wary, launch, begun;
 	float		route_yaw, speed;
 	trace_t		tr;
 
@@ -632,7 +632,7 @@ void Teach_Think (edict_t *ent)
 	hold = true;
 	snap = true;
 	fire = false;
-	launch = false;
+	launch = begun = false;
 	up = 1;
 	link_type = NAV_WALK;
 	VectorClear (go);
@@ -728,7 +728,7 @@ void Teach_Think (edict_t *ent)
 				launch = true;
 			else if (link->type != NAV_JUMP && DotProduct (d, dir) > 0 && fabs (across) <= 10
 				&& DotProduct (ent->velocity, dir) > 50)
-				launch = true;		// begun from the node, and not yet over the edge
+				launch = begun = true;		// begun from the node, and not yet over the edge
 			else if (VectorLength (d) > 8)
 			{
 				VectorCopy (at, target);
@@ -1019,10 +1019,14 @@ slanted:	;
 			}
 		}
 
-	if (link_type == NAV_JUMP && up == 2 && grounded && best_err > 8)
-	{	// at the node but not yet square to the jump: turn first
-		up = 1;
+	if (launch && grounded && !begun && best_err > 4)
+	{	// The trial was of feet going dead along the link's heading; with
+		// the view not yet square to it they would go a little to one
+		// side, and a small landing place is missed by that. Turn first.
+		if (up == 2)
+			up = 1;
 		hold = true;
+		launch = false;
 	}
 	if (link_type == NAV_CLIMB && fabs (AngleDiff (a, yaw)) > 30)
 		up = 1;
@@ -1082,7 +1086,16 @@ slanted:	;
 			bs = ts;
 		}
 		else
-			bf = bs = 0;
+		{
+			// No way passes. Standing at a node, on a step the graph has
+			// from that node, the graph is believed: the step was made
+			// from here when it was found, and to stand is to stay for good.
+			VectorSubtract (origin, at, side);
+			side[2] = 0;
+			if (!(link && !enemy && VectorLength (side) < 12
+				&& ent->velocity[0]*ent->velocity[0] + ent->velocity[1]*ent->velocity[1] < 20*20))
+				bf = bs = 0;
+		}
 	}
 	if (wary && !bf && !bs && !Nav_StepSafe (ent, NULL, up == 0))
 	{	// sliding to somewhere it should not be: the way that stops it
@@ -1097,6 +1110,40 @@ slanted:	;
 					continue;
 				bf = f;
 				bs = s;
+				break;
+			}
+	}
+
+	// In the air the feet still steer a little. They go the way that was
+	// meant if a trial of that comes down somewhere safe; failing that they
+	// are still, or go whichever way does.
+	if (!grounded && !swimming && rl_block->mode == RL_MODE_PLAY && ent->waterlevel < 2)
+	{
+		qboolean	safe = false;
+
+		if (bf || bs)
+		{
+			across = (yaw + RAD2DEG_F(atan2 (-bs, bf))) * M_PI / 180;
+			VectorSet (side, cos (across), sin (across), 0);
+			safe = Nav_AirSafe (ent, side);
+		}
+		if (!safe && Nav_AirSafe (ent, NULL))
+		{
+			bf = bs = 0;
+			safe = true;
+		}
+		for (f=-1 ; f<=1 && !safe ; f++)
+			for (s=-1 ; s<=1 ; s++)
+			{
+				if (!f && !s)
+					continue;
+				across = (yaw + RAD2DEG_F(atan2 (-s, f))) * M_PI / 180;
+				VectorSet (side, cos (across), sin (across), 0);
+				if (!Nav_AirSafe (ent, side))
+					continue;
+				bf = f;
+				bs = s;
+				safe = true;
 				break;
 			}
 	}

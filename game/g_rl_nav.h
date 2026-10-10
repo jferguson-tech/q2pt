@@ -112,6 +112,9 @@ qboolean Nav_MoverSelf (edict_t *e);
 // out of harm's way.
 qboolean Nav_StepSafe (edict_t *ent, vec3_t dir, qboolean ducked);
 
+// the same for a player in the air, the feet going along dir until it lands
+qboolean Nav_AirSafe (edict_t *ent, vec3_t dir);
+
 // True when a jump or a walk off an edge, begun from where the player is
 // and as it moves now, would bring it to the link's far node unhurt.
 qboolean Nav_TryLink (edict_t *ent, nav_link_t *l);

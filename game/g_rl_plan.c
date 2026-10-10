@@ -262,9 +262,9 @@ void Plan_Point (plan_job_t *job, vec3_t out)
 ================
 Plan_ShotAt
 
-A point of a thing that a shot from the eye would reach: its middle if that
-is in the clear, or else one of a grid of points through its box, since a
-switch behind bars shows only in part. Returns false when none is.
+A point of a thing to look at so that a shot reaches it: its middle if a
+shot at that gets through, or else one of a grid of points through its box,
+since a switch behind bars shows only in part. Returns false when none does.
 ================
 */
 qboolean Plan_ShotAt (edict_t *e, vec3_t eye, vec3_t out)
@@ -273,6 +273,8 @@ qboolean Plan_ShotAt (edict_t *e, vec3_t eye, vec3_t out)
 	edict_t	*player = &g_edicts[1];
 	trace_t	tr;
 	int		i, j, k;
+	vec3_t	dir, from, end;
+	float	len;
 
 	for (i=0 ; i<3 ; i++)
 	for (j=0 ; j<3 ; j++)
@@ -281,8 +283,15 @@ qboolean Plan_ShotAt (edict_t *e, vec3_t eye, vec3_t out)
 		out[0] = e->absmin[0] + (e->absmax[0] - e->absmin[0]) * at[i];
 		out[1] = e->absmin[1] + (e->absmax[1] - e->absmin[1]) * at[j];
 		out[2] = e->absmin[2] + (e->absmax[2] - e->absmin[2]) * at[k];
-		tr = gi.trace (eye, NULL, NULL, out, player, MASK_SHOT);
-		if (tr.fraction >= 1 || tr.ent == e)
+		// The shot leaves the gun, which is held a hand to the right of the
+		// eye and a hand below it, and flies the way the eye looks: so it
+		// is the gun's line that has to be clear, as far as the thing.
+		VectorSubtract (out, eye, dir);
+		len = VectorNormalize (dir);
+		VectorSet (from, eye[0] + 8 * dir[1], eye[1] - 8 * dir[0], eye[2] - 8);
+		VectorMA (from, len + 64, dir, end);
+		tr = gi.trace (from, NULL, NULL, end, player, MASK_SHOT);
+		if (tr.ent == e)
 			return true;
 	}
 	return false;

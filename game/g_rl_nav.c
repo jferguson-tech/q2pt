@@ -1262,7 +1262,7 @@ and speed as they are: one step with the feet going along dir (none when
 dir is NULL), then up to five with the feet still, which is more than
 stopping takes. The step is
 safe when nothing on the way hurts and the player comes to rest standing,
-not far below where it began. A ledge too narrow to stop on, a slope too steep to stand on and a
+no more than a stair below where it began, at a place the graph has a node. A ledge too narrow to stop on, a slope too steep to stand on and a
 lip that lava laps at all fail in the way they would fail the player.
 ================
 */
@@ -1291,11 +1291,16 @@ qboolean Nav_StepSafe (edict_t *ent, vec3_t dir, qboolean ducked)
 	for (i=0 ; i<6 && !rest ; i++)
 	{
 		Ghost_Step (&g, yaw, i || !dir ? 0 : 400, ducked ? -400 : 0);
-		if (Nav_Hurts (&g) || Haz_At (g.origin, ducked) || top - g.origin[2] > 40)
+		if (Nav_Hurts (&g) || Haz_At (g.origin, ducked) || top - g.origin[2] > 20)
 			break;
 		rest = (i || !dir) && g.ground && g.velocity[0]*g.velocity[0] + g.velocity[1]*g.velocity[1] < 60*60;
 	}
 	nav_pass = pass;
+	// and somewhere the graph knows: a ledge it has no node on is one it
+	// found no way off
+	nav_num_skip = 0;
+	if (rest && Nav_Near (g.origin, 40, 32, -1, 0) == -1)
+		rest = false;
 	if (gi.cvar ("rl_debug", "0", 0)->value > 1)
 		gi.dprintf ("   step? yaw %.0f: %i steps to %.1f %.1f %.1f ground %i vel %.0f %.0f rest %i\n", yaw, i,
 			g.origin[0], g.origin[1], g.origin[2], g.ground, g.velocity[0], g.velocity[1], rest);
@@ -1360,6 +1365,53 @@ qboolean Nav_TryLink (edict_t *ent, nav_link_t *l)
 	if (!ok || !rest)
 		return false;
 	return fabs (g.origin[0] - to[0]) < 64 && fabs (g.origin[1] - to[1]) < 64 && fabs (g.origin[2] - to[2]) < 40;
+}
+
+/*
+================
+Nav_AirSafe
+
+For a player in the air: true when, with the feet going along dir (or still,
+for NULL) until it lands and still after that, it would come to rest
+unhurt at a place the graph has a node.
+================
+*/
+qboolean Nav_AirSafe (edict_t *ent, vec3_t dir)
+{
+	ghost_t	g;
+	edict_t	*pass = nav_pass;
+	float	yaw;
+	int		i;
+	qboolean	ok, rest;
+
+	memset (&g, 0, sizeof(g));
+	g.s = ent->client->ps.pmove;
+	for (i=0 ; i<3 ; i++)
+	{
+		g.s.origin[i] = ent->s.origin[i]*8;
+		g.s.velocity[i] = ent->velocity[i]*8;
+	}
+	g.s.delta_angles[0] = g.s.delta_angles[1] = g.s.delta_angles[2] = 0;
+	nav_pass = ent;
+	yaw = dir ? atan2 (dir[1], dir[0]) * 180 / M_PI : 0;
+
+	ok = true;
+	rest = false;
+	for (i=0 ; i<30 && ok && !rest ; i++)
+	{
+		Ghost_Step (&g, yaw, dir && !g.ground ? 400 : 0, 0);
+		if (Nav_Hurts (&g) || Haz_At (g.origin, false))
+			ok = false;
+		rest = (g.ground || g.waterlevel >= 2) && g.velocity[0]*g.velocity[0] + g.velocity[1]*g.velocity[1] < 60*60;
+	}
+	nav_pass = pass;
+	nav_num_skip = 0;
+	if (ok && rest && Nav_Near (g.origin, 40, 32, -1, 0) == -1)
+		rest = false;
+	if (gi.cvar ("rl_debug", "0", 0)->value > 1)
+		gi.dprintf ("   air? yaw %.0f%s: ok %i rest %i at %.1f %.1f %.1f\n", yaw, dir ? "" : " (still)", ok, rest,
+			g.origin[0], g.origin[1], g.origin[2]);
+	return ok && rest;
 }
 
 /*
@@ -1438,10 +1490,12 @@ int Nav_Nearest (edict_t *ent, vec3_t origin)
 	// its twin above, whichever the ride is nearer.
 	if (ent->groundentity && nav_mover_of[ent->groundentity - g_edicts])
 	{
+		// at the end of its travel the mover is at, if it is at one
 		on = ent->groundentity - g_edicts;
-		n = Nav_Near (origin, 40, 30, on, 0);
+		pass = Nav_MoverAt (ent->groundentity) == NAV_AWAY;
+		n = Nav_Near (origin, 40, 30, on, pass);
 		if (n == -1)
-			n = Nav_Near (origin, 40, 30, on, 1);
+			n = Nav_Near (origin, 40, 30, on, !pass);
 		if (n != -1)
 			return n;
 	}
