@@ -1562,7 +1562,12 @@ void Qcommon_Frame (volatile int msec)
 	if (host_speeds->value)
 		time_before = Sys_Milliseconds ();
 
+	// a server driven from outside waits here, and is given one step's time
+	msec = SV_RL_BeginFrame (msec);
+
 	PERF_TIMED ("pt_perf_server", SV_Frame (msec));
+
+	SV_RL_EndFrame ();
 
 	if (host_speeds->value)
 		time_between = Sys_Milliseconds ();		

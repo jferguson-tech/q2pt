@@ -828,6 +828,14 @@ void ChaseNext(edict_t *ent);
 void ChasePrev(edict_t *ent);
 void GetChaseTarget(edict_t *ent);
 
+//
+// g_rl.c, g_rl_obs.c: the game driven by another program
+//
+qboolean RL_Active (void);
+void RL_Command (void);
+void RL_Damage (edict_t *targ, edict_t *attacker, int take, int saved);
+void RL_Perceive (edict_t *ent, float hurt);
+
 //============================================================================
 
 // client_t->anim_priority

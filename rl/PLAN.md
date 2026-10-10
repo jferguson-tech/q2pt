@@ -74,6 +74,10 @@ the play itself:
   `save/current` folder is not wiped or written: thirty processes share one
   game folder;
 * the opening cinematic and the help computer are not shown.
+* a client tells the server how much light falls where the player stands,
+  and monsters far off do not notice a player in the dark. A server with no
+  renderer has no such reading, so the player always counts as standing in
+  plain light (`RL_LIGHT_LEVEL` in `game/g_rl.c`).
 
 ### The player: a fake client
 
@@ -86,9 +90,9 @@ noclip, no setting of velocity.
   state `cs_spawned`), but with no network address. The slot is needed so
   the server builds this client's frames and collects the messages meant for
   it, which is what a demo is made of.
-* Two small tests in existing code keep that slot alive: `SV_CheckTimeouts`
-  (`server/sv_main.c`) does not time it out, and `SV_SendClientMessages`
-  (`server/sv_send.c`) hands it to `SV_RL_SendClient` in place of the network.
+* One test in existing code serves that slot: `SV_SendClientMessages`
+  (`server/sv_send.c`) hands it to `SV_RL_SendClient` in place of the
+  network, which also marks it as heard from, so it never times out.
 * `game/g_rl.c` turns an action into a `usercmd_t` and calls `ClientThink`.
   Weapon changes go through the game's own `use` item code, as a key press
   would.
@@ -120,10 +124,9 @@ Both return at once unless the program was started with `+set rl_shm <name>`.
 One process per environment. Data is in a shared memory block
 (`/dev/shm/<name>`, mapped by the server, the game and Python) with a fixed
 layout declared in `game/g_rl.h` and mirrored in `rl/q2env/layout.py`; a test
-compares the two. Wake-ups go over a pair of pipes inherited from Python. If
-the pipe round trip turns out to cost a large share of a step, the
-alternative is to spin on a counter in the shared block: both are
-measured and the faster one kept. The transport is Linux only and is
+compares the two. Wake-ups go over a pair of pipes inherited from Python. The
+server hands the block's address to the game in the cvar `rl_block`, so the
+game library has no system calls of its own. The transport is Linux only and is
 compiled out on Windows, where the hooks are empty.
 
 ### Determinism
@@ -153,6 +156,9 @@ Same map, seed and actions must give the same trajectory, bit for bit.
   map change is never followed.
 * **death**: the player's health is zero or less.
 * **time**: a limit in steps, given at reset.
+
+A map starts with its clock a second ahead of the server's. A reset levels
+the two, so that the first step runs a game frame like every other.
 
 Playing on through a unit, inventory kept, is the stretch goal: it needs the
 level files in `save/current`, so each process would get a game folder of its
@@ -271,9 +277,10 @@ linux/sys_ded.c
 
 Small edits to existing files: `qcommon/common.c` (two hook calls),
 `qcommon/qcommon.h` or `server/server.h` (their declarations),
-`server/sv_init.c` (`sv_singleplayer`), `server/sv_main.c` and
-`server/sv_send.c` (the fake client's slot), `game/g_main.c` (`ExitLevel`),
-`game/g_svcmds.c` (the `rl` command), `linux/linux.cmake`, `CMakeLists.txt`.
+`server/sv_init.c` (`sv_singleplayer`), `server/sv_send.c` (the fake
+client's slot), `game/g_main.c` (`ExitLevel`), `game/g_svcmds.c` (the `rl`
+command), `game/g_combat.c` (damage counted for the reward),
+`linux/linux.cmake`, `CMakeLists.txt`.
 
 ## The machine
 

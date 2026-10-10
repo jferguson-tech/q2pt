@@ -1,6 +1,9 @@
 # The Linux build: included from the top CMakeLists.txt in place of the
-# Windows targets. Needs SDL2, X11, and for the RTX renderer the Vulkan
-# headers and loader and a GLSL compiler (glslc or glslangValidator).
+# Windows targets. The server-only program q2ded and the game library need
+# a C compiler and nothing else. Everything with a picture needs SDL2, X11
+# and OpenGL, and the RTX renderer the Vulkan headers and loader and a GLSL
+# compiler (glslc or glslangValidator) as well: where the first three are
+# not installed those targets are left out.
 
 if(NOT CMAKE_BUILD_TYPE)
 	set(CMAKE_BUILD_TYPE RelWithDebInfo)
@@ -14,10 +17,6 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${Q2_OUT})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${Q2_OUT})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-
-find_package(SDL2 REQUIRED)
-find_package(X11 REQUIRED)
-find_package(Threads REQUIRED)
 
 # _GNU_SOURCE: q_shlinux.c needs the declaration of mremap, which returns a pointer
 add_compile_definitions(_GNU_SOURCE C_ONLY stricmp=strcasecmp strnicmp=strncasecmp _stricmp=strcasecmp)
@@ -39,24 +38,20 @@ set(Q2_LINK_FLAGS -Wl,-Bsymbolic)
 
 set(SHARED_SRC game/q_shared.c)
 
-# -------------------------------------------------------------------- quake2
-add_executable(quake2
-	client/cl_cin.c client/cl_ents.c client/cl_fx.c client/cl_input.c
-	client/cl_inv.c client/cl_main.c client/cl_newfx.c client/cl_parse.c
-	client/cl_pred.c client/cl_render.c client/cl_scrn.c client/cl_tent.c client/cl_view.c
-	client/console.c client/keys.c client/menu.c client/qmenu.c
-	client/snd_dma.c client/snd_mem.c client/snd_mix.c
+# --------------------------------------------------------------------- q2ded
+# The server alone: no client, renderer or sound, and no library beyond C's.
+set(SERVER_SRC
 	qcommon/cmd.c qcommon/cmodel.c qcommon/common.c qcommon/crc.c
 	qcommon/cvar.c qcommon/files.c qcommon/md4.c qcommon/net_chan.c
 	qcommon/pmove.c
 	server/sv_ccmds.c server/sv_ents.c server/sv_game.c server/sv_init.c
-	server/sv_main.c server/sv_send.c server/sv_user.c server/sv_world.c
-	linux/sys_sdl.c linux/vid_sdl.c linux/snd_sdl.c linux/net_udp.c
-	linux/q_shlinux.c linux/glob.c null/cd_null.c win32/vid_menu.c
-	game/m_flash.c ${SHARED_SRC})
-target_compile_options(quake2 PRIVATE ${Q2_C_FLAGS})
-target_include_directories(quake2 PRIVATE ${SDL2_INCLUDE_DIRS})
-target_link_libraries(quake2 PRIVATE ${SDL2_LIBRARIES} m dl)
+	server/sv_main.c server/sv_rl.c server/sv_send.c server/sv_user.c server/sv_world.c)
+add_executable(q2ded ${SERVER_SRC}
+	null/cl_null.c null/cd_null.c linux/sys_ded.c linux/net_udp.c linux/q_shlinux.c linux/glob.c
+	${SHARED_SRC})
+target_compile_definitions(q2ded PRIVATE DEDICATED_ONLY)
+target_compile_options(q2ded PRIVATE ${Q2_C_FLAGS})
+target_link_libraries(q2ded PRIVATE m dl)
 
 # ---------------------------------------------------------------------- game
 file(GLOB GAME_SRC CONFIGURE_DEPENDS game/*.c)
@@ -67,9 +62,32 @@ target_link_libraries(game PRIVATE m)
 set_target_properties(game PROPERTIES PREFIX "" OUTPUT_NAME gamex64
 	LIBRARY_OUTPUT_DIRECTORY ${Q2_OUT}/baseq2)
 
+find_package(SDL2)
+find_package(X11)
+find_package(OpenGL)
+find_package(Threads)
+if(NOT (SDL2_FOUND AND X11_FOUND AND OpenGL_FOUND AND Threads_FOUND))
+	message(STATUS "SDL2, X11, OpenGL or threads not found: only q2ded and the game library will be built")
+	return()
+endif()
+
+# -------------------------------------------------------------------- quake2
+add_executable(quake2
+	client/cl_cin.c client/cl_ents.c client/cl_fx.c client/cl_input.c
+	client/cl_inv.c client/cl_main.c client/cl_newfx.c client/cl_parse.c
+	client/cl_pred.c client/cl_render.c client/cl_scrn.c client/cl_tent.c client/cl_view.c
+	client/console.c client/keys.c client/menu.c client/qmenu.c
+	client/snd_dma.c client/snd_mem.c client/snd_mix.c
+	${SERVER_SRC}
+	linux/sys_sdl.c linux/vid_sdl.c linux/snd_sdl.c linux/net_udp.c
+	linux/q_shlinux.c linux/glob.c null/cd_null.c win32/vid_menu.c
+	game/m_flash.c ${SHARED_SRC})
+target_compile_options(quake2 PRIVATE ${Q2_C_FLAGS})
+target_include_directories(quake2 PRIVATE ${SDL2_INCLUDE_DIRS})
+target_link_libraries(quake2 PRIVATE ${SDL2_LIBRARIES} m dl)
+
 # -------------------------------------------------------------------- ref_gl
 # The original OpenGL renderer, in a window and context made by SDL.
-find_package(OpenGL REQUIRED)
 add_library(ref_gl SHARED
 	ref_gl/gl_draw.c ref_gl/gl_image.c ref_gl/gl_light.c ref_gl/gl_mesh.c
 	ref_gl/gl_model.c ref_gl/gl_rmain.c ref_gl/gl_rmisc.c ref_gl/gl_rsurf.c

@@ -324,6 +324,10 @@ void ExitLevel (void)
 	edict_t	*ent;
 	char	command [256];
 
+	// a game driven from outside ends its episode at the exit and stays there
+	if (RL_Active ())
+		return;
+
 	Com_sprintf (command, sizeof(command), "gamemap \"%s\"\n", level.changemap);
 	gi.AddCommandString (command);
 	level.changemap = NULL;
