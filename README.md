@@ -136,6 +136,18 @@ includes starting the game and loading the map. The quality presets make no
 difference here: offline rendering sets its own bounces and light samples
 (`pt_render_bounces`, `pt_render_light_samples`).
 
+With `pt_render_export 1` set first, the RTX renderer also writes every
+frame's planes beside its PNG, as `frameNNNNN.planes`: what the first surface
+is at each pixel (position, normal, depth, albedo, roughness, emission,
+material), what every light would put on it with nothing in the way, what one
+path with no bounces found, and the light the frame's paths added up to,
+split as the renderer splits it. They are training data for a renderer that
+infers the light from the cheap planes, see `neural/README.md`, which says
+the format. Each frame is traced twice, once for the inputs and once for the
+target, with no offset within the pixel, no filtering over space, exposure 1
+and no motion blur, so that the two line up to the pixel; a frame of
+`demo1` at 1280x720 and 64 paths takes about 0.7 seconds and 92 MB.
+
 **Benchmark**
 
 `pt_bench [demo] [seconds]` plays a demo as fast as the renderer goes and
@@ -334,6 +346,7 @@ Some console commands and variables:
 | `pt_water_wet` | how wet the banks of simulated water show where it has stood: `1` as made, `0` = not at all |
 | `pt_fog`, `pt_bloom`, `pt_tonemap`, `pt_exposure` | the look of the picture |
 | `pt_react` | RTX: how readily light gathered over frames is let go where the lighting is found to have changed, so that it does not trail behind a light that moves, flashes or goes out: `0` = never (the default), `1` = at once. Such places are noisier for a few frames; `pt_debug 13` shows where it acts |
+| `pt_render_export` | with `pt_render`: also save every frame's per-pixel planes for training, see *Offline demo rendering*; RTX only |
 | `pt_fog_history`, `pt_fog_samples` | the light in the air: how many frames of it are kept while things change (6; the rest of the lighting keeps `pt_history`, 8), and at how many points along each view ray it is looked for every frame (2). The air has no surface to be followed by, so its light trails what moves: fewer frames trail less and are noisier, more points are less noisy and cost a shadow ray each |
 | `pt_bloom_max` | the most that anything adds to the glow, in times white over white (4): up to half of it a bright thing adds all it has, then less and less, so that a lamp hundreds of times white glows like a strong lamp and does not drown the picture. `0` = no limit |
 | `pt_denoise`, `pt_taa`, `pt_history` | filtering over space and time. `pt_history` is how many frames of lighting are blended while things change (8): more is smoother, and leaves light behind what moves for longer. A flash or an explosion is not held back by it: where the light the frame's lights put on a pixel changes by a quarter of its whole light or more, its history starts afresh, and by less, it is cut back in proportion |

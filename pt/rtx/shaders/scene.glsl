@@ -194,6 +194,12 @@ layout(set = 0, binding = 33, r32f) uniform image2D img_flash[2];
 // channel's sums over a block, [3].x how far what was gathered there is to
 // be let go, 0 to 1, and .y how far apart the sums were. See change.comp.
 layout(set = 0, binding = 34, rgba32f) uniform image2D img_change[4];
+// For export only (the view's planes, see pt.h's PT_PLANE_): [0] what the
+// surface gives off, and how metallic it is; [1] its material, its triangle,
+// and 1 if that is of the frame rather than the map; [2], [3] what every
+// light would put on it with nothing in the way, through the matte part and
+// through the shine. See DirectEveryLight.
+layout(set = 0, binding = 35, rgba32f) uniform image2D img_export[4];
 
 // how far what was gathered at a pixel is to be let go: the blocks' values,
 // smoothly from one block to the next
@@ -1780,6 +1786,61 @@ Lit DirectFrameAll(Surface s)
 		}
 	}
 	return sum;
+}
+
+// What every light, the map's and the frame's, would put on the surface
+// were nothing in the way, as the irradiance on the matte part and the
+// radiance off the shine: for export, see img_export. The map's triangle
+// lights are taken as points at their middle, facing as they do, and the
+// frame's balls as points. The sky is not counted. A loop over every light
+// for every pixel: not for play.
+void DirectEveryLight(Surface s, out vec3 diffuse, out vec3 specular)
+{
+	diffuse = vec3(0.0);
+	specular = vec3(0.0);
+	const int of_map = fr.counts.x;
+	for (int i = 0; i < of_map + fr.counts.y; i++)
+	{
+		const Light l = i < of_map ? world_lights.l[i] : frame_lights.l[i - of_map];
+		vec3 y = l.origin, e = l.emission, light_n = vec3(0.0);
+		const bool area = i < of_map && l.tri < POINT_LIGHT;
+		if (area)
+		{
+			y += (l.dir + l.edge) * (1.0 / 3.0);
+			const vec3 x = cross(l.dir, l.edge);
+			const float len = length(x);
+			if (len <= 0.0)
+				continue;
+			light_n = x / len;
+			e *= len * 0.5;
+		}
+		else if (i < of_map)
+		{
+			const int style = int(l.tri - POINT_LIGHT);
+			e *= style > 0 ? tables.v[style] : 1.0;
+		}
+		const vec3 d = y - s.p;
+		const float dist2 = dot(d, d);
+		if (dist2 <= 1.0e-6)
+			continue;
+		const vec3 wi = d * inversesqrt(dist2);
+		if (l.cone_cos > 0.0 && !area && -dot(wi, l.dir) < l.cone_cos)
+			continue;
+		const float nol = dot(s.n, wi);
+		if (nol <= 0.0)
+			continue;
+		float geom = 1.0 / dist2;
+		if (area)
+		{
+			const float cosy = -dot(light_n, wi);
+			if (cosy <= 0.0)
+				continue;
+			geom *= cosy;
+		}
+		e *= geom;
+		diffuse += e * nol;
+		specular += e * SpecularTimesCos(s, wi);
+	}
 }
 
 // How much the frame's lights, which come and go, put on the pixel: what

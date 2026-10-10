@@ -55,6 +55,11 @@ static cvar_t	*pt_rtx_disable;
 
 static char		r_skyname[MAX_QPATH];
 static char		r_worldname[MAX_QPATH];
+
+const char *R_WorldName (void)
+{
+	return r_worldname;
+}
 static qboolean	r_worlddirty;
 static float		r_skyrotate;
 static vec3_t		r_skyaxis;
@@ -295,6 +300,7 @@ qboolean R_Init (void *hInstance, void *wndProc)
 	Draw_InitLocal ();
 	R_InitShots ();
 	R_InitOffline ();
+	R_InitExport ();
 	R_InitBench ();
 #ifdef PT_PERF
 	R_InitPerf ();
@@ -320,6 +326,7 @@ void R_Shutdown (void)
 	R_ShutdownBench ();		// while there is still a backend to speak of
 	R_ShutdownShots ();
 	R_ShutdownOffline ();
+	R_ShutdownExport ();
 	R_ShutdownMaterials ();
 	R_WaterReset ();		// while the backend that holds its pictures is still there
 	R_ShutdownImages ();

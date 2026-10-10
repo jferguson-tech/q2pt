@@ -153,6 +153,8 @@ void R_OfflineSettings (pt_view_t *view)
 	view->refraction = 1;
 	view->texture_filter = 1;
 	view->fog = pt_render_fog->value != 0;
+	if (R_Exporting ())
+		R_ExportSettings (view);
 }
 
 static void Off_Normalize (vec3_t v)
@@ -195,6 +197,9 @@ void R_OfflineRender (refdef_t *fd, pt_view_t *view)
 	blur = pt_render_blur->value;
 	if (blur > 1)
 		blur = 1;
+	// exported frames are of one moment: the inputs are
+	if (R_Exporting ())
+		blur = 0;
 	// nothing to blur between if the frame before was not the one before
 	// this in time, or the eye was somewhere else altogether (a new map, a
 	// teleporter)
@@ -206,10 +211,22 @@ void R_OfflineRender (refdef_t *fd, pt_view_t *view)
 	{
 		// from one moment: every pass adds to the last, and the backend
 		// keeps what it has gathered as it does for a view at rest
-		for (i=0 ; i<passes ; i++)
+		if (R_Exporting ())
 		{
-			view->restart = i == 0;
-			rpt.backend->render_view (rpt.backend, view);
+			// and the planes of the frame saved beside the picture
+			if (!R_ExportFrame (fd, view, passes, off_dir, off_frame))
+			{
+				off_failed = true;
+				return;
+			}
+		}
+		else
+		{
+			for (i=0 ; i<passes ; i++)
+			{
+				view->restart = i == 0;
+				rpt.backend->render_view (rpt.backend, view);
+			}
 		}
 		off_have_pixels = rpt.backend->read_pixels (rpt.backend, off_pixels, 0) != 0;
 	}
