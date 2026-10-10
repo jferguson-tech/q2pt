@@ -1164,6 +1164,7 @@ qboolean Nav_Load (void)
 	Nav_Index ();
 	if (built)
 		Nav_Write ();
+	nav_link_bad = gi.TagMalloc (nav_num_links + 1, TAG_LEVEL);
 	return built;
 }
 
@@ -1213,6 +1214,12 @@ qboolean Nav_MoverSelf (edict_t *e)
 qboolean	nav_hopeful;
 byte		nav_hopeless[MAX_EDICTS];
 
+// Links found not to be there after all: a move that, tried from its node
+// with the player standing on it, ends in harm. The graph is grown from each
+// node's exact place, and the player stands within a few units of that,
+// which a landing on something narrow does not forgive.
+byte		*nav_link_bad;
+
 /*
 ================
 Nav_LinkOpen
@@ -1225,6 +1232,9 @@ qboolean Nav_LinkOpen (nav_link_t *l)
 	edict_t		*e;
 	qboolean	self;
 	int			at;
+
+	if (nav_link_bad && nav_link_bad[l - nav_links])
+		return false;
 
 	// through a beam that is on: only if something could yet switch it off
 	e = Haz_LinkLaser (l);
@@ -1308,6 +1318,9 @@ qboolean Nav_StepSafe (edict_t *ent, vec3_t dir, qboolean ducked)
 	// and somewhere the graph knows: a ledge it has no node on is one it
 	// found no way off
 	nav_num_skip = 0;
+	// a step that goes nowhere is no step: the way is shut by something
+	if (rest && dir && fabs (g.origin[0] - ent->s.origin[0]) + fabs (g.origin[1] - ent->s.origin[1]) < 6)
+		rest = false;
 	nav_step_node = rest ? Nav_Near (g.origin, 40, 32, -1, 0) : -1;
 	if (nav_step_node == -1)
 		rest = false;

@@ -92,6 +92,9 @@ void Nav_CostsFrom (int start, float *cost);
 extern	qboolean	nav_hopeful;
 extern	byte		nav_hopeless[MAX_EDICTS];
 
+// links found not to be there, by their number: see g_rl_nav.c
+extern	byte		*nav_link_bad;
+
 // the movers that move together with e, itself among them
 int Nav_MoverGroup (edict_t *e, edict_t **list, int max);
 

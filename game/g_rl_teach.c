@@ -199,24 +199,25 @@ Teach_Try
 
 Tries a link's move from where the player is (Nav_TryLink). It will do when
 the player would come to rest at the link's far node, or anywhere the graph
-has a node from which the way is shorter than the way from here.
+has a node from which the way is shorter than the way from here: 2 then.
+1 when it would come to rest unhurt but no nearer, 0 when it would not.
 ================
 */
-static qboolean Teach_Try (edict_t *ent, nav_link_t *link, int *up)
+static int Teach_Try (edict_t *ent, nav_link_t *link, int *up)
 {
 	vec3_t	end, to, from, left;
 	int		n;
 
 	if (!Nav_TryLink (ent, link, end, up))
-		return false;
+		return 0;
 	Nav_NodeOrigin (link->to, to);
 	VectorSubtract (ent->s.origin, to, from);
 	VectorSubtract (end, to, left);
 	if (fabs (left[0]) < 48 && fabs (left[1]) < 48 && fabs (left[2]) < 40
 		&& VectorLength (left) < VectorLength (from) - 4)
-		return true;		// at the link's far node, near enough, and nearer than now
+		return 2;		// at the link's far node, near enough, and nearer than now
 	n = Nav_NodeNear (end, 40, 32);
-	return n != -1 && teach_togo[n] < teach_togo[teach_anchor] - 0.01f;
+	return n != -1 && teach_togo[n] < teach_togo[teach_anchor] - 0.01f ? 2 : 1;
 }
 
 /*
@@ -573,7 +574,7 @@ void Teach_Think (edict_t *ent)
 	vec3_t		origin, eye, target, at, d, go, node, dir, side, p, q;
 	float		yaw, pitch, want_yaw, want_pitch, err, best_err, dist, a, across;
 	float		aim_yaw, aim_pitch, aim_dist;
-	int			f, s, bf, bs, i, n, up, link_type;
+	int			f, s, bf, bs, i, n, up, link_type, tried = 0;
 	qboolean	grounded, swimming, hold, ducked, snap, fire, have, exact, wary, launch, begun, stuck, run;
 	float		route_yaw, speed, c, aim_err = 0;
 	trace_t		tr;
@@ -763,9 +764,9 @@ void Teach_Think (edict_t *ent)
 			speed = sqrt (ent->velocity[0]*ent->velocity[0] + ent->velocity[1]*ent->velocity[1]);
 			if (!grounded)
 				launch = true;		// begun already
-			else if (Teach_Try (ent, link, &i))
+			else if ((tried = Teach_Try (ent, link, &i)) == 2)
 				launch = true;
-			else if (link->type != NAV_JUMP && DotProduct (d, dir) > 0 && fabs (across) <= 10
+			else if (tried && link->type != NAV_JUMP && DotProduct (d, dir) > 0 && fabs (across) <= 10
 				&& DotProduct (ent->velocity, dir) > 50)
 				launch = begun = true;		// begun from the node, and not yet over the edge
 			else if (VectorLength (d) > 8)
@@ -775,8 +776,19 @@ void Teach_Think (edict_t *ent)
 			}
 			else if (speed > 20)
 				hold = true;
+			else if (!tried && rl_block->mode == RL_MODE_PLAY)
+			{	// standing on the node, and still it ends in harm: the link
+				// is struck out, and the way is worked out again without it
+				nav_link_bad[link - nav_links] = 1;
+				teach_planned = -1000;
+				hold = true;
+			}
 			else
 				launch = true;
+			if (gi.cvar ("rl_debug", "0", 0)->value > 1)
+				gi.dprintf ("   exact link %i: tried %i launch %i begun %i hold %i off node %.1f speed %.0f bad %i\n",
+					(int)(link - nav_links), tried, launch, begun, hold, VectorLength (d), speed,
+					nav_link_bad[link - nav_links]);
 			if (launch)
 			{
 				VectorMA (origin, 100, dir, target);
@@ -814,7 +826,7 @@ void Teach_Think (edict_t *ent)
 			a = link->heading * (360.0f / 16);
 			VectorSet (dir, cos (a * M_PI / 180), sin (a * M_PI / 180), 0);
 			VectorSubtract (origin, at, d);
-			if (Teach_Try (ent, link, &i))
+			if (Teach_Try (ent, link, &i) == 2)
 			{
 				VectorMA (origin, 100, dir, target);
 				target[2] = origin[2];
