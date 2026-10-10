@@ -536,7 +536,7 @@ static qboolean Teach_Dodge (edict_t *ent, vec3_t origin, edict_t *monster, floa
 			}
 		// not round a corner from the monster: the fight is to be finished
 		p[2] += ent->viewheight;
-		if (!beside && !Fight_Sees (ent, p, monster))
+		if (!beside && !melee && !Fight_Sees (ent, p, monster))
 			continue;
 		if (melee && dist < 400)
 			score = 0.3f * score - 1.5f * DotProduct (d, to);	// it can only hit from close: keep away
@@ -988,19 +988,22 @@ slanted:	;
 		// view goes back to the way and the move is made unfought.
 		//
 		// And a monster that would take more than a few seconds to kill with
-		// the weapon in hand is not stood before at all, unless it fights
-		// hand to hand and has to be kept off: the feet keep to the route
-		// and the shots are for when it is more or less ahead. One well
-		// behind is left there, and the view goes back to the way.
-		run = link && !hold && !Fight_Melee (enemy) && Fight_TimeToKill (ent, enemy) > TEACH_STAND;
+		// the weapon in hand is not stood before at all:
+		// the feet keep to the route and the shots are for when it is more
+		// or less ahead. One well behind is left there, and the view goes
+		// back to the way.
+		// One that fights hand to hand is run from the same way, so long as
+		// it is not close and in the way; then it is backed away from.
+		VectorSubtract (enemy->s.origin, origin, p);
+		p[2] = 0;
+		c = VectorNormalize (p);
+		VectorSet (q, d[0], d[1], 0);
+		VectorNormalize (q);
+		run = link && !hold && Fight_TimeToKill (ent, enemy) > TEACH_STAND
+			&& !(Fight_Melee (enemy) && c < 250 && DotProduct (p, q) > 0.3f);
 		if (run)
 		{
-			VectorSubtract (enemy->s.origin, origin, p);
-			p[2] = 0;
-			VectorNormalize (p);
-			VectorSet (q, d[0], d[1], 0);
-			VectorNormalize (q);
-			if (DotProduct (p, q) < -0.2f)
+			if (DotProduct (p, q) < -0.2f || Fight_Melee (enemy))
 			{
 				want_yaw = route_yaw;
 				want_pitch = 0;
@@ -1016,6 +1019,12 @@ slanted:	;
 			if (Fight_Reaches (ent, eye, enemy))
 			{
 				hold = !Teach_Dodge (ent, origin, enemy, aim_dist, go);
+				if (hold && Fight_Melee (enemy) && c < 200)
+				{	// no node to step back to: straight away from it then,
+					// as far as the trial steps allow
+					VectorScale (p, -1, go);
+					hold = false;
+				}
 				if (!hold)
 				{
 					dist = 100;
@@ -1038,7 +1047,7 @@ slanted:	;
 	}
 	else if (rl_block->mode == RL_MODE_PLAY && grounded && (link_type == NAV_WALK || link_type == NAV_DUCK)
 		&& !(job && job->kind == PLAN_EXIT) && (enemy = Fight_Hunter (ent, eye)) != NULL
-		&& (Fight_Melee (enemy) || Fight_TimeToKill (ent, enemy) <= TEACH_STAND))
+		&& Fight_TimeToKill (ent, enemy) <= TEACH_STAND)
 	{	// one is coming: wait for it, facing where it is
 		rl_block->fighting = enemy - g_edicts;
 		VectorSubtract (enemy->s.origin, eye, p);

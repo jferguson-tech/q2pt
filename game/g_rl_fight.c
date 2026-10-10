@@ -162,43 +162,72 @@ void Fight_Aim (edict_t *ent, edict_t *enemy, vec3_t eye, float *yaw, float *pit
 Fight_Weapon
 
 The weapon to hold for a monster at this distance, as the action numbers
-them, or 0 to keep the one in hand: the first in the list for the distance
-that is carried and has something to fire.
+them, or 0 to keep the one in hand. Each weapon is put down for what it does
+in a second at that distance, roughly, and nothing for one not carried or
+with nothing to fire; the best is taken. But changing takes most of a
+second in which nothing is fired, so the one in hand is kept unless the
+best does half as much again.
 ================
 */
-int Fight_Weapon (edict_t *ent, float dist)
+static float Fight_Does (edict_t *ent, int number, float dist)
 {
 	// by action number: 1 blaster, 2 shotgun, 3 super shotgun, 4 machinegun,
 	// 5 chaingun, 6 grenade launcher, 7 rocket launcher, 8 hyperblaster,
 	// 9 railgun, 10 BFG
-	static const int	close_list[] = {3, 5, 2, 8, 4, 1, 0};
-	static const int	mid_list[] = {5, 8, 7, 4, 3, 9, 2, 1, 0};
-	static const int	far_list[] = {9, 7, 4, 5, 8, 1, 0};
-	const int	*list;
+	static const float	does[RL_WEAPONS] = {20, 40, 100, 80, 200, 30, 120, 200, 65, 0};
 	gclient_t	*client = ent->client;
 	gitem_t		*it, *ammo;
-	int			i, index;
+	float		d;
 
-	list = dist < 200 ? close_list : dist < 550 ? mid_list : far_list;
-	for (i=0 ; list[i] ; i++)
+	it = FindItem ((char *)rl_weapons[number - 1]);
+	if (!it || !client->pers.inventory[ITEM_INDEX(it)])
+		return 0;
+	if (it->ammo)
 	{
-		it = FindItem ((char *)rl_weapons[list[i] - 1]);
-		if (!it)
-			continue;
-		index = ITEM_INDEX(it);
-		if (!client->pers.inventory[index])
-			continue;
-		if (it->ammo)
-		{
-			ammo = FindItem (it->ammo);
-			if (!ammo || client->pers.inventory[ITEM_INDEX(ammo)] < it->quantity)
-				continue;
-		}
-		if (client->pers.weapon == it || client->newweapon == it)
+		ammo = FindItem (it->ammo);
+		if (!ammo || client->pers.inventory[ITEM_INDEX(ammo)] < it->quantity)
 			return 0;
-		return list[i];
 	}
-	return 0;
+	d = does[number - 1];
+	if ((number == 6 || number == 7) && dist < 200)
+		return 0;			// it would hurt the one who fired it
+	if (number == 2 || number == 3)
+	{	// the shot spreads
+		if (dist > 600)
+			d *= 0.2f;
+		else if (dist > 300)
+			d *= 0.5f;
+	}
+	return d;
+}
+
+int Fight_Weapon (edict_t *ent, float dist)
+{
+	gclient_t	*client = ent->client;
+	gitem_t		*hand;
+	int			i, best, held;
+	float		d, bestd, heldd;
+
+	hand = client->newweapon ? client->newweapon : client->pers.weapon;
+	best = held = 0;
+	bestd = heldd = 0;
+	for (i=1 ; i<=RL_WEAPONS ; i++)
+	{
+		d = Fight_Does (ent, i, dist);
+		if (hand && !strcmp (hand->pickup_name, rl_weapons[i-1]))
+		{
+			held = i;
+			heldd = d;
+		}
+		if (d > bestd)
+		{
+			bestd = d;
+			best = i;
+		}
+	}
+	if (!best || best == held || bestd < heldd * 1.5f)
+		return 0;
+	return best;
 }
 
 /*
@@ -297,23 +326,24 @@ qboolean Fight_Melee (edict_t *m)
 ================
 Fight_TimeToKill
 
-Seconds of steady hits the monster would take with the weapon in hand: its
-health over what the weapon does in a second, roughly
+Seconds of steady hits the monster would take with the best the player has
+for the distance: its health over what the weapon does in a second, roughly
 ================
 */
 float Fight_TimeToKill (edict_t *ent, edict_t *m)
 {
-	static const struct { const char *name; float dps; } weapons[] =
-	{
-		{"Blaster", 20}, {"Shotgun", 40}, {"Super Shotgun", 100}, {"Machinegun", 80}, {"Chaingun", 200},
-		{"Grenade Launcher", 100}, {"Rocket Launcher", 120}, {"HyperBlaster", 200}, {"Railgun", 65},
-		{"BFG10K", 300}, {NULL, 0}
-	};
-	const char	*name = ent->client->pers.weapon ? ent->client->pers.weapon->pickup_name : "";
+	vec3_t	v;
+	float	d, best, dist;
 	int		i;
 
-	for (i=0 ; weapons[i].name ; i++)
-		if (!strcmp (name, weapons[i].name))
-			return m->health / weapons[i].dps;
-	return m->health / 20.0f;
+	VectorSubtract (m->s.origin, ent->s.origin, v);
+	dist = VectorLength (v);
+	best = 20;
+	for (i=1 ; i<=RL_WEAPONS ; i++)
+	{
+		d = Fight_Does (ent, i, dist);
+		if (d > best)
+			best = d;
+	}
+	return m->health / best;
 }
