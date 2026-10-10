@@ -179,6 +179,8 @@ def main():
     ap.add_argument('--timeout', type=int, default=7200)
     ap.add_argument('--renderer', default='ptrtx', help='ptrtx or ptcpu')
     ap.add_argument('--dim', action='store_true', help="instead of the usual jobs: every map with its lights turned down")
+    ap.add_argument('--after', type=int, default=0, help='with --dark: leave out this many of the darkest clips a map (those rendered already)')
+    ap.add_argument('--tag', default='', help="with --dark: the job's letter, in place of f or i")
     ap.add_argument('--most', type=int, default=0, help='with --dark: no more than this many clips a map, the darkest')
     ap.add_argument('--flash', action='store_true', help='with --dark: a BFG is fired in every dark clip')
     ap.add_argument('--dark', type=int, default=0, help='instead of the usual jobs: try this many clips a map and render the dark ones')
@@ -209,10 +211,10 @@ def main():
         if args.dark:
             tag, blur, fog, frames, fps, paths, more = DARK_JOB
             for m in maps:
-                keep = dark_clips(args, m, args.dark)[:args.most or None]
+                keep = dark_clips(args, m, args.dark)[args.after:args.most or None]
                 print('%s: %d dark of %d' % (m, len(keep), args.dark), flush=True)
                 if keep:
-                    run_job(args, m, FLASH_TAG if args.flash else tag, blur, fog, args.dark, frames, fps, args.paths or paths, tag, args.seed,
+                    run_job(args, m, (args.tag or FLASH_TAG) if args.flash else (args.tag or tag), blur, fog, args.dark, frames, fps, args.paths or paths, tag, args.seed,
                             more, keep=keep, flash=args.flash)
             jobs = []
         elif args.dim:
