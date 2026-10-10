@@ -98,6 +98,25 @@ did not close the gap in SSIM in four short runs. That file also has where
 the gap is: in the light of fog and glows, where the references are still
 noisy themselves and the network leaves a fine grain.
 
+The final test (`results/final.md`): the tenth run's weights on three maps
+of the mission packs that nothing had been tuned against, measured once.
+Sharp frames:
+
+| | PSNR at 4 / 16 paths | SSIM | flicker |
+|---|---|---|---|
+| this denoiser | 40.71 / 42.12 dB | 0.9677 / 0.9718 | 4.22 / 4.04 |
+| Open Image Denoise | 40.36 / 42.21 dB | 0.9647 / 0.9699 | 5.55 / 4.76 |
+
+Ahead on two of the three maps and behind in PSNR on the third (`rdm7`:
+37.83 / 38.94 dB against 38.60 / 40.06), which puts it behind overall at
+16 paths.
+
+The same file has how far two references of 16,384 paths are from each
+other: 35.6 dB and SSIM 0.82 on `q2dm4`, 36.1 dB and 0.82 on `ware2`, all
+but all of it in the light of fog and glows, whose noise falls 128 times
+from 4 paths to 16,384 where it should fall 4,096 times. Differences in
+SSIM between denoisers on those clips are well inside that.
+
 Runs that did not help and were taken out again: the fifth
 (`results/stage5.md`) scaled each frame by the exposure the game would have
 reached by then, and was worse overall (38.48 dB at 16 paths). The seventh
