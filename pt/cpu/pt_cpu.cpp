@@ -2422,6 +2422,22 @@ int Stages(pt_backend_t *b, pt_stage_t *stages, int max)
 	return count;
 }
 
+#ifdef PT_PERF
+// the same, every time it is asked, as work done on the processor
+int Perf(pt_backend_t *b, pt_stage_t *stages, int max)
+{
+	CpuBackend *s = Self(b);
+	const int count = std::min(max, kNumStages);
+	for (int i = 0; i < count; i++)
+	{
+		stages[i].name = kStageNames[i];
+		stages[i].ms = s->stage_ms[i];
+		stages[i].where = 0;
+	}
+	return count;
+}
+#endif
+
 } // namespace
 
 // built twice into one program, each build is made under a name of its own
@@ -2445,6 +2461,11 @@ extern "C" pt_backend_t *PT_CPU_CREATE(const pt_create_t *ci, char *err, int err
 	s->base.present = Present;
 	s->base.stats = Stats;
 	s->base.stages = Stages;
+#ifdef PT_PERF
+	s->base.perf = Perf;
+#else
+	s->base.perf = nullptr;
+#endif
 	s->base.read_pixels = ReadPixels;
 	s->base.read_buffer = ReadBuffer;
 	NameDevice(s->device, sizeof(s->device), s->pool.Threads());

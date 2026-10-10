@@ -274,6 +274,9 @@ SYSTEM SPECIFIC
 extern	int	curtime;		// time returned by last Sys_Milliseconds
 
 int		Sys_Milliseconds (void);
+#ifdef PT_PERF
+double	Sys_PerfMs (void);		// milliseconds, from a clock fine enough to time parts of a frame by
+#endif
 void	Sys_Mkdir (char *path);
 
 // large block stack allocation routines

@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/time.h>
+#include <time.h>
 
 #include "../linux/glob.h"
 
@@ -70,6 +71,21 @@ void Hunk_Free (void *base)
 
 //===============================================================================
 
+
+#ifdef PT_PERF
+/*
+================
+Sys_PerfMs
+================
+*/
+double Sys_PerfMs (void)
+{
+	struct timespec	now;
+
+	clock_gettime (CLOCK_MONOTONIC, &now);
+	return (double)now.tv_sec * 1000.0 + (double)now.tv_nsec * 1.0e-6;
+}
+#endif
 
 /*
 ================
