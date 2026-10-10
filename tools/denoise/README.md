@@ -67,11 +67,27 @@ much the same however it was scaled.
 `results/` has the measurements of each training run on the six held-out
 maps, against references of 16,384 paths a pixel and against Intel Open
 Image Denoise 2.3.3 given the same frames with their colour and normal
-buffers. As of the eighth run (`results/stage8.md`) it flickers less than
-Open Image Denoise at 4 and 16 paths but is still slightly behind it in
-PSNR and SSIM: 38.91 dB against 38.95 dB at 16 paths, 37.75 against 38.10
-at 4. It is ahead on four of the six clips at 4 paths and three at 16; the
-largest loss is where a BFG is fired in a dark room.
+buffers. From the ninth run on the test set is one rendered again with the
+renderer as it then was (`results/stage8-new-test.md` has the eighth run on
+it); earlier figures are on an older one and do not compare with these.
+
+As of the ninth run (`results/stage9.md`), on sharp frames:
+
+| | PSNR at 4 / 16 paths | SSIM | flicker |
+|---|---|---|---|
+| this denoiser | 39.48 / 40.63 dB | 0.9424 / 0.9471 | 6.20 / 5.75 |
+| Open Image Denoise | 38.91 / 40.14 dB | 0.9433 / 0.9471 | 6.77 / 6.13 |
+
+It is level or ahead in PSNR on all six clips at both path counts, and
+slightly behind in SSIM at 4 paths, on the two clips with the most noise
+left in them.
+
+What made the difference in the dark: where little light reaches, the
+references of 512 paths were themselves spiky in the light of fog and glows,
+and an error capped for each pixel does not pull towards a spike, so the
+network left that light out. The cap was raised (`--spike`), and the dark
+clips were rendered again with 4,096 paths and a BFG fired in each
+(`--dark N --flash`).
 
 Runs that did not help and were taken out again: the fifth
 (`results/stage5.md`) scaled each frame by the exposure the game would have
