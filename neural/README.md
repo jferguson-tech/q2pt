@@ -10,6 +10,27 @@ Vulkan compute shaders in `pt/rtx/`.
 The dataset and the weights live outside the repository, by default in
 `~/q2pt-neural/`.
 
+## The split
+
+By map, in `split.py`: whole maps are held out and nothing of them is used
+for training. Validation: jail3, mine2, waste1, q2dm3. Test: fact2, ware2,
+city1, q2dm1. The other 39 maps train, and so do the shipped demos, which
+play on base2 (demo1) and a training map.
+
+## Making the dataset
+
+```
+python render_dataset.py <game folder> ~/q2pt-neural [--frames 200] [--demo-frames 300] [--paths 64]
+```
+
+walks every map with `pt_walk` (see the main README under *Offline demo
+rendering*) and renders the shipped demos, each as a run of the game in
+turn with `pt_render_export`, then packs each run's `.planes` files into
+`~/q2pt-neural/packed/<map>/frameNNNNN.q2n` with `repack.py` and removes
+them. A run already packed is skipped, so the script can be run again after
+a stop. The game is at exposure 1 here, which is dim: it plays at exposure 2
+with auto exposure on top.
+
 ## The planes files
 
 With `pt_render_export 1` the RTX renderer writes every frame of a `pt_render`
@@ -68,8 +89,24 @@ The eye ray through the centre of pixel (x, y) is `forward + right * (2 (x +
 tan(fov_y / 2)`, normalised; `planes.py` has it as `eye_dirs`. Motion
 between two frames follows from `position` and the two cameras.
 
-A frame at 1280x720 is 92 MB as written and about 50 MB after zstd; the
-light planes are noise and compress little, the surface planes compress well.
+A frame at 1280x720 is 92 MB as written.
+
+### The packed form
+
+`planes.pack` writes a `.q2n`: `Q2PTPACK`, the length of a JSON header as
+unsigned 64 bit, the header (the planes' names, types, shapes, offsets and
+lengths, the frame's text, the size), then each plane compressed with zstd on
+its own. Two planes are left out, since they follow from the others and
+`planes.read` gives them back on reading a `.q2n`: `position` from depth and
+the camera (`rebuild_position`; what moves or is seen through water is then
+where it is, not where it was) and `picture` from the light planes
+(`rebuild_picture`). One is added when the frame follows another of the same
+burst: `motion`, two half floats, where each pixel's surface was on the
+previous frame's picture less where it is now, in pixels, NaN where it was
+off it or behind the eye; it comes from the position plane and the previous
+frame's camera, so for what moves it is where the thing was. The first frame
+of a burst has no motion plane. A packed frame is 15 to 50 MB: the light
+planes are noise and compress little, the surface planes compress well.
 
 ## Setting up
 

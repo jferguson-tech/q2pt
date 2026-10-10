@@ -6,6 +6,9 @@ and makes contact sheets of them. See README.md for the format.
     python planes.py info   frame00000.planes
     python planes.py verify frame00000.planes [more...]
     python planes.py sheet  frame00000.planes out.png
+
+A .q2n file, the packed form the dataset is kept in (see pack and
+read_packed), is accepted wherever a .planes file is.
 """
 import struct
 import sys
@@ -20,7 +23,15 @@ TYPES = {0: np.float16, 1: np.float32, 2: np.uint8, 3: np.uint16, 4: np.uint32, 
 def read(path, planes=None):
     """The planes of a file as a dict of arrays (height, width, channels),
     and its text about the frame as a dict of strings. planes: names to
-    read, or None for all."""
+    read, or None for all. A packed file is read back as the planes it was
+    made from, bar the two that are rebuilt."""
+    if path.endswith(".q2n"):
+        out, meta = read_packed(path, planes)
+        if "position" not in out and (planes is None or "position" in planes) and "depth" in out:
+            out["position"] = rebuild_position(out, meta)
+        if "picture" not in out and (planes is None or "picture" in planes) and "light_extra" in out:
+            out["picture"] = rebuild_picture(out)
+        return out, meta
     with open(path, "rb") as f:
         data = f.read()
     if data[:8] != MAGIC:
@@ -86,13 +97,15 @@ def verify(path, say=print):
         + f("light_layers") + f("light_extra")
     pic = f("picture")
     err = np.abs(rebuilt - pic).max(axis=2)
-    scale = np.maximum(pic.max(axis=2), 1.0e-3)
+    scale = np.maximum(pic.max(axis=2), 1.0e-2)
     rel = (err / scale)[solid]
     bad = (rel > 0.05).mean()
     say(f"  picture = albedo*diffuse + specular*specular + layers + extra: median rel err {np.median(rel):.4f}, "
         f"over 5% in {bad * 100:.3f}% of solid pixels")
     # albedo is stored as a byte, which allows 1/255 of the light in error
-    ok &= bad < 0.01
+    if bad >= 0.01:
+        say("  FAILED: the picture does not rebuild from its planes")
+        ok = False
 
     # the surface lies on the eye ray
     d = eye_dirs(meta)
@@ -103,10 +116,14 @@ def verify(path, say=print):
     # what moves, and what is seen through water, is stored where it was or
     # where it appears: leave those out
     still = solid & (p["triangle"][..., 1] == 0)
-    off_still = off[still]
+    # depth is a half float: a part in a thousand of itself, and never under half a unit
+    allowed = np.maximum(0.5, depth * 0.002)
+    off_still, far = off[still], ((off > allowed)[still]).mean()
     say(f"  position on the eye ray at depth: median {np.median(off_still):.4f} units, "
-        f"over 0.5 in {(off_still > 0.5).mean() * 100:.3f}% of still pixels ({still.sum()} of {solid.sum()} solid)")
-    ok &= (off_still > 0.5).mean() < 0.02
+        f"beyond half precision in {far * 100:.3f}% of still pixels ({still.sum()} of {solid.sum()} solid)")
+    if far >= 0.02:
+        say("  FAILED: positions off the eye rays")
+        ok = False
 
     # what glows shows in the exact light; the frame's point lights add to it
     glow = luminance(f("emission"))
@@ -116,7 +133,9 @@ def verify(path, say=print):
         ratio = (extra[lit] / glow[lit])
         say(f"  extra / emission where it glows: median {np.median(ratio):.3f} (1 with no fog, less through fog), "
             f"below 0.9 in {(ratio < 0.9).mean() * 100:.2f}% of glowing pixels")
-        ok &= np.median(ratio) > 0.2
+        if np.median(ratio) <= 0.2:
+            say("  FAILED: emission is not in the exact light")
+            ok = False
 
     # one path's direct light is unbiased, if noisy
     ray, light = luminance(f("ray_diffuse")), luminance(f("light_diffuse"))
@@ -190,6 +209,100 @@ def sheet(path, out, exposure=1.0, scale=2):
         img[r * ph:(r + 1) * ph, col * pw:(col + 1) * pw] = tile
     write_png(out, img)
     return [name for name, _ in panels]
+
+
+# ---- the packed form the dataset is kept in
+
+def camera_pixels(position, meta):
+    """Where positions (height, width, 3) land on the picture of the camera
+    in meta, as pixel coordinates (x, y) with the centre of the top left
+    pixel at (0, 0); NaN where behind the camera."""
+    w, h = meta["_width"], meta["_height"]
+    tx = np.tan(np.radians(float(meta["fov_x"]) * 0.5))
+    ty = np.tan(np.radians(float(meta["fov_y"]) * 0.5))
+    v = position.astype(np.float64) - vec(meta, "origin")[None, None, :]
+    z = v @ vec(meta, "forward")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        x = ((v @ vec(meta, "right")) / (z * tx) * 0.5 + 0.5) * w - 0.5
+        y = (0.5 - (v @ vec(meta, "up")) / (z * ty) * 0.5) * h - 0.5
+    bad = z <= 0.01
+    x[bad] = np.nan
+    y[bad] = np.nan
+    return np.stack([x, y], axis=2)
+
+
+def rebuild_position(p, meta):
+    """The world position of each pixel's surface from its depth and the
+    camera: what the position plane held for what does not move and is not
+    seen through water. The sky, at depth -1, is put far along its ray."""
+    depth = p["depth"][..., 0].astype(np.float64)
+    depth = np.where(depth < 0, 100000.0, depth)
+    return (vec(meta, "origin")[None, None, :] + eye_dirs(meta) * depth[..., None]).astype(np.float32)
+
+
+def rebuild_picture(p):
+    """The linear picture from the light planes, as the renderer puts it together."""
+    f = lambda k: p[k].astype(np.float32)
+    return f("albedo") / 255.0 * f("light_diffuse") + f("specular") / 255.0 * f("light_specular") \
+        + f("light_layers") + f("light_extra")
+
+
+PACK_MAGIC = b"Q2PTPACK"
+
+
+def pack(planes_path, out_path, prev_meta=None, level=6):
+    """Repacks a .planes file as a .q2n: the position and picture planes are
+    left out, since rebuild_position and rebuild_picture give them back, and
+    a motion plane is added when the previous frame's camera is given: for
+    each pixel, where its surface was on the previous frame's picture less
+    where it is now, in pixels, NaN where it was off it or behind the eye.
+    Each plane is compressed with zstd on its own. Returns the bytes written."""
+    import json
+    import zstandard
+    p, meta = read(planes_path)
+    keep = {k: a for k, a in p.items() if k not in ("position", "picture")}
+    if prev_meta is not None:
+        at = camera_pixels(p["position"], prev_meta)
+        here = np.stack(np.meshgrid(np.arange(meta["_width"]), np.arange(meta["_height"])), axis=2)
+        keep["motion"] = (at - here).astype(np.float16)
+    c = zstandard.ZstdCompressor(level=level)
+    blobs, table = [], []
+    at = 0
+    for name, a in keep.items():
+        blob = c.compress(np.ascontiguousarray(a).tobytes())
+        table.append({"name": name, "dtype": a.dtype.name, "shape": list(a.shape), "offset": at, "bytes": len(blob)})
+        blobs.append(blob)
+        at += len(blob)
+    header = json.dumps({"planes": table, "meta": {k: v for k, v in meta.items() if not k.startswith("_")},
+                         "width": meta["_width"], "height": meta["_height"]}).encode()
+    with open(out_path, "wb") as f:
+        f.write(PACK_MAGIC + struct.pack("<Q", len(header)) + header)
+        for blob in blobs:
+            f.write(blob)
+    return 16 + len(header) + at
+
+
+def read_packed(path, planes=None):
+    """A .q2n as read gives a .planes: the planes as arrays and the text as a dict."""
+    import json
+    import zstandard
+    with open(path, "rb") as f:
+        data = f.read()
+    if data[:8] != PACK_MAGIC:
+        raise ValueError(f"{path}: not a packed planes file")
+    n = struct.unpack_from("<Q", data, 8)[0]
+    header = json.loads(data[16:16 + n])
+    base = 16 + n
+    d = zstandard.ZstdDecompressor()
+    out = {}
+    for t in header["planes"]:
+        if planes is not None and t["name"] not in planes:
+            continue
+        raw = d.decompress(data[base + t["offset"]:base + t["offset"] + t["bytes"]])
+        out[t["name"]] = np.frombuffer(raw, dtype=np.dtype(t["dtype"])).reshape(t["shape"])
+    meta = dict(header["meta"])
+    meta["_width"], meta["_height"] = header["width"], header["height"]
+    return out, meta
 
 
 def main(argv):

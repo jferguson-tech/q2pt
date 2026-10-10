@@ -445,15 +445,23 @@ void R_RenderFrame (refdef_t *fd)
 	// a fixed camera, for looking at a place without walking there
 	{
 		static cvar_t	*pt_camera;
-		float			c[5];
+		float			c[6];
+		int				n;
 
 		if (!pt_camera)
 			pt_camera = ri.Cvar_Get ("pt_camera", "", 0);
-		if (sscanf (pt_camera->string, "%f%*[ ,]%f%*[ ,]%f%*[ ,]%f%*[ ,]%f", &c[0], &c[1], &c[2], &c[3], &c[4]) == 5)
+		n = sscanf (pt_camera->string, "%f%*[ ,]%f%*[ ,]%f%*[ ,]%f%*[ ,]%f%*[ ,]%f", &c[0], &c[1], &c[2], &c[3], &c[4], &c[5]);
+		if (n >= 5)
 		{
 			VectorSet (fd->vieworg, c[0], c[1], c[2]);
 			VectorSet (fd->viewangles, c[3], c[4], 0);
 			fd->rdflags &= ~RDF_UNDERWATER;
+			// a sixth number is the field of view across, in degrees
+			if (n == 6 && c[5] >= 10 && c[5] <= 170 && fd->width > 0)
+			{
+				fd->fov_x = c[5];
+				fd->fov_y = atan (tan (c[5] * M_PI / 360) * fd->height / fd->width) * 360 / M_PI;
+			}
 		}
 	}
 

@@ -128,6 +128,7 @@ struct FrameBlock
 	float	painted[4];		// [0]: what a metal painted dark reflects, see pt_view_t's metal_colour; [1]: bloom_max; [2]: fog_samples; [3]: fog_history
 	float	liquid[4];		// [0]: wave_reach; [1]: react; [2]: water_shafts; [3]: water_wet
 	int32_t	table_at3[4];	// in indices: what stands in for each of the map's lights when it is not kept; the cells' lists in order of light
+	float	sky_sh[7][4];	// the sky's radiance as nine spherical harmonics, red, green and blue of each in turn; [6][3]: there is a sky. See SkyHarmonics
 };
 
 // one triangle, one material and one light as the shaders read them (std430)
@@ -364,6 +365,8 @@ struct RtxBackend
 	int						index_grid_light = 0, index_grid_count = 0, index_light_other = 0, index_grid_sorted = 0;
 	int						sky_res = 0;
 	float					sky_total = 0.0f, sky_scale = 1.0f;
+	float					sky_sh[9][3] = {};		// see SkyHarmonics
+	bool					has_sky = false;
 	// simulated bodies of liquid: extent, height of the surface, material
 	int						num_waters = 0;
 	float					water_rect[kMaxWaters][4] = {}, water_at[kMaxWaters][4] = {}, water_wave[kMaxWaters][4] = {}, water_lamp[kMaxWaters * 16][4] = {};
@@ -1961,6 +1964,55 @@ void PickingTable(const float *share, size_t count, float *keep, uint32_t *other
 	// (what is left on either side has a place to itself, give or take the rounding)
 }
 
+// The sky's radiance as the first nine real spherical harmonics, in the
+// sky's own frame, from its six faces as Sky in scene.glsl reads them: for
+// the light the whole sky would put on a surface with nothing in the way,
+// see SkyIrradiance there. Returns false with no sky.
+bool SkyHarmonics(const pt_world_t *in, float out[9][3])
+{
+	memset(out, 0, 9 * 3 * sizeof(float));
+	bool any = false;
+	for (int face = 0; face < 6; face++)
+	{
+		const int t = in->sky_textures[face];
+		if (t < 0 || t >= in->num_textures || !in->textures[t].pixels)
+			continue;
+		const pt_texture_t &tex = in->textures[t];
+		if (tex.width <= 0 || tex.height <= 0)
+			continue;
+		any = true;
+		const int a = face / 2, b = (a + 1) % 3, c = (a + 2) % 3;
+		const float sign = (face & 1) ? -1.0f : 1.0f;
+		for (int j = 0; j < tex.height; j++)
+		{
+			for (int i = 0; i < tex.width; i++)
+			{
+				float d[3];
+				d[a] = sign;
+				d[b] = 2.0f * (i + 0.5f) / tex.width - 1.0f;
+				d[c] = 2.0f * (j + 0.5f) / tex.height - 1.0f;
+				const float r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+				const float r = std::sqrt(r2);
+				// the solid angle the texel fills
+				const float dw = 4.0f / (tex.width * tex.height) / (r2 * r);
+				const float x = d[0] / r, y = d[1] / r, z = d[2] / r;
+				const float basis[9] = {
+					0.282095f, 0.488603f * y, 0.488603f * z, 0.488603f * x,
+					1.092548f * x * y, 1.092548f * y * z, 0.315392f * (3.0f * z * z - 1.0f),
+					1.092548f * x * z, 0.546274f * (x * x - y * y)};
+				const uint32_t p = tex.pixels[(size_t)j * tex.width + i];
+				float rgb[3];
+				for (int ch = 0; ch < 3; ch++)
+					rgb[ch] = std::pow(((p >> (ch * 8)) & 255) / 255.0f, 2.2f) * in->sky_scale;
+				for (int k = 0; k < 9; k++)
+					for (int ch = 0; ch < 3; ch++)
+						out[k][ch] += rgb[ch] * basis[k] * dw;
+			}
+		}
+	}
+	return any;
+}
+
 void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 {
 	vkQueueWaitIdle(s->queue);
@@ -2228,6 +2280,7 @@ void LoadWorldNow(RtxBackend *s, const pt_world_t *in)
 
 	for (int f = 0; f < 6; f++)
 		s->sky[f] = slot(in->sky_textures[f]);
+	s->has_sky = SkyHarmonics(in, s->sky_sh);
 	s->world_loaded = true;
 	Logf(s, "RTX path tracer: %d triangles (%u of them glass or liquid), %d materials, %d textures, %d lights on the card\n",
 		in->num_triangles, s->world.num_glass, in->num_materials, in->num_textures, (int)num_lights);
@@ -2607,6 +2660,9 @@ void RenderViewNow(RtxBackend *s, const pt_view_t *view)
 	}
 	f.sky_misc[1] = s->sky_scale;
 	f.sky_misc[2] = s->sky_total;
+	for (int k = 0; k < 27; k++)
+		f.sky_sh[k / 4][k % 4] = s->sky_sh[k / 3][k % 3];
+	f.sky_sh[6][3] = s->has_sky ? 1.0f : 0.0f;
 	f.sky_misc[3] = view->time;
 
 	s->frame_index++;
