@@ -297,6 +297,9 @@ qboolean R_Init (void *hInstance, void *wndProc)
 	R_InitOffline ();
 	R_InitExport ();
 	R_InitBench ();
+#ifdef PT_PERF
+	R_InitPerf ();
+#endif
 
 	ri.Vid_MenuInit ();
 
@@ -312,6 +315,9 @@ Also called by the engine after a failed R_Init
 */
 void R_Shutdown (void)
 {
+#ifdef PT_PERF
+	R_ShutdownPerf ();
+#endif
 	R_ShutdownBench ();		// while there is still a backend to speak of
 	R_ShutdownShots ();
 	R_ShutdownOffline ();
@@ -416,6 +422,7 @@ void R_RenderFrame (refdef_t *fd)
 	if (fd->rdflags & RDF_NOWORLDMODEL)
 		return;		// menu model previews
 
+	PERF ("game");		// all there was since the last frame was shown
 	if (R_UpdateSettings ())
 		r_worlddirty = true;
 
@@ -426,7 +433,9 @@ void R_RenderFrame (refdef_t *fd)
 		R_MaterialsReport ();
 	}
 
+	PERF ("settings");
 	R_WaterFrame (fd);		// before the scene is built, and where the player really is; R_WaterStep follows
+	PERF ("water touch");
 
 	// a fixed camera, for looking at a place without walking there
 	{
@@ -466,6 +475,7 @@ void R_RenderFrame (refdef_t *fd)
 	view.anim_frame = (int)(fd->time * 2);
 	VectorCopy (r_skyaxis, view.sky_axis);
 	view.sky_angle = fd->time * r_skyrotate;
+	PERF ("lights");		// see R_BuildScene for what came before
 	if (R_Offline ())
 		R_OfflineRender (fd, &view);
 	else
@@ -474,7 +484,9 @@ void R_RenderFrame (refdef_t *fd)
 			rpt.backend->render_view (rpt.backend, &view);
 		R_BenchView ();
 	}
+	PERF (NULL);		// the backend's own
 	R_WaterStep ();		// while the view is traced
+	PERF ("water touch");
 
 	// damage flashes, underwater tint and the like
 	Draw_Blend (fd->x, fd->y, fd->width, fd->height, fd->blend);
@@ -483,6 +495,7 @@ void R_RenderFrame (refdef_t *fd)
 		R_DrawStats (fd);
 	if (!R_Offline ())
 		R_DrawFilterPanel (fd);
+	PERF ("hud");
 }
 
 /*
@@ -584,8 +597,16 @@ void R_EndFrame (void)
 	pt_rect_t	*changed;
 	int			num;
 
+#ifdef PT_PERF
+	PERF ("hud");		// the game's own drawing over the view
+	R_PerfDraw ();
+	PERF ("graph");
+#endif
 	num = Draw_Changed (&changed);
 	rpt.backend->present (rpt.backend, rpt.overlay, changed, num);
+#ifdef PT_PERF
+	R_PerfFrame ();
+#endif
 	R_CountFrame ();
 	R_BenchFrame ();
 	R_ShotFinish ();

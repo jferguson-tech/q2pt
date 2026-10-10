@@ -561,11 +561,13 @@ void R_WaterFrame (refdef_t *fd)
 			W_Pictures (b);		// a new map: as it lies
 		if (b->fresh)
 		{
+			PERF ("water touch");
 			rpt.backend->texture_update (rpt.backend, b->wave_texture, b->waves);
 			rpt.backend->texture_update (rpt.backend, b->caustic_texture, b->caustics);
 			if (b->foam_texture >= 0 && b->foam)
 				rpt.backend->texture_update (rpt.backend, b->foam_texture, b->foam);
 			b->fresh = false;
+			PERF (NULL);		// the backend's own: "texture copy", and the wait before it
 		}
 		if (b->reach > r_waterreach)
 			r_waterreach = b->reach;
@@ -719,13 +721,17 @@ void R_WaterStep (void)
 		if (w_wait > 0 && b->inrange && !pt_water_still (b->sim))
 		{
 			// heavy liquids move slowly and settle fast
+			PERF ("water touch");
 			pt_water_step (b->sim, w_wait, b->lava ? LAVA_GRAVITY : WATER_GRAVITY, r_waterdamping * (b->lava ? 0.9f : 0.45f));
+			PERF ("water step");
 
 			// where a wave broke
 			splashes = pt_water_spray (b->sim, &sprays);
 			for (j=0 ; j<splashes ; j++)
 				W_Spray (i, sprays[j*3], sprays[j*3+1], sprays[j*3+2], pt_water_cell (b->sim) * 0.5f);
+			PERF ("water touch");
 			W_Pictures (b);
+			PERF ("water pictures");
 		}
 		else if (changed)
 			W_Pictures (b);
