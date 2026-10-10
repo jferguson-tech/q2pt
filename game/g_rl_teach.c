@@ -191,6 +191,29 @@ static nav_link_t *Teach_Step (int n)
 
 /*
 ================
+Teach_Try
+
+Tries a link's move from where the player is (Nav_TryLink). It will do when
+the player would come to rest at the link's far node, or anywhere the graph
+has a node from which the way is shorter than the way from here.
+================
+*/
+static qboolean Teach_Try (edict_t *ent, nav_link_t *link, int *up)
+{
+	vec3_t	end, to;
+	int		n;
+
+	if (!Nav_TryLink (ent, link, end, up))
+		return false;
+	Nav_NodeOrigin (link->to, to);
+	if (fabs (end[0] - to[0]) < 48 && fabs (end[1] - to[1]) < 48 && fabs (end[2] - to[2]) < 40)
+		return true;		// at the link's far node, near enough
+	n = Nav_NodeNear (end, 40, 32);
+	return n != -1 && teach_togo[n] < teach_togo[teach_anchor] - 0.01f;
+}
+
+/*
+================
 Teach_NewGoal
 
 Draws the next node to walk to: one of those that can be reached from where
@@ -669,9 +692,13 @@ void Teach_Think (edict_t *ent)
 			VectorSubtract (target, eye, d);
 			want_yaw = RAD2DEG_F(atan2 (d[1], d[0]));
 			want_pitch = -RAD2DEG_F(atan2 (d[2], sqrt (d[0]*d[0] + d[1]*d[1])));
-			fire = hold && fabs (AngleDiff (want_yaw, yaw)) < 2 && fabs (want_pitch - pitch) < 2;
+			fire = hold && fabs (AngleDiff (want_yaw, yaw)) < 0.6f && fabs (want_pitch - pitch) < 0.6f;
 			if (!hold)
 				want_pitch = 0;
+			if (gi.cvar ("rl_debug", "0", 0)->value > 1)
+				gi.dprintf ("   shoot %i at %.0f %.0f %.0f from eye %.0f %.0f %.0f: clear %i pitch %.1f want %.1f\n",
+					(int)(job->ent - g_edicts), target[0], target[1], target[2], eye[0], eye[1], eye[2], hold,
+					pitch, want_pitch);
 		}
 		else if ((job->kind == PLAN_TOUCH || job->kind == PLAN_EXIT)
 			&& (job->ent->movedir[0] || job->ent->movedir[1])
@@ -724,7 +751,7 @@ void Teach_Think (edict_t *ent)
 			speed = sqrt (ent->velocity[0]*ent->velocity[0] + ent->velocity[1]*ent->velocity[1]);
 			if (!grounded)
 				launch = true;		// begun already
-			else if (Nav_TryLink (ent, link))
+			else if (Teach_Try (ent, link, &i))
 				launch = true;
 			else if (link->type != NAV_JUMP && DotProduct (d, dir) > 0 && fabs (across) <= 10
 				&& DotProduct (ent->velocity, dir) > 50)
@@ -765,6 +792,27 @@ void Teach_Think (edict_t *ent)
 				up = 2;
 			else if (target[2] < origin[2] - 8)
 				up = 0;
+			// A swim of more than a step is one that leaves the water, over
+			// a bank or up onto a ledge, and does so only from the right
+			// place, facing the right way. As with a jump: when a trial of
+			// it from here comes out, along its heading; until then to the
+			// node, and to its depth.
+			if (link->steps < 2 || !swimming)
+				break;
+			a = link->heading * (360.0f / 16);
+			VectorSet (dir, cos (a * M_PI / 180), sin (a * M_PI / 180), 0);
+			VectorSubtract (origin, at, d);
+			if (Teach_Try (ent, link, &i))
+			{
+				VectorMA (origin, 100, dir, target);
+				target[2] = origin[2];
+				up = i;
+			}
+			else if (d[0]*d[0] + d[1]*d[1] > 8*8 || fabs (d[2]) > 8)
+			{
+				VectorCopy (at, target);
+				up = at[2] > origin[2] + 4 ? 2 : at[2] < origin[2] - 4 ? 0 : 1;
+			}
 			break;
 		}
 		// under a low roof the player stays down, but a jump or a ladder that
@@ -787,7 +835,7 @@ void Teach_Think (edict_t *ent)
 	// on into it gets nowhere, so the feet step to the side that is clear
 	// and has a clear way on, the side of the link's own line first; with
 	// neither clear they back off. The view goes on looking down the route.
-	if (!hold && (link_type == NAV_WALK || link_type == NAV_DUCK) && grounded && dist > 4)
+	if (!hold && !launch && (link_type == NAV_WALK || link_type == NAV_DUCK) && grounded && dist > 4)
 	{
 		VectorSet (dir, d[0], d[1], 0);
 		VectorNormalize (dir);
@@ -991,8 +1039,15 @@ slanted:	;
 	// the view has something to point at, it points at that and the feet
 	// take the nearest of the eight.
 	a = RAD2DEG_F(atan2 (go[1], go[0]));
+	// Out of water onto a bank, and up a ladder, the player goes only the
+	// way it faces.
 	if (snap && !hold && dist > 1)
-		want_yaw = a + 45 * floor (AngleDiff (want_yaw, a) / 45 + 0.5f);
+	{
+		if (link_type == NAV_SWIM || link_type == NAV_CLIMB)
+			want_yaw = a;
+		else
+			want_yaw = a + 45 * floor (AngleDiff (want_yaw, a) / 45 + 0.5f);
+	}
 
 	i = Teach_Turn (AngleDiff (want_yaw, yaw), teach_yaw_rate, rl_yaw_bins, RL_YAW_BINS, TEACH_YAW_ACCEL);
 	act[RL_ACT_YAW] = i;

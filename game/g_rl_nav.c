@@ -1311,60 +1311,80 @@ qboolean Nav_StepSafe (edict_t *ent, vec3_t dir, qboolean ducked)
 ================
 Nav_TryLink
 
-Tries a jump or a walk off an edge from where the player is and as it is
-moving now, with the game's own player movement: the feet go along the
+Tries a jump, a walk off an edge or a swim from where the player is and as
+it is moving now, with the game's own player movement: the feet go along the
 link's heading, with a jump first if it is one, for as many steps as the
 move took when it was found and on until the player lands; then they stop.
-True when nothing on the way hurts and the player comes to rest at the
-link's far node, near enough.
+True when nothing on the way hurts and the player comes to rest; end is
+where. A swim was found with the player going up, level or down, and which
+is not kept: each is tried, and up is given the one that came to rest
+nearest the link's far node (as an action's choice: 0 down, 1 level, 2 up).
 ================
 */
-qboolean Nav_TryLink (edict_t *ent, nav_link_t *l)
+qboolean Nav_TryLink (edict_t *ent, nav_link_t *l, vec3_t end, int *up)
 {
 	ghost_t	g;
 	edict_t	*pass = nav_pass;
-	float	yaw;
-	int		i;
+	float	yaw, d, best;
+	int		i, k, upmove;
 	vec3_t	to;
-	qboolean	ok, rest;
+	qboolean	ok, rest, found;
 
-	memset (&g, 0, sizeof(g));
-	g.s = ent->client->ps.pmove;
-	for (i=0 ; i<3 ; i++)
-	{
-		g.s.origin[i] = ent->s.origin[i]*8;
-		g.s.velocity[i] = ent->velocity[i]*8;
-	}
-	g.s.delta_angles[0] = g.s.delta_angles[1] = g.s.delta_angles[2] = 0;
 	nav_pass = ent;
 	yaw = l->heading * (360.0f / NAV_HEADINGS);
+	Nav_NodeOrigin (l->to, to);
+	found = false;
+	best = 1e30f;
 
-	ok = true;
-	for (i=0 ; i<24 && ok ; i++)
+	for (k=0 ; k<3 ; k++)
 	{
-		Ghost_Step (&g, yaw, 400, l->type == NAV_DUCK ? -400 : l->type == NAV_JUMP && i == 0 ? 400 : 0);
-		if (Nav_Hurts (&g) || Haz_At (g.origin, false))
-			ok = false;
-		if (i + 1 >= l->steps && (g.ground || g.waterlevel >= 2))
+		if (l->type != NAV_SWIM && k)
 			break;
-	}
-	rest = false;
-	for (i=0 ; i<6 && ok && !rest ; i++)
-	{
-		Ghost_Step (&g, yaw, 0, l->type == NAV_DUCK ? -400 : 0);
-		if (Nav_Hurts (&g) || Haz_At (g.origin, false))
-			ok = false;
-		rest = (g.ground || g.waterlevel >= 2) && g.velocity[0]*g.velocity[0] + g.velocity[1]*g.velocity[1] < 60*60;
+		upmove = l->type == NAV_SWIM ? (1 - k) * 400 : l->type == NAV_DUCK ? -400 : 0;
+
+		memset (&g, 0, sizeof(g));
+		g.s = ent->client->ps.pmove;
+		for (i=0 ; i<3 ; i++)
+		{
+			g.s.origin[i] = ent->s.origin[i]*8;
+			g.s.velocity[i] = ent->velocity[i]*8;
+		}
+		g.s.delta_angles[0] = g.s.delta_angles[1] = g.s.delta_angles[2] = 0;
+
+		ok = true;
+		for (i=0 ; i<24 && ok ; i++)
+		{
+			Ghost_Step (&g, yaw, 400, l->type == NAV_JUMP && i == 0 ? 400 : upmove);
+			if (Nav_Hurts (&g) || Haz_At (g.origin, false))
+				ok = false;
+			if (i + 1 >= l->steps && (g.ground || g.waterlevel >= 2))
+				break;
+		}
+		rest = false;
+		for (i=0 ; i<6 && ok && !rest ; i++)
+		{
+			Ghost_Step (&g, yaw, 0, l->type == NAV_DUCK ? -400 : 0);
+			if (Nav_Hurts (&g) || Haz_At (g.origin, false))
+				ok = false;
+			rest = (g.ground || g.waterlevel >= 2) && g.velocity[0]*g.velocity[0] + g.velocity[1]*g.velocity[1] < 60*60;
+		}
+		if (gi.cvar ("rl_debug", "0", 0)->value > 1)
+			gi.dprintf ("   link? %i -> %i up %i: ok %i rest %i at %.1f %.1f %.1f, node at %.1f %.1f %.1f\n", l->from,
+				l->to, upmove, ok, rest, g.origin[0], g.origin[1], g.origin[2], to[0], to[1], to[2]);
+		if (!ok || !rest)
+			continue;
+		d = (g.origin[0]-to[0])*(g.origin[0]-to[0]) + (g.origin[1]-to[1])*(g.origin[1]-to[1])
+			+ (g.origin[2]-to[2])*(g.origin[2]-to[2]);
+		if (d < best)
+		{
+			best = d;
+			found = true;
+			VectorCopy (g.origin, end);
+			*up = l->type == NAV_SWIM ? 2 - k : 1;
+		}
 	}
 	nav_pass = pass;
-
-	Nav_NodeOrigin (l->to, to);
-	if (gi.cvar ("rl_debug", "0", 0)->value > 1)
-		gi.dprintf ("   link? %i -> %i: ok %i rest %i at %.1f %.1f %.1f, node at %.1f %.1f %.1f\n", l->from, l->to,
-			ok, rest, g.origin[0], g.origin[1], g.origin[2], to[0], to[1], to[2]);
-	if (!ok || !rest)
-		return false;
-	return fabs (g.origin[0] - to[0]) < 64 && fabs (g.origin[1] - to[1]) < 64 && fabs (g.origin[2] - to[2]) < 40;
+	return found;
 }
 
 /*
