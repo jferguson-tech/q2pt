@@ -107,8 +107,22 @@ qboolean Nav_Straight (edict_t *pass, vec3_t p, vec3_t q, qboolean ducked, int m
 int Nav_MoverAt (edict_t *e);
 qboolean Nav_MoverSelf (edict_t *e);
 
+// True when the player, as it stands and moves now, could take one step
+// along dir (or none, for NULL) and then stop, and be standing on a floor
+// out of harm's way.
+qboolean Nav_StepSafe (edict_t *ent, vec3_t dir, qboolean ducked);
+
+// True when a jump or a walk off an edge, begun from where the player is
+// and as it moves now, would bring it to the link's far node unhurt.
+qboolean Nav_TryLink (edict_t *ent, nav_link_t *l);
+
 // whether a link can be taken as things stand now
 qboolean Nav_LinkOpen (nav_link_t *l);
+
+// g_rl_hazard.c: laser beams, triggers that hurt, lava and slime
+void Haz_Find (void);
+edict_t *Haz_LinkLaser (nav_link_t *l);
+qboolean Haz_At (vec3_t origin, qboolean ducked);
 
 // g_rl_plan.c: what the scripted player should do next to get out
 #define	PLAN_EXIT	1		// walk into the trigger that ends the map
@@ -126,5 +140,6 @@ typedef struct
 qboolean Plan_Update (int anchor, float *togo);
 plan_job_t *Plan_JobAt (int node);
 void Plan_Point (plan_job_t *job, vec3_t out);
+qboolean Plan_ShotAt (edict_t *e, vec3_t eye, vec3_t out);
 
 #endif

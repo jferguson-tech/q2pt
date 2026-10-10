@@ -1221,6 +1221,11 @@ qboolean Nav_LinkOpen (nav_link_t *l)
 	qboolean	self;
 	int			at;
 
+	// through a beam that is on: only if something could yet switch it off
+	e = Haz_LinkLaser (l);
+	if (e && !(nav_hopeful && e->targetname && !nav_hopeless[e - g_edicts]))
+		return false;
+
 	if (!l->ent)
 		return true;
 	e = &g_edicts[l->ent];
@@ -1246,6 +1251,150 @@ qboolean Nav_LinkOpen (nav_link_t *l)
 	if (l->state == NAV_AWAY && !strcmp (e->classname, "func_plat"))
 		return (nav_nodes[l->from].flags & NODE_MOVER) && nav_nodes[l->from].ent == l->ent;
 	return true;
+}
+
+/*
+================
+Nav_StepSafe
+
+Tries a step with the game's own player movement, from the player's place
+and speed as they are: one step with the feet going along dir (none when
+dir is NULL), then up to five with the feet still, which is more than
+stopping takes. The step is
+safe when nothing on the way hurts and the player comes to rest standing,
+not far below where it began. A ledge too narrow to stop on, a slope too steep to stand on and a
+lip that lava laps at all fail in the way they would fail the player.
+================
+*/
+qboolean Nav_StepSafe (edict_t *ent, vec3_t dir, qboolean ducked)
+{
+	ghost_t	g;
+	edict_t	*pass = nav_pass;
+	float	yaw, top;
+	int		i;
+	qboolean	rest;
+
+	memset (&g, 0, sizeof(g));
+	// as the game sets a player up for its move: the entity's own place and
+	// speed, which a hit or a lift may have changed since the last one
+	g.s = ent->client->ps.pmove;
+	for (i=0 ; i<3 ; i++)
+	{
+		g.s.origin[i] = ent->s.origin[i]*8;
+		g.s.velocity[i] = ent->velocity[i]*8;
+	}
+	g.s.delta_angles[0] = g.s.delta_angles[1] = g.s.delta_angles[2] = 0;
+	nav_pass = ent;
+	yaw = dir ? atan2 (dir[1], dir[0]) * 180 / M_PI : 0;
+	top = ent->s.origin[2];
+	rest = false;
+	for (i=0 ; i<6 && !rest ; i++)
+	{
+		Ghost_Step (&g, yaw, i || !dir ? 0 : 400, ducked ? -400 : 0);
+		if (Nav_Hurts (&g) || Haz_At (g.origin, ducked) || top - g.origin[2] > 40)
+			break;
+		rest = (i || !dir) && g.ground && g.velocity[0]*g.velocity[0] + g.velocity[1]*g.velocity[1] < 60*60;
+	}
+	nav_pass = pass;
+	if (gi.cvar ("rl_debug", "0", 0)->value > 1)
+		gi.dprintf ("   step? yaw %.0f: %i steps to %.1f %.1f %.1f ground %i vel %.0f %.0f rest %i\n", yaw, i,
+			g.origin[0], g.origin[1], g.origin[2], g.ground, g.velocity[0], g.velocity[1], rest);
+	return rest;
+}
+
+/*
+================
+Nav_TryLink
+
+Tries a jump or a walk off an edge from where the player is and as it is
+moving now, with the game's own player movement: the feet go along the
+link's heading, with a jump first if it is one, for as many steps as the
+move took when it was found and on until the player lands; then they stop.
+True when nothing on the way hurts and the player comes to rest at the
+link's far node, near enough.
+================
+*/
+qboolean Nav_TryLink (edict_t *ent, nav_link_t *l)
+{
+	ghost_t	g;
+	edict_t	*pass = nav_pass;
+	float	yaw;
+	int		i;
+	vec3_t	to;
+	qboolean	ok, rest;
+
+	memset (&g, 0, sizeof(g));
+	g.s = ent->client->ps.pmove;
+	for (i=0 ; i<3 ; i++)
+	{
+		g.s.origin[i] = ent->s.origin[i]*8;
+		g.s.velocity[i] = ent->velocity[i]*8;
+	}
+	g.s.delta_angles[0] = g.s.delta_angles[1] = g.s.delta_angles[2] = 0;
+	nav_pass = ent;
+	yaw = l->heading * (360.0f / NAV_HEADINGS);
+
+	ok = true;
+	for (i=0 ; i<24 && ok ; i++)
+	{
+		Ghost_Step (&g, yaw, 400, l->type == NAV_DUCK ? -400 : l->type == NAV_JUMP && i == 0 ? 400 : 0);
+		if (Nav_Hurts (&g) || Haz_At (g.origin, false))
+			ok = false;
+		if (i + 1 >= l->steps && (g.ground || g.waterlevel >= 2))
+			break;
+	}
+	rest = false;
+	for (i=0 ; i<6 && ok && !rest ; i++)
+	{
+		Ghost_Step (&g, yaw, 0, l->type == NAV_DUCK ? -400 : 0);
+		if (Nav_Hurts (&g) || Haz_At (g.origin, false))
+			ok = false;
+		rest = (g.ground || g.waterlevel >= 2) && g.velocity[0]*g.velocity[0] + g.velocity[1]*g.velocity[1] < 60*60;
+	}
+	nav_pass = pass;
+
+	Nav_NodeOrigin (l->to, to);
+	if (gi.cvar ("rl_debug", "0", 0)->value > 1)
+		gi.dprintf ("   link? %i -> %i: ok %i rest %i at %.1f %.1f %.1f, node at %.1f %.1f %.1f\n", l->from, l->to,
+			ok, rest, g.origin[0], g.origin[1], g.origin[2], to[0], to[1], to[2]);
+	if (!ok || !rest)
+		return false;
+	return fabs (g.origin[0] - to[0]) < 64 && fabs (g.origin[1] - to[1]) < 64 && fabs (g.origin[2] - to[2]) < 40;
+}
+
+/*
+================
+Nav_Predict
+
+Where one step with these feet would leave the player: for checking the
+trial steps against what then happens.
+================
+*/
+void Nav_Predict (edict_t *ent, float yaw, int forward, int side, int up, vec3_t out, qboolean *ground)
+{
+	pmove_t	pm;
+	edict_t	*pass = nav_pass;
+	int		i;
+
+	memset (&pm, 0, sizeof(pm));
+	pm.s = ent->client->ps.pmove;
+	for (i=0 ; i<3 ; i++)
+	{
+		pm.s.origin[i] = ent->s.origin[i]*8;
+		pm.s.velocity[i] = ent->velocity[i]*8;
+	}
+	nav_pass = ent;
+	pm.trace = Nav_Trace;
+	pm.pointcontents = gi.pointcontents;
+	pm.cmd.msec = RL_STEP_MSEC;
+	pm.cmd.angles[YAW] = ANGLE2SHORT(yaw) - pm.s.delta_angles[YAW];
+	pm.cmd.forwardmove = forward;
+	pm.cmd.sidemove = side;
+	pm.cmd.upmove = up;
+	gi.Pmove (&pm);
+	nav_pass = pass;
+	VectorSet (out, pm.s.origin[0]*0.125f, pm.s.origin[1]*0.125f, pm.s.origin[2]*0.125f);
+	*ground = pm.groundentity != NULL;
 }
 
 /*

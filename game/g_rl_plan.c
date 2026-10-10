@@ -36,7 +36,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "g_rl_nav.h"
 
 #define	PLAN_MAX_JOBS	32
-#define	PLAN_MAX_GOALS	256
+#define	PLAN_MAX_GOALS	1024
+#define	PLAN_NEAR		400		// places kept for a thing done from a distance
 #define	PLAN_DEPTH		6
 
 plan_job_t	plan_jobs[PLAN_MAX_JOBS];
@@ -119,7 +120,11 @@ static void Plan_Sender (edict_t *e, int depth)
 
 	if (e->svflags & SVF_MONSTER)
 	{
-		if (e->health > 0)
+		if (e->health <= 0)
+			return;
+		if (e->solid == SOLID_NOT || (e->svflags & SVF_NOCLIENT))
+			Plan_Senders (e->targetname, depth + 1);	// to be brought in first
+		else
 			Plan_AddJob (PLAN_KILL, e);
 		return;
 	}
@@ -255,6 +260,49 @@ void Plan_Point (plan_job_t *job, vec3_t out)
 
 /*
 ================
+Plan_ShotAt
+
+A point of a thing that a shot from the eye would reach: its middle if that
+is in the clear, or else one of a grid of points through its box, since a
+switch behind bars shows only in part. Returns false when none is.
+================
+*/
+qboolean Plan_ShotAt (edict_t *e, vec3_t eye, vec3_t out)
+{
+	static const float	at[3] = {0.5f, 0.2f, 0.8f};
+	edict_t	*player = &g_edicts[1];
+	trace_t	tr;
+	int		i, j, k;
+
+	for (i=0 ; i<3 ; i++)
+	for (j=0 ; j<3 ; j++)
+	for (k=0 ; k<3 ; k++)
+	{
+		out[0] = e->absmin[0] + (e->absmax[0] - e->absmin[0]) * at[i];
+		out[1] = e->absmin[1] + (e->absmax[1] - e->absmin[1]) * at[j];
+		out[2] = e->absmin[2] + (e->absmax[2] - e->absmin[2]) * at[k];
+		tr = gi.trace (eye, NULL, NULL, out, player, MASK_SHOT);
+		if (tr.fraction >= 1 || tr.ent == e)
+			return true;
+	}
+	return false;
+}
+
+// The places a thing can be shot from take many traces to find, and do not
+// change while the doors stand as they do: they are kept for a few seconds.
+#define	PLAN_KEPT	8
+typedef struct
+{
+	edict_t	*ent;
+	int		frame;
+	int		count;
+	int		nodes[PLAN_NEAR];
+} plan_kept_t;
+static plan_kept_t	plan_kept[PLAN_KEPT];
+static int			plan_kept_level = -1;
+
+/*
+================
 Plan_Places
 
 Marks the nodes from which each job can be done, and lists them as goals.
@@ -266,25 +314,62 @@ static void Plan_Places (void)
 {
 	edict_t		*player = &g_edicts[1];
 	plan_job_t	*job;
-	int			j, n, found, near[4];
+	int			j, n, found, near[4], keep;
 	float		d, near_d[4], reach;
 	vec3_t		p, q, mid;
 	trace_t		tr;
 	int			k, m;
+	plan_kept_t	*kept;
 
 	memset (plan_node_job, 0, nav_num_nodes * sizeof(short));
 	plan_num_goals = 0;
+
+	if (plan_kept_level != level.framenum - rl_block->step)
+	{	// a new episode
+		memset (plan_kept, 0, sizeof(plan_kept));
+		plan_kept_level = level.framenum - rl_block->step;
+	}
 
 	for (j=0, job=plan_jobs ; j<plan_num_jobs ; j++, job++)
 	{
 		Plan_Point (job, mid);
 		found = 0;
-		for (k=0 ; k<4 ; k++)
+
+		kept = NULL;
+		if (job->kind == PLAN_SHOOT)
+		{
+			for (k=0 ; k<PLAN_KEPT ; k++)
+				if (plan_kept[k].ent == job->ent)
+					kept = &plan_kept[k];
+			if (kept && level.framenum - kept->frame < 50)
+			{
+				for (k=0 ; k<kept->count ; k++)
+					if (!plan_node_job[kept->nodes[k]] && plan_num_goals < PLAN_MAX_GOALS)
+					{
+						plan_node_job[kept->nodes[k]] = j + 1;
+						plan_goals[plan_num_goals++] = kept->nodes[k];
+					}
+				continue;
+			}
+			if (!kept)
+			{	// the slot longest unused
+				kept = &plan_kept[0];
+				for (k=1 ; k<PLAN_KEPT ; k++)
+					if (plan_kept[k].frame < kept->frame)
+						kept = &plan_kept[k];
+			}
+			kept->ent = job->ent;
+			kept->frame = level.framenum;
+			kept->count = 0;
+		}
+
+		keep = 4;
+		for (k=0 ; k<keep ; k++)
 		{
 			near[k] = -1;
 			near_d[k] = 1e30f;
 		}
-		reach = job->kind == PLAN_SHOOT ? 500 : 96;
+		reach = job->kind == PLAN_SHOOT ? 700 : 96;
 
 		for (n=0 ; n<nav_num_nodes ; n++)
 		{
@@ -312,13 +397,29 @@ static void Plan_Places (void)
 
 			// with nothing of the world between the eye and it
 			p[2] += 22;
-			tr = gi.trace (p, NULL, NULL, mid, player, MASK_SOLID);
-			if (tr.fraction < 1 && tr.ent != job->ent)
+			if (job->kind == PLAN_SHOOT)
+			{	// every such place: the nearest may all lie past the very
+				// door the shot is to open
+				if (!Plan_ShotAt (job->ent, p, q))
+					continue;
+				if (kept->count < PLAN_NEAR && plan_num_goals < PLAN_MAX_GOALS)
+				{
+					plan_node_job[n] = j + 1;
+					plan_goals[plan_num_goals++] = n;
+					kept->nodes[kept->count++] = n;
+				}
 				continue;
-			for (k=0 ; k<4 ; k++)
+			}
+			else
+			{
+				tr = gi.trace (p, NULL, NULL, mid, player, MASK_SOLID);
+				if (tr.fraction < 1 && tr.ent != job->ent)
+					continue;
+			}
+			for (k=0 ; k<keep ; k++)
 				if (d < near_d[k])
 				{
-					for (m=3 ; m>k ; m--)
+					for (m=keep-1 ; m>k ; m--)
 					{
 						near[m] = near[m-1];
 						near_d[m] = near_d[m-1];
@@ -331,9 +432,9 @@ static void Plan_Places (void)
 
 		// for a thing to shoot any of the near ones will do; for the rest,
 		// only when no node was inside
-		if (found && job->kind != PLAN_SHOOT)
+		if (found || job->kind == PLAN_SHOOT)
 			continue;
-		for (k=0 ; k<4 ; k++)
+		for (k=0 ; k<keep ; k++)
 			if (near[k] != -1 && plan_num_goals < PLAN_MAX_GOALS)
 			{
 				plan_node_job[near[k]] = j + 1;
@@ -356,7 +457,7 @@ qboolean Plan_Update (int anchor, float *togo)
 	int			depth, tries, n, i, steps;
 	nav_link_t	*l, *best;
 	float		c, bestc;
-	edict_t		*group[16];
+	edict_t		*group[16], *laser;
 	int			count;
 
 	if (!plan_node_job)
@@ -427,11 +528,22 @@ qboolean Plan_Update (int anchor, float *togo)
 			if (!best)
 				return false;		// no route even with every door obliging
 
+			plan_num_jobs = 0;
+			laser = Haz_LinkLaser (best);
+			if (laser)
+			{	// shut by a beam: whatever switches it
+				if (plan_debug->value)
+					gi.dprintf ("   shut by laser %i (link %i -> %i)\n", (int)(laser - g_edicts), best->from, best->to);
+				Plan_Senders (laser->targetname, 1);
+				if (plan_num_jobs)
+					break;
+				nav_hopeless[laser - g_edicts] = 1;
+				continue;
+			}
 			if (plan_debug->value)
 				gi.dprintf ("   shut by %i %s (link %i -> %i type %i wants %i)\n", best->ent,
 					g_edicts[best->ent].classname, best->from, best->to, best->type, best->state);
 			// best is the link that is shut; its mover's group is what to send
-			plan_num_jobs = 0;
 			count = Nav_MoverGroup (&g_edicts[best->ent], group, 16);
 			for (i=0 ; i<count ; i++)
 			{

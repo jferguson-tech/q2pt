@@ -80,6 +80,10 @@ edict_t *Fight_Target (edict_t *ent, vec3_t eye)
 			continue;
 		if ((e->monsterinfo.aiflags & AI_GOOD_GUY) || !e->takedamage)
 			continue;
+		// one waiting to be brought in by a trigger is not there yet, though
+		// it has a place and its health
+		if (e->solid == SOLID_NOT || (e->svflags & SVF_NOCLIENT))
+			continue;
 		if (e->classname && !strcmp (e->classname, "misc_insane"))
 			continue;
 		VectorSubtract (e->s.origin, eye, v);
@@ -203,7 +207,8 @@ edict_t *Fight_Hunter (edict_t *ent, vec3_t eye)
 	for (i=game.maxclients+1, e=g_edicts+i ; i<globals.num_edicts ; i++, e++)
 	{
 		if (!e->inuse || !(e->svflags & SVF_MONSTER) || e->health <= 0 || e->deadflag
-			|| e->enemy != ent || (e->monsterinfo.aiflags & AI_GOOD_GUY))
+			|| e->enemy != ent || (e->monsterinfo.aiflags & AI_GOOD_GUY)
+			|| e->solid == SOLID_NOT || (e->svflags & SVF_NOCLIENT))
 			continue;
 		VectorSubtract (e->s.origin, eye, v);
 		d = VectorLength (v);

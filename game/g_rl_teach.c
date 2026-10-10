@@ -250,6 +250,7 @@ qboolean Teach_Reset (void)
 	int			i;
 
 	built = Nav_Load ();
+	Haz_Find ();
 	teach_togo = gi.TagMalloc ((nav_num_nodes + 1) * sizeof(float), TAG_LEVEL);
 	teach_reach = gi.TagMalloc ((nav_num_nodes + 1) * sizeof(float), TAG_LEVEL);
 	teach_goal = -1;
@@ -389,6 +390,8 @@ static edict_t *Teach_Errand (edict_t *ent)
 		n = Nav_NodeNear (e->s.origin, 28, 40);
 		if (n == -1 || teach_reach[n] >= NAV_FAR)
 			continue;
+		if (teach_have_plan && teach_togo[n] >= NAV_FAR)
+			continue;
 		Nav_NodeOrigin (n, p);
 		if (!Nav_Straight (ent, p, e->s.origin, true, MASK_SOLID))
 			continue;
@@ -422,6 +425,9 @@ static void Teach_Plan (edict_t *ent)
 		return;
 	teach_planned = rl_block->step;
 
+	// The way out first, so that an item is turned aside for only where the
+	// way out can be taken up again: not down a drop there is no way back from.
+	teach_have_plan = Plan_Update (teach_anchor, teach_togo);
 	Nav_CostsFrom (teach_anchor, teach_reach);
 	teach_errand = Teach_Errand (ent);
 	if (teach_errand)
@@ -429,9 +435,7 @@ static void Teach_Plan (edict_t *ent)
 		n = Nav_NodeNear (teach_errand->s.origin, 28, 40);
 		Nav_CostsTo (n, teach_togo);
 		teach_have_plan = true;
-		return;
 	}
-	teach_have_plan = Plan_Update (teach_anchor, teach_togo);
 }
 
 /*
@@ -466,12 +470,17 @@ static qboolean Teach_Dodge (edict_t *ent, vec3_t origin, edict_t *monster, floa
 	{
 		if (l->type != NAV_WALK || l->cost > 0.25f || !Nav_LinkOpen (l))
 			continue;
+		// nor to where the way cannot be taken up again
+		if (teach_have_plan && teach_togo[teach_anchor] < NAV_FAR && teach_togo[l->to] >= NAV_FAR)
+			continue;
 		Nav_NodeOrigin (l->to, p);
 		VectorSubtract (p, origin, d);
 		if (fabs (d[2]) > 20)
 			continue;
 		d[2] = 0;
 		if (VectorNormalize (d) < 8)
+			continue;
+		if (!Nav_StepSafe (ent, d, false))
 			continue;
 		score = DotProduct (d, across);
 		// Away from a barrel, which a stray shot sets off: a step that takes
@@ -530,7 +539,8 @@ void Teach_Think (edict_t *ent)
 	float		yaw, pitch, want_yaw, want_pitch, err, best_err, dist, a, across;
 	float		aim_yaw, aim_pitch, aim_dist;
 	int			f, s, bf, bs, i, n, up, link_type;
-	qboolean	grounded, swimming, hold, ducked, snap, fire, have;
+	qboolean	grounded, swimming, hold, ducked, snap, fire, have, exact, wary, launch;
+	float		route_yaw, speed;
 	trace_t		tr;
 
 	act[RL_ACT_FORWARD] = 1;
@@ -622,6 +632,7 @@ void Teach_Think (edict_t *ent)
 	hold = true;
 	snap = true;
 	fire = false;
+	launch = false;
 	up = 1;
 	link_type = NAV_WALK;
 	VectorClear (go);
@@ -632,8 +643,10 @@ void Teach_Think (edict_t *ent)
 	Nav_NodeOrigin (teach_anchor, at);
 
 	link = have ? Teach_Step (teach_anchor) : NULL;
-	if (teach_errand && have && teach_togo[teach_anchor] < 0.35f)
-	{	// at the item: onto it
+	if (teach_errand && have && teach_togo[teach_anchor] < 0.35f
+		&& (teach_togo[teach_anchor] <= 0 || !link
+			|| Nav_Straight (ent, origin, teach_errand->s.origin, ducked, MASK_PLAYERSOLID)))
+	{	// at the item, with nothing between: onto it
 		VectorCopy (teach_errand->s.origin, target);
 		link = NULL;
 		hold = false;
@@ -647,10 +660,18 @@ void Teach_Think (edict_t *ent)
 		{	// stand, point at it and shoot; the blaster needs no ammunition
 			hold = true;
 			snap = false;
+			if (!Plan_ShotAt (job->ent, eye, target))
+			{	// not in the clear from just here: to the node, where it was
+				VectorCopy (at, target);
+				hold = false;
+				snap = true;
+			}
 			VectorSubtract (target, eye, d);
 			want_yaw = RAD2DEG_F(atan2 (d[1], d[0]));
 			want_pitch = -RAD2DEG_F(atan2 (d[2], sqrt (d[0]*d[0] + d[1]*d[1])));
-			fire = fabs (AngleDiff (want_yaw, yaw)) < 2 && fabs (want_pitch - pitch) < 2;
+			fire = hold && fabs (AngleDiff (want_yaw, yaw)) < 2 && fabs (want_pitch - pitch) < 2;
+			if (!hold)
+				want_pitch = 0;
 		}
 		else if ((job->kind == PLAN_TOUCH || job->kind == PLAN_EXIT)
 			&& (job->ent->movedir[0] || job->ent->movedir[1])
@@ -672,13 +693,16 @@ void Teach_Think (edict_t *ent)
 		{
 		case NAV_JUMP:
 		case NAV_WALK:
+		case NAV_DUCK:
+			if (link->type == NAV_DUCK)
+				up = 0;
 			// A jump, or a walk that took more than one step (it goes off an
 			// edge), ends where it did only if it is made as it was when
 			// the link was found: from the node, on the heading it was made
 			// on. So to the node first; then along the heading, and on along
 			// it while in the air or still on the line. Aiming at the landing
 			// place from wherever the player is can miss the edge altogether.
-			if (link->type == NAV_WALK && link->steps < 2)
+			if (link->type != NAV_JUMP && link->steps < 2)
 				break;
 			if (swimming)
 			{
@@ -691,18 +715,36 @@ void Teach_Think (edict_t *ent)
 			VectorSubtract (origin, at, d);
 			d[2] = 0;
 			across = d[0] * dir[1] - d[1] * dir[0];		// how far off the line
-			if (grounded && (VectorLength (d) > 10 && (DotProduct (d, dir) < 0 || fabs (across) > 10)))
+			// The move is begun when a trial of it from here, as the player
+			// is moving now, comes down where the link does (Nav_TryLink).
+			// Until then the player goes to the node, crouched so as to
+			// stop on it, and stands: the link was found from there, from
+			// a standing start. If the trial fails even so, the move is
+			// made as it was found and trusted, and kept up once begun.
+			speed = sqrt (ent->velocity[0]*ent->velocity[0] + ent->velocity[1]*ent->velocity[1]);
+			if (!grounded)
+				launch = true;		// begun already
+			else if (Nav_TryLink (ent, link))
+				launch = true;
+			else if (link->type != NAV_JUMP && DotProduct (d, dir) > 0 && fabs (across) <= 10
+				&& DotProduct (ent->velocity, dir) > 50)
+				launch = true;		// begun from the node, and not yet over the edge
+			else if (VectorLength (d) > 8)
+			{
 				VectorCopy (at, target);
+				up = 0;
+			}
+			else if (speed > 20)
+				hold = true;
 			else
+				launch = true;
+			if (launch)
 			{
 				VectorMA (origin, 100, dir, target);
 				target[2] = origin[2];
-				if (link->type == NAV_JUMP && grounded && VectorLength (d) <= 10)
+				if (link->type == NAV_JUMP && grounded)
 					up = 2;
 			}
-			break;
-		case NAV_DUCK:
-			up = 0;
 			break;
 		case NAV_CLIMB:
 			up = 2;
@@ -780,7 +822,8 @@ void Teach_Think (edict_t *ent)
 				sn = sin (slants[i] * turn * M_PI / 180);
 				VectorSet (side, dir[0]*c - dir[1]*sn, dir[0]*sn + dir[1]*c, 0);
 				VectorMA (origin, 8, side, p);
-				if (Nav_Straight (ent, origin, p, ducked, MASK_PLAYERSOLID))
+				if (Nav_Straight (ent, origin, p, ducked, MASK_PLAYERSOLID)
+					&& Nav_StepSafe (ent, side, ducked))
 					break;
 			}
 			if (i < 6)
@@ -795,14 +838,18 @@ void Teach_Think (edict_t *ent)
 			if (across > 0)
 				VectorInverse (side);
 			VectorScale (dir, -1, go);
+			if (!Nav_StepSafe (ent, go, ducked))
+				hold = true;		// no room behind either: stand
 			for (i=0 ; i<2 ; i++)
 			{
 				VectorMA (origin, 12, side, p);
 				VectorMA (p, 6, dir, q);
 				if (Nav_Straight (ent, origin, p, ducked, MASK_PLAYERSOLID)
-					&& Nav_Straight (ent, p, q, ducked, MASK_PLAYERSOLID))
+					&& Nav_Straight (ent, p, q, ducked, MASK_PLAYERSOLID)
+					&& Nav_StepSafe (ent, side, ducked))
 				{
 					VectorCopy (side, go);
+					hold = false;
 					break;
 				}
 				VectorInverse (side);
@@ -834,6 +881,13 @@ slanted:	;
 				want_yaw = RAD2DEG_F(atan2 (node[1], node[0]));
 		}
 	}
+
+	// A jump or a walk off an edge lands where it was found to only when it
+	// is made on its heading, which the feet can keep to only with the view
+	// square to it.
+	exact = link && !job && (link->type == NAV_JUMP
+		|| ((link->type == NAV_WALK || link->type == NAV_DUCK) && link->steps >= 2));
+	route_yaw = want_yaw;
 
 	// ---- a monster in sight: the view and the trigger are for it, and the
 	// feet dodge until it is dead
@@ -867,13 +921,33 @@ slanted:	;
 		// Nor do they when the gun's line is shut where the eye's is not, as
 		// over a rail: the view stays on the monster and the feet walk on
 		// until the shots get through.
-		if (grounded && (link_type == NAV_WALK || link_type == NAV_DUCK) && !(job && job->kind == PLAN_EXIT)
-			&& !(ent->health < 40 && teach_errand && teach_errand->item->pickup == Pickup_Health)
-			&& Fight_Reaches (ent, eye, enemy))
+		// So a jump or a drop is not begun with the view on a monster: the
+		// fight is finished at its top, or, if the shots do not reach, the
+		// view goes back to the way and the move is made unfought.
+		if (grounded && (link_type == NAV_WALK || link_type == NAV_DUCK || exact)
+			&& !(job && job->kind == PLAN_EXIT)
+			&& !(ent->health < 40 && teach_errand && teach_errand->item->pickup == Pickup_Health))
 		{
-			hold = !Teach_Dodge (ent, origin, enemy, aim_dist, go);
-			if (!hold)
-				dist = 100;
+			if (Fight_Reaches (ent, eye, enemy))
+			{
+				hold = !Teach_Dodge (ent, origin, enemy, aim_dist, go);
+				if (!hold)
+				{
+					dist = 100;
+					exact = false;
+					launch = false;
+					link_type = NAV_WALK;
+					if (up == 2)
+						up = 1;
+				}
+			}
+			else if (exact)
+			{
+				want_yaw = route_yaw;
+				want_pitch = 0;
+				snap = true;
+				fire = false;
+			}
 		}
 	}
 	else if (rl_block->mode == RL_MODE_PLAY && grounded && (link_type == NAV_WALK || link_type == NAV_DUCK)
@@ -886,6 +960,28 @@ slanted:	;
 		snap = false;
 		hold = true;
 		fire = false;
+	}
+
+	if (exact && !hold && !snap)
+	{	// the view is wanted elsewhere but the feet are on such a move
+		want_yaw = route_yaw;
+		want_pitch = 0;
+		snap = true;
+		fire = false;
+	}
+
+	// Never standing in what hurts: back to the node, and up out of lava.
+	if (hold && Haz_At (origin, ducked))
+	{
+		VectorSubtract (at, origin, go);
+		go[2] = 0;
+		if (VectorLength (go) > 4)
+		{
+			hold = false;
+			dist = 100;
+		}
+		if (ent->waterlevel)
+			up = 2;
 	}
 
 	// The feet go one of eight ways about the view, 45 degrees apart. So that
@@ -930,29 +1026,110 @@ slanted:	;
 	}
 	if (link_type == NAV_CLIMB && fabs (AngleDiff (a, yaw)) > 30)
 		up = 1;
+	if (hold || (dist <= 2 && link_type == NAV_WALK))
+		bf = bs = 0;
 
-	if (!hold && (dist > 2 || link_type != NAV_WALK))
+	// Before the feet are told anything, the step is tried (Nav_StepSafe):
+	// would the player, going that way for a step and then stopping, come to
+	// rest on a floor, out of harm? At 100 ms a step it goes 30 units and
+	// slides 17 more, so the edge of a ledge is a step away long before it
+	// looks it; and with the view on a monster the nearest of the eight ways
+	// can be 22 degrees off the one meant. If the step fails it is tried
+	// crouched, which is a third as fast; then the ways to either side; and
+	// then the feet stay. Staying is tried too, since the player may be
+	// sliding: if that fails, whichever way stops it. A jump or a drop that
+	// the route makes on purpose, once begun from its node, is let be.
+	wary = grounded && !launch && up != 2 && rl_block->mode == RL_MODE_PLAY
+		&& (link_type == NAV_WALK || link_type == NAV_DUCK || link_type == NAV_JUMP);
+	if (wary && (bf || bs))
 	{
-		act[RL_ACT_FORWARD] = bf + 1;
-		act[RL_ACT_STRAFE] = bs + 1;
+		int		tf, ts, k, done[3][3];
+
+		memset (done, 0, sizeof(done));
+		for (k=0 ; k<3 ; k++)
+		{	// the nearest not yet tried
+			tf = ts = 0;
+			best_err = 1000;
+			for (f=-1 ; f<=1 ; f++)
+				for (s=-1 ; s<=1 ; s++)
+				{
+					if ((!f && !s) || done[f+1][s+1])
+						continue;
+					err = fabs (AngleDiff (a, yaw + RAD2DEG_F(atan2 (-s, f))));
+					if (err < best_err)
+					{
+						best_err = err;
+						tf = f;
+						ts = s;
+					}
+				}
+			if (best_err > 50)
+				break;
+			done[tf+1][ts+1] = 1;
+			across = (yaw + RAD2DEG_F(atan2 (-ts, tf))) * M_PI / 180;
+			VectorSet (side, cos (across), sin (across), 0);
+			if (Nav_StepSafe (ent, side, up == 0))
+				break;
+			if (up == 1 && Nav_StepSafe (ent, side, true))
+			{
+				up = 0;
+				break;
+			}
+		}
+		if (k < 3 && best_err <= 50)
+		{
+			bf = tf;
+			bs = ts;
+		}
+		else
+			bf = bs = 0;
 	}
+	if (wary && !bf && !bs && !Nav_StepSafe (ent, NULL, up == 0))
+	{	// sliding to somewhere it should not be: the way that stops it
+		for (f=-1 ; f<=1 && !bf && !bs ; f++)
+			for (s=-1 ; s<=1 ; s++)
+			{
+				if (!f && !s)
+					continue;
+				across = (yaw + RAD2DEG_F(atan2 (-s, f))) * M_PI / 180;
+				VectorSet (side, cos (across), sin (across), 0);
+				if (DotProduct (side, ent->velocity) >= 0 || !Nav_StepSafe (ent, side, up == 0))
+					continue;
+				bf = f;
+				bs = s;
+				break;
+			}
+	}
+
+	act[RL_ACT_FORWARD] = bf + 1;
+	act[RL_ACT_STRAFE] = bs + 1;
 	act[RL_ACT_UP] = up;
+	if (gi.cvar ("rl_debug", "0", 0)->value > 1)
+	{
+		qboolean	g;
+		void Nav_Predict (edict_t *ent, float yaw, int forward, int side, int up, vec3_t out, qboolean *ground);
+
+		Nav_Predict (ent, yaw, bf * 400, bs * 400, (up - 1) * 400, p, &g);
+		gi.dprintf ("   predict %.1f %.1f %.1f gnd %i\n", p[0], p[1], p[2], g);
+	}
 
 	if (gi.cvar ("rl_debug", "0", 0)->value)
 	{
-		gi.dprintf ("%i: at %.1f %.1f %.1f node %i -> %i type %i togo %.2f job %i/%i errand %i enemy %i move %i %i up %i hold %i fire %i hp %i\n",
+		gi.dprintf ("%i: at %.1f %.1f %.1f node %i -> %i type %i togo %.2f job %i/%i errand %i enemy %i move %i %i up %i hold %i fire %i hp %i water %i/%x haz %i yaw %.1f want %.1f go %.0f vel %.0f %.0f gnd %i\n",
 			rl_block->step, origin[0], origin[1], origin[2], teach_anchor, link ? link->to : -1, link_type,
 			teach_togo[teach_anchor] < NAV_FAR ? teach_togo[teach_anchor] : -1.0f,
 			rl_block->job_kind, rl_block->job_ent, teach_errand ? (int)(teach_errand - g_edicts) : 0,
-			rl_block->fighting, bf, bs, up, hold, fire, ent->health);
+			rl_block->fighting, bf, bs, up, hold, fire, ent->health, ent->waterlevel, ent->watertype,
+			Haz_At (origin, ducked), client->v_angle[YAW], want_yaw, a, ent->velocity[0], ent->velocity[1], grounded);
 		if (rl_block->fighting)
 		{
 			edict_t	*m = &g_edicts[rl_block->fighting];
 
-			gi.dprintf ("   foe %s at %.0f %.0f %.0f hp %i sees %i yaw %.1f want %.1f pitch %.1f want %.1f rate %.1f\n",
+			gi.dprintf ("   foe %s at %.0f %.0f %.0f hp %i sees %i yaw %.1f want %.1f pitch %.1f want %.1f rate %.1f weapon %s state %i act %i\n",
 				m->classname, m->s.origin[0], m->s.origin[1], m->s.origin[2], m->health,
 				Fight_Sees (ent, eye, m), client->v_angle[YAW], want_yaw, client->v_angle[PITCH], want_pitch,
-				teach_yaw_rate);
+				teach_yaw_rate, client->pers.weapon ? client->pers.weapon->pickup_name : "none",
+				client->weaponstate, act[RL_ACT_WEAPON]);
 		}
 		if (link && link->ent)
 			gi.dprintf ("   mover %i %s wants %i is %i self %i\n", link->ent, g_edicts[link->ent].classname,
