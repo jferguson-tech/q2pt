@@ -175,6 +175,23 @@ static void Plan_Senders (char *targetname, int depth)
 
 /*
 ================
+Plan_Removers
+
+Everything that takes away the entities of this name when it fires
+================
+*/
+static void Plan_Removers (char *targetname)
+{
+	edict_t	*e;
+	int		i;
+
+	for (i=game.maxclients+1, e=g_edicts+i ; i<globals.num_edicts ; i++, e++)
+		if (e->inuse && e->killtarget && !strcmp (e->killtarget, targetname))
+			Plan_Sender (e, 1);
+}
+
+/*
+================
 Plan_LeadsBack
 
 True when a target_changelevel's map is one of those the player is not to
@@ -214,7 +231,8 @@ static qboolean Plan_LeadsBack (char *map)
 ================
 Plan_Exits
 
-The jobs that end the map: the triggers that fire a target_changelevel. With
+The jobs that end the map: the triggers that fire a target_changelevel. When
+the episode names the exit that counts, only that one. Otherwise, with
 several ways out, those to maps the player is not to go to are left out
 when there is any other.
 ================
@@ -229,7 +247,12 @@ static void Plan_Exits (void)
 		{
 			if (!e->inuse || !e->classname || strcmp (e->classname, "target_changelevel") || !e->map)
 				continue;
-			if (!pass && Plan_LeadsBack (e->map))
+			if (rl_block->onward[0])
+			{
+				if (Q_stricmp (e->map, rl_block->onward))
+					continue;
+			}
+			else if (!pass && Plan_LeadsBack (e->map))
 				continue;
 			Plan_Senders (e->targetname, 0);
 		}
@@ -318,6 +341,53 @@ typedef struct
 } plan_kept_t;
 static plan_kept_t	plan_kept[PLAN_KEPT];
 static int			plan_kept_level = -1;
+
+/*
+================
+Plan_FallsThrough
+
+A trigger with no node in it can hang in the air, where the player falls
+through it: over a pit whose floor opens. The places for touching it are
+then where the falls through it land. Returns how many.
+================
+*/
+static int Plan_FallsThrough (int j)
+{
+	edict_t		*e = plan_jobs[j].ent;
+	nav_link_t	*l;
+	vec3_t		a, b, d, p;
+	int			i, s, steps, found = 0;
+
+	for (i=0, l=nav_links ; i<nav_num_links ; i++, l++)
+	{
+		if (plan_node_job[l->to] || l->type == NAV_RIDE)
+			continue;
+		Nav_NodeOrigin (l->from, a);
+		Nav_NodeOrigin (l->to, b);
+		if (a[2] - b[2] < 40)
+			continue;
+		if ((a[0] < b[0] ? a[0] : b[0]) > e->absmax[0] + 16 || (a[0] > b[0] ? a[0] : b[0]) < e->absmin[0] - 16
+			|| (a[1] < b[1] ? a[1] : b[1]) > e->absmax[1] + 16 || (a[1] > b[1] ? a[1] : b[1]) < e->absmin[1] - 16
+			|| b[2] - 24 > e->absmax[2] || a[2] + 32 < e->absmin[2])
+			continue;
+		VectorSubtract (b, a, d);
+		steps = 1 + (int)(VectorLength (d) / 8);
+		for (s=0 ; s<=steps ; s++)
+		{
+			VectorMA (a, (float)s / steps, d, p);
+			if (p[0] + 15 > e->absmin[0] && p[0] - 15 < e->absmax[0]
+				&& p[1] + 15 > e->absmin[1] && p[1] - 15 < e->absmax[1]
+				&& p[2] + 32 > e->absmin[2] && p[2] - 24 < e->absmax[2])
+				break;
+		}
+		if (s > steps || plan_num_goals == PLAN_MAX_GOALS)
+			continue;
+		plan_node_job[l->to] = j + 1;
+		plan_goals[plan_num_goals++] = l->to;
+		found++;
+	}
+	return found;
+}
 
 /*
 ================
@@ -452,6 +522,10 @@ static void Plan_Places (void)
 		// only when no node was inside
 		if (found || job->kind == PLAN_SHOOT)
 			continue;
+		if (job->kind == PLAN_TOUCH || job->kind == PLAN_EXIT)
+			found = Plan_FallsThrough (j);
+		if (found)
+			continue;
 		for (k=0 ; k<keep ; k++)
 			if (near[k] != -1 && plan_num_goals < PLAN_MAX_GOALS)
 			{
@@ -492,18 +566,29 @@ qboolean Plan_Update (int anchor, float *togo)
 	for (depth=0 ; depth<PLAN_DEPTH ; depth++)
 	{
 		if (!plan_num_jobs)
+		{
+			if (plan_debug->value)
+				gi.dprintf ("plan depth %i: nothing to do\n", depth);
 			return false;
+		}
 		Plan_Places ();
 		if (!plan_num_goals)
+		{
+			if (plan_debug->value)
+				for (i=0 ; i<plan_num_jobs ; i++)
+					gi.dprintf ("plan depth %i: no place for job %i on %i %s\n", depth, plan_jobs[i].kind,
+						(int)(plan_jobs[i].ent - g_edicts), plan_jobs[i].ent->classname);
 			return false;
+		}
 		Nav_CostsToAny (plan_goals, plan_num_goals, togo);
 		if (plan_debug->value)
 		{
 			gi.dprintf ("plan depth %i: %i jobs, %i places, %s\n", depth, plan_num_jobs, plan_num_goals,
 				togo[anchor] < NAV_FAR ? "way open" : "way shut");
 			for (i=0 ; i<plan_num_jobs ; i++)
-				gi.dprintf ("   job %i on %i %s\n", plan_jobs[i].kind, (int)(plan_jobs[i].ent - g_edicts),
-					plan_jobs[i].ent->classname);
+				gi.dprintf ("   job %i on %i %s at %.0f %.0f %.0f\n", plan_jobs[i].kind,
+					(int)(plan_jobs[i].ent - g_edicts), plan_jobs[i].ent->classname,
+					plan_jobs[i].ent->absmin[0], plan_jobs[i].ent->absmin[1], plan_jobs[i].ent->absmin[2]);
 		}
 		if (togo[anchor] < NAV_FAR)
 			return true;
@@ -559,14 +644,19 @@ qboolean Plan_Update (int anchor, float *togo)
 				continue;
 			}
 			if (plan_debug->value)
-				gi.dprintf ("   shut by %i %s (link %i -> %i type %i wants %i)\n", best->ent,
-					g_edicts[best->ent].classname, best->from, best->to, best->type, best->state);
+				gi.dprintf ("   shut by %i %s %s at %.0f %.0f %.0f (link %i -> %i type %i wants %i)\n", best->ent,
+					g_edicts[best->ent].classname,
+					g_edicts[best->ent].targetname ? g_edicts[best->ent].targetname : "unnamed",
+					g_edicts[best->ent].absmin[0], g_edicts[best->ent].absmin[1], g_edicts[best->ent].absmin[2],
+					best->from, best->to, best->type, best->state);
 			// best is the link that is shut; its mover's group is what to send
 			count = Nav_MoverGroup (&g_edicts[best->ent], group, 16);
 			for (i=0 ; i<count ; i++)
 			{
 				if (group[i]->max_health)
 					Plan_AddJob (PLAN_SHOOT, group[i]);
+				else if (group[i]->targetname && !strcmp (group[i]->classname, "func_wall"))
+					Plan_Removers (group[i]->targetname);
 				else if (group[i]->targetname)
 					Plan_Senders (group[i]->targetname, 1);
 			}

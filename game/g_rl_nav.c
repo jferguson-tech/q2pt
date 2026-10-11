@@ -51,7 +51,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "g_rl_nav.h"
 
 #define	NAV_FILE_MAGIC		0x3156414e		// "NAV1"
-#define	NAV_FILE_VERSION	9
+#define	NAV_FILE_VERSION	10
 
 // What stops the ghost is what stops the player. While the graph is built
 // the monsters are made not solid, so of the things with a box only those
@@ -74,6 +74,8 @@ typedef struct
 	edict_t		*ent;
 	int			group;				// movers that move together have one number
 	qboolean	self;				// works by itself when the player comes to it
+	qboolean	goes;				// a wall that is taken away: its far end is not being there
+	int			model;				// its brush model, by which it is known to be itself still
 	vec3_t		home, away;			// its origin at each end
 	vec3_t		home_angles, away_angles;
 	vec3_t		mins[2], maxs[2];	// its box at home and away, grown by the player's
@@ -690,7 +692,30 @@ static void Nav_PlaceMover (nav_mover_t *m, qboolean away)
 
 	VectorCopy (origin, m->ent->s.origin);
 	VectorCopy (angles, m->ent->s.angles);
+	if (m->goes)
+		m->ent->solid = away ? SOLID_NOT : SOLID_BSP;
 	gi.linkentity (m->ent);
+}
+
+/*
+================
+Nav_Goes
+
+True for a piece of wall that something in the map takes away for good: a
+solid brush named as the killtarget of a trigger, a relay, a door.
+================
+*/
+static qboolean Nav_Goes (edict_t *e)
+{
+	edict_t	*o;
+	int		i;
+
+	if (e->solid != SOLID_BSP || !e->targetname || strcmp (e->classname, "func_wall"))
+		return false;
+	for (i=game.maxclients+1, o=g_edicts+i ; i<globals.num_edicts ; i++, o++)
+		if (o->inuse && o->killtarget && !strcmp (o->killtarget, e->targetname))
+			return true;
+	return false;
 }
 
 static void Nav_PlaceGroup (int group, qboolean away)
@@ -706,7 +731,8 @@ static void Nav_PlaceGroup (int group, qboolean away)
 ================
 Nav_FindMovers
 
-Lists the map's doors and lifts with both ends of their travel. Called at
+Lists the map's doors and lifts with both ends of their travel, and the
+walls that are taken away, whose far end is to be gone. Called at
 the start of every episode, before anything has moved. With boxes set, each
 is put at its far end and back to measure the room it takes there, which
 only the building of the graph needs.
@@ -717,7 +743,7 @@ static void Nav_FindMovers (qboolean boxes)
 	edict_t		*e, *o;
 	nav_mover_t	*m;
 	int			i, j, k, groups;
-	qboolean	door, rotating, plat;
+	qboolean	door, rotating, plat, goes;
 
 	nav_num_movers = 0;
 	memset (nav_mover_of, 0, sizeof(nav_mover_of));
@@ -730,12 +756,15 @@ static void Nav_FindMovers (qboolean boxes)
 		door = !strcmp (e->classname, "func_door");
 		rotating = !strcmp (e->classname, "func_door_rotating");
 		plat = !strcmp (e->classname, "func_plat");
-		if (!door && !rotating && !plat)
+		goes = !door && !rotating && !plat && Nav_Goes (e);
+		if (!door && !rotating && !plat && !goes)
 			continue;
 
 		m = &nav_movers[nav_num_movers];
 		memset (m, 0, sizeof(*m));
 		m->ent = e;
+		m->model = e->s.modelindex;
+		m->goes = goes;
 		VectorCopy (e->s.origin, m->home);
 		VectorCopy (e->s.angles, m->home_angles);
 		VectorCopy (m->home, m->away);
@@ -747,6 +776,8 @@ static void Nav_FindMovers (qboolean boxes)
 			else
 				VectorCopy (e->moveinfo.start_angles, m->away_angles);
 		}
+		else if (goes)
+			;
 		else if (VectorCompare (m->home, e->moveinfo.start_origin))
 			VectorCopy (e->moveinfo.end_origin, m->away);
 		else
@@ -754,7 +785,7 @@ static void Nav_FindMovers (qboolean boxes)
 
 		// A door with no name and no health opens to whoever walks up to it.
 		// A lift with no name rises under whoever steps on it and comes back.
-		m->self = !e->targetname && (plat || !e->health);
+		m->self = !goes && !e->targetname && (plat || !e->health);
 
 		// in a group with any earlier mover of the same team or the same name
 		m->group = -1;
@@ -885,6 +916,7 @@ static void Nav_Build (void)
 	int			i, n, round, group, groups, before, count;
 	nav_mover_t	*m;
 	vec3_t		p;
+	short		at[3];
 
 	nav_pass = player;
 	nav_num_nodes = nav_num_links = 0;
@@ -915,6 +947,21 @@ static void Nav_Build (void)
 	for (i=0 ; i<20 && !g.ground ; i++)
 		Ghost_Step (&g, 0, 0, 0);
 	Nav_AddNode (&g, 0, (g.ground_ent && nav_mover_of[g.ground_ent - g_edicts]) ? g.ground_ent : NULL);
+
+	// and from every other place the player can come into the map: a map
+	// entered from several others can have parts that are reached from one
+	// of its starts only
+	for (e=NULL ; (e = G_Find (e, FOFS(classname), "info_player_start")) != NULL ; )
+	{
+		for (i=0 ; i<3 ; i++)
+			at[i] = (short)(e->s.origin[i] * 8);
+		at[2] += 9 * 8;
+		Ghost_Place (&g, at, false);
+		for (i=0 ; i<20 && !g.ground ; i++)
+			Ghost_Step (&g, 0, 0, 0);
+		if (g.ground && Nav_Near (g.origin, NAV_MERGE_XY, NAV_MERGE_Z, 0, 0) == -1)
+			Nav_AddNode (&g, 0, (g.ground_ent && nav_mover_of[g.ground_ent - g_edicts]) ? g.ground_ent : NULL);
+	}
 
 	// Round after round, until one adds no node: everything at home, then
 	// each group of movers in turn at its far end.
@@ -1172,6 +1219,32 @@ qboolean Nav_Load (void)
 
 /*
 ================
+Nav_MoversNow
+
+Drops the movers that the map has taken away. The game gives a freed
+entity's number to the next thing made, a bolt in flight or a dropped clip,
+which must not then be taken for the door that had the number.
+Called once a step.
+================
+*/
+void Nav_MoversNow (void)
+{
+	nav_mover_t	*m;
+	int			i;
+
+	for (i=0, m=nav_movers ; i<nav_num_movers ; i++, m++)
+	{
+		if (m->group < 0)
+			continue;
+		if (m->ent->inuse && m->ent->solid == SOLID_BSP && m->ent->s.modelindex == m->model)
+			continue;
+		nav_mover_of[m->ent - g_edicts] = 0;
+		m->group = -1;
+	}
+}
+
+/*
+================
 Nav_MoverAt
 
 Which end of its travel a mover is at: NAV_HOME, NAV_AWAY, or 0 between them
@@ -1185,6 +1258,8 @@ int Nav_MoverAt (edict_t *e)
 	if (!nav_mover_of[e - g_edicts])
 		return 0;
 	m = &nav_movers[nav_mover_of[e - g_edicts] - 1];
+	if (m->goes)
+		return NAV_HOME;	// while it is there at all
 	VectorSubtract (e->s.origin, m->home, d);
 	if (VectorLength (d) < 1)
 	{
@@ -1234,6 +1309,9 @@ qboolean Nav_LinkOpen (nav_link_t *l)
 	int			at;
 
 	if (nav_link_bad && nav_link_bad[l - nav_links])
+		return false;
+
+	if (Haz_LinkExit (l))
 		return false;
 
 	// through a beam that is on: only if something could yet switch it off

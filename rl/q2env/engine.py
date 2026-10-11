@@ -16,6 +16,8 @@ from pathlib import Path
 import numpy as np
 
 from . import layout as L
+from .carry import draw
+from .maps import leg
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -93,15 +95,23 @@ class Engine:
         if self.block["error"]:
             raise EngineError(self.block["error_text"].decode(errors="replace"))
 
-    def reset(self, map, seed, skill=1, time_limit=0, demo="", flags=0, mode=0, back=""):
+    def reset(self, map, seed, skill=1, time_limit=0, demo="", flags=0, mode=0, back=None):
         self.ask_reset(map, seed, skill, time_limit, demo, flags, mode, back)
         self.wait()
 
-    def ask_reset(self, map, seed, skill=1, time_limit=0, demo="", flags=0, mode=0, back=""):
-        """mode: what the teacher is out to do (layout.MODE_). back: the maps,
-        with spaces between, whose exits are not the way on."""
+    def ask_reset(self, map, seed, skill=1, time_limit=0, demo="", flags=0, mode=0, back=None):
+        """map: a map, or a leg of a unit (maps.LEGS), which starts where and
+        with what the leg before it ended: see carry.py. mode: what the
+        teacher is out to do (layout.MODE_). back: the maps, with spaces
+        between, whose exits are not the way on; None for those that come
+        before it in the game. Not used for a leg, which names its exit."""
+        start, onward, before, prior = leg(map)
+        if back is None:
+            back = before
         b = self.block
-        b["map"] = map.encode()
+        b["map"] = start.encode()
+        b["onward"] = onward.encode()
+        b["start"] = draw(prior, seed) if prior else 0
         b["seed"] = seed
         b["skill"] = skill
         b["time_limit"] = time_limit

@@ -16,7 +16,6 @@ import numpy as np
 
 from . import layout as L
 from .engine import Engine
-from .maps import back_of
 
 
 def observation_space():
@@ -88,7 +87,7 @@ class Q2Env(gym.Env):
         self.engine.step(action)
         b = self.engine.block
         done = int(b["done"])
-        return (_obs(b, self.guided), 0.0, done in (L.DONE_EXIT, L.DONE_DEATH),
+        return (_obs(b, self.guided), 0.0, done in (L.DONE_EXIT, L.DONE_DEATH, L.DONE_WRONG),
                 done == L.DONE_TIME, _info(b))
 
     def close(self):
@@ -108,14 +107,14 @@ class Q2VecEnv:
 
     def __init__(self, n, maps=("base1",), skill=1, time_limit=3000, guided=True,
                  cpus=None, seed=0, mode=L.MODE_EXPLORE, flags=0, back=None):
-        """mode, flags: as Engine.reset takes them. back: for each map, the
-        maps whose exits are not the way on; None for those that come before
-        it in the game."""
+        """maps: maps or legs of a unit (maps.LEGS). mode, flags: as
+        Engine.reset takes them. back: for each map, the maps whose exits are
+        not the way on; None for those that come before it in the game."""
         self.n = n
         self.maps = tuple(maps)
         self.skill, self.time_limit, self.guided = skill, time_limit, guided
         self.mode, self.flags = mode, flags
-        self.back = {m: back_of(m) for m in self.maps} if back is None else back
+        self.back = back
         self.current_map = [""] * n
         self.current_seed = np.zeros(n, np.int64)
         self.single_observation_space = observation_space()
@@ -136,7 +135,7 @@ class Q2VecEnv:
         map = self.maps[(i + k) % len(self.maps)]
         seed = (self._seed + i * 1000003 + k) & 0x7FFFFFFF
         self.engines[i].ask_reset(map, seed, self.skill, self.time_limit, flags=self.flags,
-                                  mode=self.mode, back=self.back.get(map, ""))
+                                  mode=self.mode, back=self.back.get(map, "") if self.back else None)
         self.current_map[i] = map
         self.current_seed[i] = seed
         self._episodes[i] += 1

@@ -18,12 +18,17 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 // g_rl_hazard.c -- what hurts the player where it stands: laser beams,
-// triggers that hurt, lava and slime.
+// triggers that hurt, lava and slime; and the ways out of the map that are
+// not the way on, which end the episode as surely.
 //
 // The navigation graph is grown through laser beams as if they were not
 // there, since most can be switched off. Here each link is given the beam
 // it passes through, if any, and counts as shut while that beam is on; the
 // planner then looks for what switches the beam as it does for a door.
+//
+// When the episode names the exit that counts (rl_block->onward), the
+// triggers of every other exit are kept clear of in the same two ways: a
+// link through one is shut, and a step into one is refused.
 //
 // Lava, slime and hurting triggers are left out of the graph when it is
 // grown, but the player is not always on the graph: it sidesteps, backs off
@@ -35,6 +40,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define	HAZ_MAX_LASERS	64
 #define	HAZ_MAX_HURTS	128
+#define	HAZ_MAX_EXITS	16
 
 typedef struct
 {
@@ -48,6 +54,9 @@ static int			haz_num_lasers;
 static edict_t		*haz_hurts[HAZ_MAX_HURTS];
 static int			haz_num_hurts;
 static byte			*haz_link_laser;	// for each link, 1 + the laser it passes through, or 0
+static edict_t		*haz_exits[HAZ_MAX_EXITS];	// triggers of the exits that are not the way on
+static int			haz_num_exits;
+static byte			*haz_link_exit;		// for each link, 1 if it passes through one of them
 
 /*
 ================
@@ -142,6 +151,93 @@ static void Haz_Beam (haz_laser_t *z)
 
 /*
 ================
+Haz_InExit
+
+True when the player's box at origin touches the trigger of an exit that is
+not the way on
+================
+*/
+static qboolean Haz_InExit (vec3_t origin)
+{
+	edict_t	*e;
+	int		i;
+
+	for (i=0 ; i<haz_num_exits ; i++)
+	{
+		e = haz_exits[i];
+		if (!e->inuse)
+			continue;
+		if (origin[0] + 17 < e->absmin[0] || origin[0] - 17 > e->absmax[0]
+			|| origin[1] + 17 < e->absmin[1] || origin[1] - 17 > e->absmax[1]
+			|| origin[2] + 33 < e->absmin[2] || origin[2] - 25 > e->absmax[2])
+			continue;
+		return true;
+	}
+	return false;
+}
+
+/*
+================
+Haz_FindExits
+
+Lists the triggers that fire a target_changelevel to anywhere but the map
+the episode is to end by reaching, and marks the links that pass through one.
+================
+*/
+static void Haz_FindExits (void)
+{
+	edict_t		*e, *t;
+	nav_link_t	*l;
+	int			i, s, steps;
+	vec3_t		a, b, d, p;
+
+	haz_num_exits = 0;
+	haz_link_exit = NULL;
+	if (!rl_block->onward[0])
+		return;
+	for (i=game.maxclients+1, e=g_edicts+i ; i<globals.num_edicts ; i++, e++)
+	{
+		if (!e->inuse || !e->classname || !e->target || haz_num_exits == HAZ_MAX_EXITS)
+			continue;
+		if (strcmp (e->classname, "trigger_multiple") && strcmp (e->classname, "trigger_once"))
+			continue;
+		for (t=NULL ; (t = G_Find (t, FOFS(targetname), e->target)) != NULL ; )
+			if (t->classname && !strcmp (t->classname, "target_changelevel") && t->map
+				&& Q_stricmp (t->map, rl_block->onward))
+			{
+				haz_exits[haz_num_exits++] = e;
+				break;
+			}
+	}
+	if (!haz_num_exits || !nav_num_links)
+		return;
+
+	haz_link_exit = gi.TagMalloc (nav_num_links, TAG_LEVEL);
+	for (i=0, l=nav_links ; i<nav_num_links ; i++, l++)
+	{
+		Nav_NodeOrigin (l->from, a);
+		Nav_NodeOrigin (l->to, b);
+		VectorSubtract (b, a, d);
+		steps = 1 + (int)(VectorLength (d) / 8);
+		for (s=0 ; s<=steps ; s++)
+		{
+			VectorMA (a, (float)s / steps, d, p);
+			if (Haz_InExit (p))
+			{
+				haz_link_exit[i] = 1;
+				break;
+			}
+		}
+	}
+}
+
+qboolean Haz_LinkExit (nav_link_t *l)
+{
+	return haz_link_exit && haz_link_exit[l - nav_links];
+}
+
+/*
+================
 Haz_Find
 
 Lists the map's lasers and hurting triggers, and marks the links of the
@@ -171,6 +267,8 @@ void Haz_Find (void)
 		else if (!strcmp (e->classname, "trigger_hurt") && haz_num_hurts < HAZ_MAX_HURTS)
 			haz_hurts[haz_num_hurts++] = e;
 	}
+
+	Haz_FindExits ();
 
 	haz_link_laser = NULL;
 	if (!haz_num_lasers || !nav_num_links)
@@ -234,7 +332,8 @@ edict_t *Haz_LinkLaser (nav_link_t *l)
 Haz_At
 
 True when the player standing at origin would be hurt by what is there: a
-beam, a trigger that hurts, or lava or slime about its feet
+beam, a trigger that hurts, or lava or slime about its feet. An exit that is
+not the way on counts too.
 ================
 */
 qboolean Haz_At (vec3_t origin, qboolean ducked)
@@ -261,6 +360,9 @@ qboolean Haz_At (vec3_t origin, qboolean ducked)
 			continue;
 		return true;
 	}
+
+	if (Haz_InExit (origin))
+		return true;
 
 	VectorSet (p, origin[0], origin[1], origin[2] - 23);
 	return (gi.pointcontents (p) & (CONTENTS_LAVA|CONTENTS_SLIME)) != 0;

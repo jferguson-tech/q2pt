@@ -130,8 +130,10 @@ qboolean Nav_TryLink (edict_t *ent, nav_link_t *l, vec3_t end, int *up);
 qboolean Nav_LinkOpen (nav_link_t *l);
 
 // g_rl_hazard.c: laser beams, triggers that hurt, lava and slime
+void Nav_MoversNow (void);
 void Haz_Find (void);
 edict_t *Haz_LinkLaser (nav_link_t *l);
+qboolean Haz_LinkExit (nav_link_t *l);
 qboolean Haz_At (vec3_t origin, qboolean ducked);
 
 // g_rl_plan.c: what the scripted player should do next to get out

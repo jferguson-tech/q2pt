@@ -2,17 +2,22 @@
 # Copyright (c) 2026 Jonathan Ferguson
 """How often the teacher finishes a map, and how it fails when it does not.
 
-    python rl/tools/play.py [--episodes 100] [--steps 6000] [--skill 1] [--table] [map ...]
+    python rl/tools/play.py [--episodes 100] [--steps 6000] [--skill 1] [--table] [--keep] [map ...]
 
 Plays seeded episodes with the teacher driving in its playing mode: seeds 0
 to episodes-1, the monsters in and shooting. An episode succeeds when the
 map's exit is reached. Each failure is put in a class: killed, and by what;
 or out of time, and what the teacher was doing in the last steps.
 
-A map can have several exits. The one that counts is one that leads on: the
-teacher is told not to take an exit to any map that comes before this one in
-the game's order. With no maps named, every single-player map is played;
---table prints one line per map.
+A map can be a leg of a unit (q2env/maps.py): the episode then starts where
+the leg before it ended and with what the teacher carried out of that one,
+and only the exit that leads on counts. --keep saves what the teacher has at
+that exit, a row for each episode that gets there, for the leg that follows
+to start from; the legs of a unit are so played in order.
+
+A map played alone can have several exits. The teacher is told not to take
+one to any map that comes before this one in the game's order. With no maps
+named, every single-player map is played; --table prints one line per map.
 """
 
 import argparse
@@ -24,8 +29,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from q2env import Engine, layout as L  # noqa: E402
-from q2env.maps import ORDER, back_of  # noqa: E402
+from q2env import Engine, carry, layout as L  # noqa: E402
+from q2env.maps import ORDER  # noqa: E402
 from q2env.nav import LINK_NAMES  # noqa: E402
 
 CPUS = list(range(8, 16)) + list(range(24, 32)) + list(range(2, 8)) + list(range(18, 24))
@@ -44,6 +49,8 @@ def how_it_ended(block, trail):
     done = int(block["done"])
     if done == L.DONE_EXIT:
         return "exit"
+    if done == L.DONE_WRONG:
+        return f"left for {block['left'].decode()}"
     if done == L.DONE_DEATH:
         by, means = int(block["death_by"]), int(block["death_means"])
         if by:
@@ -63,9 +70,9 @@ def how_it_ended(block, trail):
     return f"out of time, {how}, {what}"
 
 
-def play(map, seed, steps, skill, back, cpu):
+def play(map, seed, steps, skill, cpu):
     with Engine(cpu=cpu) as e:
-        e.reset(map, seed, skill=skill, time_limit=steps, mode=L.MODE_PLAY, back=back)
+        e.reset(map, seed, skill=skill, time_limit=steps, mode=L.MODE_PLAY)
         b = e.block
         trail = []
         while not b["done"]:
@@ -74,13 +81,12 @@ def play(map, seed, steps, skill, back, cpu):
                           float(b["route_left"]), int(b["fighting"])))
         return {"end": how_it_ended(b, trail), "steps": int(b["step"]),
                 "kills": int(b["monsters_killed"]), "monsters": int(b["monsters_total"]),
-                "health": float(b["self"][0]), "seed": seed}
+                "health": float(b["self"][0]), "seed": seed, "carry": np.array(b["carry"])}
 
 
 def measure(map, episodes, steps, skill):
-    back = back_of(map)
     with ThreadPoolExecutor(len(CPUS)) as pool:
-        jobs = [pool.submit(play, map, seed, steps, skill, back, CPUS[seed % len(CPUS)])
+        jobs = [pool.submit(play, map, seed, steps, skill, CPUS[seed % len(CPUS)])
                 for seed in range(episodes)]
         return [j.result() for j in jobs]
 
@@ -92,6 +98,7 @@ if __name__ == "__main__":
     ap.add_argument("--steps", type=int, default=6000)
     ap.add_argument("--skill", type=int, default=1)
     ap.add_argument("--table", action="store_true")
+    ap.add_argument("--keep", action="store_true")
     args = ap.parse_args()
 
     if args.table:
@@ -101,6 +108,8 @@ if __name__ == "__main__":
         runs = measure(map, args.episodes, args.steps, args.skill)
         won = [r for r in runs if r["end"] == "exit"]
         ends = Counter(r["end"] for r in runs if r["end"] != "exit")
+        if args.keep and won:
+            carry.keep(map, [r["carry"] for r in won])
         if args.table:
             killed = sum(c for e, c in ends.items() if e.startswith("killed"))
             worst = ends.most_common(1)[0] if ends else ("", 0)

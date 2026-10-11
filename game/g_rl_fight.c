@@ -155,6 +155,13 @@ void Fight_Aim (edict_t *ent, edict_t *enemy, vec3_t eye, float *yaw, float *pit
 
 	*yaw = RAD2DEG_F(atan2 (d[1], d[0]));
 	*pitch = -RAD2DEG_F(atan2 (d[2], sqrt (d[0]*d[0] + d[1]*d[1])));
+
+	// In a game for one the machinegun climbs as it is held down: each shot
+	// goes a degree and a half above the last, up to nine shots' worth, and
+	// past the first few all go over the monster's head. The view is held
+	// that much below it.
+	if (!strcmp (name, "Machinegun") && !deathmatch->value)
+		*pitch += 1.5f * ent->client->machinegun_shots;
 }
 
 /*

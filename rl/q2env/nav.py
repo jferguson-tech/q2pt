@@ -7,7 +7,7 @@ import numpy as np
 from .engine import data_dir
 
 MAGIC = 0x3156414E
-VERSION = 9
+VERSION = 10
 WALK, JUMP, DUCK, SWIM, CLIMB, RIDE = range(6)
 LINK_NAMES = ("walk", "jump", "duck", "swim", "climb", "ride")
 NODE_WATER, NODE_DUCK, NODE_MOVER, NODE_HIGH = 1, 2, 4, 8

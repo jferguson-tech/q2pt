@@ -66,6 +66,8 @@ static float	*teach_togo;		// cost from every node to the goal
 static float	*teach_reach;		// cost to every node from the player's
 static qboolean	teach_have_plan;
 static edict_t	*teach_errand;		// an item being turned aside for
+static int		teach_errand_until;	// the step by which it should have been had
+static byte		teach_spurned[MAX_EDICTS];	// items given up on for the episode
 #define	TEACH_MAX_BARRELS	64
 static edict_t	*teach_barrels[TEACH_MAX_BARRELS];	// the map's barrels that blow up
 static int		teach_num_barrels;
@@ -293,6 +295,7 @@ qboolean Teach_Reset (void)
 	teach_planned = -1000;
 	teach_have_plan = false;
 	teach_errand = NULL;
+	memset (teach_spurned, 0, sizeof(teach_spurned));
 	teach_yaw_rate = teach_pitch_rate = 0;
 	if (ent->client)
 	{
@@ -417,6 +420,8 @@ static edict_t *Teach_Errand (edict_t *ent)
 	{
 		if (!e->inuse || !e->item || e->solid != SOLID_TRIGGER || (e->svflags & SVF_NOCLIENT))
 			continue;
+		if (teach_spurned[i])
+			continue;
 		worth = Teach_Wants (ent, e);
 		// nothing is worth much of a walk when the way out is a few steps off
 		if (teach_have_plan && teach_togo[teach_anchor] < NAV_FAR && worth > 4 + 2 * teach_togo[teach_anchor])
@@ -457,6 +462,7 @@ no way from. An item worth the walk comes before the way out.
 */
 static void Teach_Plan (edict_t *ent)
 {
+	edict_t	*was;
 	int		n;
 
 	if (rl_block->step - teach_planned < TEACH_REPLAN && teach_have_plan
@@ -469,7 +475,20 @@ static void Teach_Plan (edict_t *ent)
 	// way out can be taken up again: not down a drop there is no way back from.
 	teach_have_plan = Plan_Update (teach_anchor, teach_togo);
 	Nav_CostsFrom (teach_anchor, teach_reach);
+	was = teach_errand;
 	teach_errand = Teach_Errand (ent);
+	// An item is allowed three times as long as the graph says the way to
+	// it takes, and ten seconds. One not had by then is not to be had by
+	// this player: the way to it is a jump that keeps failing, or the like.
+	if (teach_errand && teach_errand == was && rl_block->step > teach_errand_until)
+	{
+		teach_spurned[teach_errand - g_edicts] = 1;
+		teach_errand = Teach_Errand (ent);
+		was = NULL;
+	}
+	if (teach_errand && teach_errand != was)
+		teach_errand_until = rl_block->step + 100
+			+ (int)(30 * teach_reach[Nav_NodeNear (teach_errand->s.origin, 28, 40)]);
 	if (teach_errand && gi.cvar ("rl_debug", "0", 0)->value)
 		gi.dprintf ("errand %s worth %.0f\n", teach_errand->classname, Teach_Wants (ent, teach_errand));
 	if (teach_errand)
@@ -496,7 +515,7 @@ static qboolean Teach_Dodge (edict_t *ent, vec3_t origin, edict_t *monster, floa
 {
 	float		*enemy = monster->s.origin;
 	nav_link_t	*l;
-	int			i, k;
+	int			i, k, pass;
 	float		score, best, side;
 	vec3_t		to, across, d, p, v;
 	qboolean	found = false, beside, melee;
@@ -508,57 +527,63 @@ static qboolean Teach_Dodge (edict_t *ent, vec3_t origin, edict_t *monster, floa
 	side = ((rl_block->step / 15) & 1) ? 1 : -1;
 	VectorSet (across, -to[1] * side, to[0] * side, 0);
 
+	// to the side that is this second's; with no step that way, to the other
 	best = 0.2f;
-	for (i=0, l=&nav_links[nav_nodes[teach_anchor].first_link] ; i<nav_nodes[teach_anchor].num_links ; i++, l++)
+	for (pass=0 ; pass<2 && !found ; pass++)
 	{
-		if (l->type != NAV_WALK || l->cost > 0.25f || !Nav_LinkOpen (l))
-			continue;
-		// nor to where the way cannot be taken up again
-		if (teach_have_plan && teach_togo[teach_anchor] < NAV_FAR && teach_togo[l->to] >= NAV_FAR)
-			continue;
-		Nav_NodeOrigin (l->to, p);
-		VectorSubtract (p, origin, d);
-		if (fabs (d[2]) > 20)
-			continue;
-		d[2] = 0;
-		if (VectorNormalize (d) < 8)
-			continue;
-		if (!Nav_StepSafe (ent, d, false))
-			continue;
-		score = DotProduct (d, across);
-		// Away from a barrel, which a stray shot sets off: a step that takes
-		// the player from beside one is the best there is, wherever it leads,
-		// and a step to beside one is the worst.
-		beside = false;
-		for (k=0 ; k<teach_num_barrels ; k++)
-			if (teach_barrels[k]->inuse)
-			{
-				VectorSubtract (origin, teach_barrels[k]->s.origin, v);
-				v[2] = 0;
-				if (VectorNormalize (v) < 220)
-				{
-					score += 2 * DotProduct (d, v);
-					beside = true;
-				}
-				VectorSubtract (teach_barrels[k]->s.origin, p, v);
-				if (VectorLength (v) < 200)
-					score -= 1;
-			}
-		// not round a corner from the monster: the fight is to be finished
-		p[2] += ent->viewheight;
-		if (!beside && !melee && !Fight_Sees (ent, p, monster))
-			continue;
-		if (melee && dist < 400)
-			score = 0.3f * score - 1.5f * DotProduct (d, to);	// it can only hit from close: keep away
-		else if (dist < 250)
-			score -= 0.7f * DotProduct (d, to);
-		else if (dist > 600)
-			score += 0.4f * DotProduct (d, to);
-		if (score > best)
+		if (pass)
+			VectorScale (across, -1, across);
+		for (i=0, l=&nav_links[nav_nodes[teach_anchor].first_link] ; i<nav_nodes[teach_anchor].num_links ; i++, l++)
 		{
-			best = score;
-			VectorCopy (d, go);
-			found = true;
+			if (l->type != NAV_WALK || l->cost > 0.25f || !Nav_LinkOpen (l))
+				continue;
+			// nor to where the way cannot be taken up again
+			if (teach_have_plan && teach_togo[teach_anchor] < NAV_FAR && teach_togo[l->to] >= NAV_FAR)
+				continue;
+			Nav_NodeOrigin (l->to, p);
+			VectorSubtract (p, origin, d);
+			if (fabs (d[2]) > 20)
+				continue;
+			d[2] = 0;
+			if (VectorNormalize (d) < 8)
+				continue;
+			if (!Nav_StepSafe (ent, d, false))
+				continue;
+			score = DotProduct (d, across);
+			// Away from a barrel, which a stray shot sets off: a step that takes
+			// the player from beside one is the best there is, wherever it leads,
+			// and a step to beside one is the worst.
+			beside = false;
+			for (k=0 ; k<teach_num_barrels ; k++)
+				if (teach_barrels[k]->inuse)
+				{
+					VectorSubtract (origin, teach_barrels[k]->s.origin, v);
+					v[2] = 0;
+					if (VectorNormalize (v) < 220)
+					{
+						score += 2 * DotProduct (d, v);
+						beside = true;
+					}
+					VectorSubtract (teach_barrels[k]->s.origin, p, v);
+					if (VectorLength (v) < 200)
+						score -= 1;
+				}
+			// not round a corner from the monster: the fight is to be finished
+			p[2] += ent->viewheight;
+			if (!beside && !melee && !Fight_Sees (ent, p, monster))
+				continue;
+			if (melee && dist < 400)
+				score = 0.3f * score - 1.5f * DotProduct (d, to);	// it can only hit from close: keep away
+			else if (dist < 250)
+				score -= 0.7f * DotProduct (d, to);
+			else if (dist > 600)
+				score += 0.4f * DotProduct (d, to);
+			if (score > best)
+			{
+				best = score;
+				VectorCopy (d, go);
+				found = true;
+			}
 		}
 	}
 	return found;
@@ -640,6 +665,7 @@ void Teach_Think (edict_t *ent)
 	rl_block->nav_node = teach_anchor;
 	if (teach_anchor < 0)
 		return;
+	Nav_MoversNow ();
 
 	// ---- where to: the explorer's goal, or the plan's next job
 	job = NULL;

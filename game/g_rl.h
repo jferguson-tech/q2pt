@@ -31,7 +31,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define G_RL_H
 
 #define	RL_MAGIC		0x314c5251		// "QRL1"
-#define	RL_VERSION		6
+#define	RL_VERSION		7
 
 // The player is moved by one command of this length in each server frame.
 #define	RL_STEP_MSEC	100
@@ -58,6 +58,26 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	RL_DONE_EXIT	1		// the map's exit was reached
 #define	RL_DONE_DEATH	2
 #define	RL_DONE_TIME	3		// the step limit ran out
+#define	RL_DONE_WRONG	4		// the map was left, but not by the exit that leads on
+
+// What the player carries from one map of a unit into the next, as the game
+// keeps it in the client's persistent data. Read out when a map is left and
+// handed back at the start of an episode on the map that follows, so that
+// the episode begins as it would have in a game played through. Items are
+// numbered as the game's item list has them.
+#define	RL_CARRY_VALID		0	// 0: start as a new game does
+#define	RL_CARRY_HEALTH		1
+#define	RL_CARRY_MAX_HEALTH	2
+#define	RL_CARRY_FLAGS		3	// the entity flags that are kept: power armour on
+#define	RL_CARRY_SERVER		4	// game.serverflags: what has been set off in the unit's other maps
+#define	RL_CARRY_WEAPON		5	// 1 + the item held, or 0
+#define	RL_CARRY_LAST		6	// 1 + the item held before it, or 0
+#define	RL_CARRY_SELECTED	7
+#define	RL_CARRY_CUBES		8
+#define	RL_CARRY_MAX		9	// 9-14: most bullets, shells, rockets, grenades, cells, slugs
+#define	RL_CARRY_INVENTORY	16	// and from here how many of each item
+#define	RL_CARRY_ITEMS		256
+#define	RL_CARRY_INTS		(RL_CARRY_INVENTORY+RL_CARRY_ITEMS)
 
 // The action has one choice in each of these branches.
 #define	RL_ACT_FORWARD	0		// 0 back, 1 none, 2 forward
@@ -183,8 +203,11 @@ typedef struct
 	int		skill;			// 0-3
 	int		time_limit;		// steps; 0 for none
 	int		flags;			// RL_FLAG_
-	char	map[64];
+	char	map[64];		// "base2", or "base2$base1" to start where the exit from base1 puts the player
 	char	back[256];		// maps, with spaces between, whose exits are not the way on
+	char	onward[64];		// the map an exit must name, as its target_changelevel does, to
+							// count: "base3$base2a". Empty: any exit counts.
+	int		start[RL_CARRY_INTS];	// what the player comes in with
 	int		mode;			// RL_MODE_: what the teacher is out to do
 	char	demo[256];		// full path of a demo to record the episode into, or empty
 
@@ -226,6 +249,8 @@ typedef struct
 	int		fighting;		// the entity the teacher is shooting at, or 0
 	int		death_means;	// when dead: how, as the game's MOD_ numbers have it
 	int		death_by;		// and by which monster, as RL_ENT_TYPE numbers them; 0 for none
+	char	left[64];		// when the map was left: the map its exit named
+	int		carry[RL_CARRY_INTS];	// and what the player took along
 } rl_shared_t;
 
 // The name of the cvar in which the server leaves the block's address for

@@ -9,7 +9,7 @@ header and compares every offset and constant with what is here.
 import numpy as np
 
 MAGIC = 0x314C5251
-VERSION = 6
+VERSION = 7
 STEP_MSEC = 100
 
 REQ_RESET, REQ_STEP, REQ_QUIT = 1, 2, 3
@@ -17,8 +17,10 @@ MODE_EXPLORE, MODE_PLAY = 0, 1      # what the teacher is out to do
 # for testing navigation only, never for a run that counts as play
 FLAG_NOTARGET = 1       # monsters take no notice of the player
 FLAG_NOMONSTERS = 2     # the map's monsters are taken out
-DONE_NO, DONE_EXIT, DONE_DEATH, DONE_TIME = 0, 1, 2, 3
-DONE_NAMES = ("running", "exit", "death", "time")
+DONE_NO, DONE_EXIT, DONE_DEATH, DONE_TIME, DONE_WRONG = 0, 1, 2, 3, 4
+DONE_NAMES = ("running", "exit", "death", "time", "wrong")
+# what is carried from one map of a unit into the next: see g_rl.h
+CARRY_VALID, CARRY_HEALTH, CARRY_INVENTORY, CARRY_INTS = 0, 1, 16, 272
 
 # the action: one choice in each branch
 ACT_FORWARD, ACT_STRAFE, ACT_UP, ACT_YAW, ACT_PITCH, ACT_FIRE, ACT_WEAPON = range(7)
@@ -53,7 +55,8 @@ SHARED = np.dtype([
     ("action", "<i4", (ACT_BRANCHES,)),
     ("act_teacher", "<i4"),
     ("seed", "<i4"), ("skill", "<i4"), ("time_limit", "<i4"), ("flags", "<i4"),
-    ("map", "S64"), ("back", "S256"), ("mode", "<i4"), ("demo", "S256"),
+    ("map", "S64"), ("back", "S256"), ("onward", "S64"), ("start", "<i4", (CARRY_INTS,)),
+    ("mode", "<i4"), ("demo", "S256"),
     # written by the game and the server
     ("error", "<i4"), ("error_text", "S128"),
     ("step", "<i4"), ("done", "<i4"), ("hash", "<u4"),
@@ -74,6 +77,7 @@ SHARED = np.dtype([
     ("link_type", "<i4"), ("link_ent", "<i4"), ("route_left", "<f4"),
     ("job_kind", "<i4"), ("job_ent", "<i4"), ("fighting", "<i4"),
     ("death_means", "<i4"), ("death_by", "<i4"),
+    ("left", "S64"), ("carry", "<i4", (CARRY_INTS,)),
 ])
 
 # the fields that make up what the player perceives

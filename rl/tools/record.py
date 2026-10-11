@@ -19,7 +19,6 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from q2env import Engine, layout as L  # noqa: E402
-from q2env.maps import back_of  # noqa: E402
 from q2rl.data import to_torch  # noqa: E402
 from q2rl.evaluate import load  # noqa: E402
 
@@ -41,7 +40,7 @@ if __name__ == "__main__":
     with Engine() as e:
         b = e.block
         for seed in range(args.seed, args.seed + args.tries):
-            e.reset(args.map, seed, time_limit=args.steps, mode=L.MODE_PLAY, demo=out, back=back_of(args.map))
+            e.reset(args.map, seed, time_limit=args.steps, mode=L.MODE_PLAY, demo=out)
             state = None
             last = torch.tensor([L.ACT_IDLE], device=device)
             start = torch.ones(1, device=device)

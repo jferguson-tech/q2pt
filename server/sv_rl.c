@@ -282,14 +282,20 @@ static void SV_RL_Reset (qboolean again)
 	client_t	*cl;
 	edict_t		*ent;
 	netadr_t	adr;
-	char		map[sizeof(rl->map)];
+	char		map[sizeof(rl->map)], name[sizeof(rl->map)], *s;
 
 	SV_RL_DemoStop ();
 
 	rl->map[sizeof(rl->map)-1] = 0;
 	rl->demo[sizeof(rl->demo)-1] = 0;
+	rl->onward[sizeof(rl->onward)-1] = 0;
 	strcpy (map, rl->map);
-	if (FS_LoadFile (va("maps/%s.bsp", map), NULL) == -1)
+	// "base2$base1" is the map base2, entered where the exit from base1 leads
+	strcpy (name, map);
+	s = strchr (name, '$');
+	if (s)
+		*s = 0;
+	if (FS_LoadFile (va("maps/%s.bsp", name), NULL) == -1)
 	{
 		rl->error = 1;
 		Com_sprintf (rl->error_text, sizeof(rl->error_text), "no map %s", map);
@@ -335,6 +341,7 @@ static void SV_RL_Reset (qboolean again)
 		return;
 	}
 	SV_UserinfoChanged (cl);
+	SV_RL_Game ("arrive");
 
 	memset (&adr, 0, sizeof(adr));
 	adr.type = NA_LOOPBACK;

@@ -207,6 +207,77 @@ static void RL_Act (void)
 
 /*
 ================
+RL_Arrive
+
+Gives the player what the episode says it comes into the map with, in place
+of what a new game starts with. Called after the player has connected and
+before it is put into the map, which is when a game played through has the
+client's persistent data from the map before.
+================
+*/
+static void RL_Arrive (void)
+{
+	gclient_t	*client = &game.clients[0];
+	int			*c = rl_block->start, i;
+
+	if (!c[RL_CARRY_VALID])
+		return;
+	client->pers.health = c[RL_CARRY_HEALTH];
+	client->pers.max_health = c[RL_CARRY_MAX_HEALTH];
+	client->pers.savedFlags = c[RL_CARRY_FLAGS] & FL_POWER_ARMOR;
+	game.serverflags = c[RL_CARRY_SERVER];
+	client->pers.weapon = (c[RL_CARRY_WEAPON] > 0 && c[RL_CARRY_WEAPON] <= game.num_items)
+		? &itemlist[c[RL_CARRY_WEAPON] - 1] : NULL;
+	client->pers.lastweapon = (c[RL_CARRY_LAST] > 0 && c[RL_CARRY_LAST] <= game.num_items)
+		? &itemlist[c[RL_CARRY_LAST] - 1] : NULL;
+	client->pers.selected_item = c[RL_CARRY_SELECTED];
+	client->pers.power_cubes = c[RL_CARRY_CUBES];
+	client->pers.max_bullets = c[RL_CARRY_MAX];
+	client->pers.max_shells = c[RL_CARRY_MAX+1];
+	client->pers.max_rockets = c[RL_CARRY_MAX+2];
+	client->pers.max_grenades = c[RL_CARRY_MAX+3];
+	client->pers.max_cells = c[RL_CARRY_MAX+4];
+	client->pers.max_slugs = c[RL_CARRY_MAX+5];
+	for (i=0 ; i<MAX_ITEMS && i<RL_CARRY_ITEMS ; i++)
+		client->pers.inventory[i] = c[RL_CARRY_INVENTORY+i];
+}
+
+/*
+================
+RL_Leave
+
+Notes which map the exit just taken leads to and what the player has with
+it, as SaveClientData would keep it for the next map.
+================
+*/
+static void RL_Leave (edict_t *ent)
+{
+	gclient_t	*client = ent->client;
+	int			*c = rl_block->carry, i;
+
+	Com_sprintf (rl_block->left, sizeof(rl_block->left), "%s", level.changemap ? level.changemap : "");
+	memset (c, 0, sizeof(rl_block->carry));
+	c[RL_CARRY_VALID] = 1;
+	c[RL_CARRY_HEALTH] = ent->health;
+	c[RL_CARRY_MAX_HEALTH] = ent->max_health;
+	c[RL_CARRY_FLAGS] = ent->flags & FL_POWER_ARMOR;
+	c[RL_CARRY_SERVER] = game.serverflags;
+	c[RL_CARRY_WEAPON] = client->pers.weapon ? ITEM_INDEX(client->pers.weapon) + 1 : 0;
+	c[RL_CARRY_LAST] = client->pers.lastweapon ? ITEM_INDEX(client->pers.lastweapon) + 1 : 0;
+	c[RL_CARRY_SELECTED] = client->pers.selected_item;
+	c[RL_CARRY_CUBES] = client->pers.power_cubes;
+	c[RL_CARRY_MAX] = client->pers.max_bullets;
+	c[RL_CARRY_MAX+1] = client->pers.max_shells;
+	c[RL_CARRY_MAX+2] = client->pers.max_rockets;
+	c[RL_CARRY_MAX+3] = client->pers.max_grenades;
+	c[RL_CARRY_MAX+4] = client->pers.max_cells;
+	c[RL_CARRY_MAX+5] = client->pers.max_slugs;
+	for (i=0 ; i<MAX_ITEMS && i<RL_CARRY_ITEMS ; i++)
+		c[RL_CARRY_INVENTORY+i] = client->pers.inventory[i];
+}
+
+/*
+================
 RL_Observe
 
 Fills in everything the other program reads after a step or a reset.
@@ -221,6 +292,8 @@ static void RL_Observe (qboolean reset)
 	{
 		rl_block->step = 0;
 		rl_block->done = RL_DONE_NO;
+		rl_block->left[0] = 0;
+		memset (rl_block->carry, 0, sizeof(rl_block->carry));
 		rl_dealt = rl_taken = 0;
 		rl_kills_seen = level.killed_monsters;
 	}
@@ -230,7 +303,11 @@ static void RL_Observe (qboolean reset)
 	if (!rl_block->done)
 	{
 		if (level.intermissiontime)
-			rl_block->done = RL_DONE_EXIT;
+		{
+			RL_Leave (ent);
+			rl_block->done = (!rl_block->onward[0] || !Q_stricmp (rl_block->left, rl_block->onward))
+				? RL_DONE_EXIT : RL_DONE_WRONG;
+		}
 		else if (ent->health <= 0)
 			rl_block->done = RL_DONE_DEATH;
 		else if (rl_block->time_limit > 0 && rl_block->step >= rl_block->time_limit)
@@ -287,6 +364,8 @@ void RL_Command (void)
 		RL_Act ();
 	else if (!strcmp (what, "observe"))
 		RL_Observe (false);
+	else if (!strcmp (what, "arrive"))
+		RL_Arrive ();
 	else if (!strcmp (what, "reset"))
 	{
 		// the game library can have random numbers of its own, apart from
