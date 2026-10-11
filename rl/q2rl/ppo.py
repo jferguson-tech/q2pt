@@ -16,9 +16,9 @@ The reward of a step is made here from the parts the game reports:
             or lose at most 0.2 s: the planner's change of mind is not paid)
     +0.005  for each point of damage done to a monster
     +0.5    for a kill
-    +10     for reaching the exit
+    +10     for reaching the exit that leads on
     -0.01   for each point of damage taken
-    -5      for dying
+    -5      for dying, or for leaving by any other exit
     -0.002  for every step
 
 Started from imitation weights (--start), two things are added:
@@ -66,7 +66,7 @@ def reward(gain, done):
     r = (0.05 * np.clip(gain[:, L.GAIN_PROGRESS], -0.2, 0.2)
          + 0.005 * gain[:, L.GAIN_DEALT] + 0.5 * gain[:, L.GAIN_KILLS]
          - 0.01 * gain[:, L.GAIN_TAKEN] - 0.002)
-    r = r + 10.0 * (done == L.DONE_EXIT) - 5.0 * (done == L.DONE_DEATH)
+    r = r + 10.0 * (done == L.DONE_EXIT) - 5.0 * ((done == L.DONE_DEATH) | (done == L.DONE_WRONG))
     return r.astype(np.float32)
 
 

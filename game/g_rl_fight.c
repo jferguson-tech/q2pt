@@ -120,7 +120,7 @@ throws something is pointed where the monster will be when it arrives, going
 as it goes now.
 ================
 */
-void Fight_Aim (edict_t *ent, edict_t *enemy, vec3_t eye, float *yaw, float *pitch, float *dist)
+void Fight_Aim (edict_t *ent, edict_t *enemy, vec3_t eye, vec3_t move, float *yaw, float *pitch, float *dist)
 {
 	vec3_t	p, d, from;
 	float	speed, time;
@@ -133,7 +133,12 @@ void Fight_Aim (edict_t *ent, edict_t *enemy, vec3_t eye, float *yaw, float *pit
 	VectorAdd (enemy->absmin, enemy->absmax, p);
 	VectorScale (p, 0.5f, p);
 	VectorMA (p, RL_STEP_MSEC * 0.001f, enemy->velocity, p);
-	VectorMA (eye, RL_STEP_MSEC * 0.001f, ent->velocity, from);
+	// move is how far the feet are about to take the player in that step,
+	// when the caller knows; otherwise it goes on as it is going
+	if (move)
+		VectorAdd (eye, move, from);
+	else
+		VectorMA (eye, RL_STEP_MSEC * 0.001f, ent->velocity, from);
 	eye = from;
 	VectorSubtract (p, eye, d);
 	*dist = VectorLength (d);

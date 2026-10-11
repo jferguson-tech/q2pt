@@ -46,7 +46,7 @@ qboolean Fight_Sees (edict_t *ent, vec3_t eye, edict_t *m);
 edict_t *Fight_Hunter (edict_t *ent, vec3_t eye);
 qboolean Fight_Clear (edict_t *ent, vec3_t eye);
 qboolean Fight_Reaches (edict_t *ent, vec3_t eye, edict_t *m);
-void Fight_Aim (edict_t *ent, edict_t *enemy, vec3_t eye, float *yaw, float *pitch, float *dist);
+void Fight_Aim (edict_t *ent, edict_t *enemy, vec3_t eye, vec3_t move, float *yaw, float *pitch, float *dist);
 int Fight_Weapon (edict_t *ent, float dist);
 qboolean Fight_Melee (edict_t *m);
 float Fight_TimeToKill (edict_t *ent, edict_t *m);
@@ -1006,7 +1006,7 @@ slanted:	;
 	if (enemy)
 	{
 		rl_block->fighting = enemy - g_edicts;
-		Fight_Aim (ent, enemy, eye, &aim_yaw, &aim_pitch, &aim_dist);
+		Fight_Aim (ent, enemy, eye, NULL, &aim_yaw, &aim_pitch, &aim_dist);
 		want_yaw = aim_yaw;
 		want_pitch = aim_pitch;
 		snap = false;
@@ -1138,6 +1138,23 @@ slanted:	;
 	// the view has something to point at, it points at that and the feet
 	// take the nearest of the eight.
 	a = RAD2DEG_F(atan2 (go[1], go[0]));
+	// With the view on a monster and the feet on the level, the aim is taken
+	// again for where this step's feet will put the eye. On the ground the
+	// player is at full speed the way its feet go within one step, whatever
+	// way it was going before: a sidestep to and fro, aimed for as if each
+	// step went on as the last did, puts every shot to one side.
+	if (enemy && !snap && grounded && !swimming && rl_block->fighting)
+	{
+		if (hold || dist <= 2)
+			VectorScale (ent->velocity, 0.4f * RL_STEP_MSEC * 0.001f, p);
+		else
+		{
+			VectorSet (p, go[0], go[1], 0);
+			VectorNormalize (p);
+			VectorScale (p, (ducked ? 100 : 300) * RL_STEP_MSEC * 0.001f, p);
+		}
+		Fight_Aim (ent, enemy, eye, p, &want_yaw, &want_pitch, &aim_dist);
+	}
 	// Out of water onto a bank, and up a ladder, the player goes only the
 	// way it faces.
 	if (snap && !hold && dist > 1)

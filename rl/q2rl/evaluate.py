@@ -77,7 +77,7 @@ def summary(results):
     won = sum(r["done"] == L.DONE_EXIT for r in results)
     ends = Counter(L.DONE_NAMES[r["done"]] for r in results)
     return {"episodes": len(results), "exit": won, "rate": won / max(len(results), 1),
-            "death": ends["death"], "time": ends["time"],
+            "death": ends["death"], "time": ends["time"], "wrong": ends["wrong"],
             "kills": float(np.mean([r["kills"] for r in results])),
             "steps": float(np.mean([r["steps"] for r in results]))}
 
@@ -97,12 +97,13 @@ if __name__ == "__main__":
     s = summary(results)
     how = "teacher" if policy is None else "sampled" if args.sample else "greedy"
     print(f"{args.policy} ({how}): {s['exit']} of {s['episodes']} reached the exit ({100 * s['rate']:.0f}%), "
-          f"{s['death']} died, {s['time']} ran out of time; {s['kills']:.1f} kills and "
+          f"{s['death']} died, {s['time']} ran out of time, {s['wrong']} left by another exit; "
+          f"{s['kills']:.1f} kills and "
           f"{s['steps'] / 10:.0f} s an episode")
     maps = by_map(results)
     for m, x in maps.items():
         print(f"  {m}: {x['exit']} of {x['episodes']} ({100 * x['rate']:.0f}%), {x['death']} died, "
-              f"{x['time']} out of time")
+              f"{x['time']} out of time, {x['wrong']} by another exit")
     if args.json:
         import json
         from pathlib import Path
