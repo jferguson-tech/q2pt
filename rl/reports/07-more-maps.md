@@ -148,14 +148,136 @@ overran ledges, and began drops at a run that only work from rest.
 
 ## The students
 
-STUDENTS
+Trained on the two new maps the teacher plays, base3 and mintro, with
+**base1 held out**: no student saw base1. Three whole runs, each from its
+own seed (the weights' start, the batches, the teacher's 900 episodes, the
+episodes played in DAgger and PPO). Each student is then played for 100
+episodes a map on seeds no training run uses (500000 up; PPO's own checks
+use 400000 up). The figure is the share that reached the exit: the mean of
+the three runs, and after the ± the spread between them (standard
+deviation of the three rates, n-1). **The main figure is with the likeliest
+action taken each step**; beside it, with actions drawn. The teacher's row
+is the same 100 episodes a map; on these seeds it finishes mintro less
+often than on seeds 0-99 above (43 against 56 of 100).
+
+| player | base3 | mintro | base1, held out |
+| --- | --- | --- | --- |
+| teacher (the same episodes) | 83% | 43% | 99% |
+| cloned, likeliest | **26% ± 3** | **0% ± 0** | **0% ± 0** |
+| cloned, drawn | 12% ± 5 | 0% ± 0 | 38% ± 20 |
+| DAgger, likeliest | **46% ± 8** | **0% ± 0** | **19% ± 33** |
+| DAgger, drawn | 29% ± 6 | 0% ± 0 | 55% ± 8 |
+| PPO from DAgger, likeliest | **72% ± 11** | **0% ± 0** | **31% ± 44** |
+| PPO from DAgger, drawn | 54% ± 11 | 0% ± 0 | 66% ± 18 |
+
+The three runs one by one, exits of 100, likeliest action:
+
+| player | base3 | mintro | base1, held out |
+| --- | --- | --- | --- |
+| cloned | 25, 29, 23 | 0, 0, 0 | 0, 0, 0 |
+| DAgger | 37, 49, 52 | 0, 0, 0 | 0, 57, 0 |
+| PPO | 76, 60, 80 | 0, 0, 0 | 0, 81, 12 |
+
+What this says:
+
+* **base3**: each stage adds, and PPO comes to within 11 points of the
+  teacher on the mean (72% against 83%), with one run of three at 80%.
+* **mintro: no student ever finishes it**, 0 of 1,800 episodes. Twelve
+  episodes of one DAgger student were looked at: ten end in lava at the
+  first island, between 100 and 350 steps in. That is where the teacher
+  creeps to a node, stands, squares its view and jumps, each on a trial of
+  the move the student has no way to make. The observation of the ground
+  about the feet, added for this, did not change it (before it, one seed:
+  also 0).
+* **base1, held out**: with the likeliest action two runs of three never
+  finish it, and one does 81%. Eight episodes of a run that scores 0 were
+  looked at: all eight stop at the same crawl-space near the start, going
+  to and fro. The training maps have no such place. Drawing actions gets
+  through it, which is why the drawn figures are higher and steadier there
+  (66% ± 18 after PPO). So a student does carry over to a map it has not
+  seen, but whether its likeliest action does hangs on one spot and on the
+  seed. **With three seeds this spread is the finding**; one seed would
+  have reported 0% or 81%.
+* On the maps trained on, the likeliest action does better than drawing; on
+  the held-out map it is the other way round.
+
+Settings. Cloning: 900 teacher episodes (about 1.05 M steps, of which the
+teacher finished 65%), 12 passes. DAgger: 8 rounds of 300 episodes, the
+teacher's share of steps 0.5, 0.3, 0.1, then 0; 6 passes over everything
+each round; 2.5 M steps by the end. PPO: 3.0 M steps, 28 environments,
+episodes of up to 4,500 steps, the reward of report 5; the value head alone
+for the first 200,000 steps; the teacher's penalty from 0.5 down to 0.1 by
+1.5 M steps and **kept at 0.1** (report 5 let it go to nothing); every
+half million steps the policy is played 56 episodes with its likeliest
+action on its own seeds, and **the weights kept are those that did best
+there** (at 3.0 M, 2.5 M and 1.5 M steps in the three runs). One run takes
+about 75 minutes: 4 recording, 1.5 cloning, 25 DAgger, 30 PPO, the rest
+evaluating. Training and evaluation take the card in turn.
+
+Changed since report 5, so these figures do not sit beside its figures:
+the teacher (above); the observation (the ground about the feet; the
+shared block is version 6 and older weights do not load); PPO as just
+said. The base1 students of reports 4 and 5 were not retrained.
+
+One run with the first of these settings, before the ground was added to
+the observation and with fact3 as a third map (one seed, 100 episodes a
+map, likeliest action): cloned 21% on base3, DAgger 37%, and PPO, with the
+penalty let go to nothing and the last weights kept, 0%: it had fallen
+apart on base3 by the end. That is why the penalty is now kept and the
+best weights chosen.
+
+Demos, in `~/q2pt-rl/demos/`, each checked with `dm2check.py`, none
+watched: `teacher_base3.dm2` (88.6 s), `teacher_mintro.dm2` (241.4 s),
+`student_ppo_base3.dm2` (a PPO student, likeliest action, 73.0 s) and
+`student_ppo_base1_heldout.dm2` (the run that scores 81%, on the map it
+never trained on, 165.6 s, 17 of 17 monsters).
 
 ## Every single-player map
 
 28 episodes a map, seeds 0-27, 6,000 steps. "Test": whether a player with
 no sense fails to reach an exit (above).
 
-TABLE
+| map | a test | exit reached | killed | out of time | the commonest failure |
+| --- | --- | --- | --- | --- | --- |
+| base1 | yes | 27 of 28 | 1 | 0 | killed by a shotgun guard (1) |
+| base2 | no | 0 of 28 | 1 | 27 | standing still, with no plan (27) |
+| base3 | yes | 25 of 28 | 3 | 0 | killed: drowned (2) |
+| train | no | 25 of 28 | 0 | 3 | standing still, with no plan (3) |
+| bunk1 | yes | 0 of 28 | 2 | 26 | standing still, with no plan (26) |
+| ware1 | no | 28 of 28 | 0 | 0 |  |
+| ware2 | no | 0 of 28 | 0 | 28 | standing still, with no plan (28) |
+| jail1 | yes | 0 of 28 | 27 | 1 | killed by a gunner (20) |
+| jail2 | no | 0 of 28 | 28 | 0 | killed by a tank (15) |
+| jail3 | no | 0 of 28 | 27 | 1 | killed by a gunner (19) |
+| jail4 | no | 28 of 28 | 0 | 0 |  |
+| jail5 | no | 28 of 28 | 0 | 0 |  |
+| security | no | 0 of 28 | 0 | 28 | standing still, with no plan (28) |
+| mintro | yes | 16 of 28 | 12 | 0 | killed by a berserker (6) |
+| mine1 | no | 28 of 28 | 0 | 0 |  |
+| mine2 | no | 28 of 28 | 0 | 0 |  |
+| mine3 | no | 28 of 28 | 0 | 0 |  |
+| mine4 | no | 24 of 28 | 4 | 0 | killed by a gunner (4) |
+| fact1 | yes | 0 of 28 | 26 | 2 | killed by a gunner (22) |
+| fact2 | no | 16 of 28 | 12 | 0 | killed by a gunner (12) |
+| fact3 | no | 28 of 28 | 0 | 0 |  |
+| power1 | yes | 0 of 28 | 26 | 2 | killed by a supertank (19) |
+| power2 | no | 28 of 28 | 0 | 0 |  |
+| cool1 | no | 28 of 28 | 0 | 0 |  |
+| waste1 | no | 28 of 28 | 0 | 0 |  |
+| waste2 | no | 28 of 28 | 0 | 0 |  |
+| waste3 | no | 28 of 28 | 0 | 0 |  |
+| biggun | yes | 0 of 28 | 0 | 28 | standing still, with no plan (28) |
+| hangar1 | yes | 2 of 28 | 19 | 7 | killed by a enforcer (9) |
+| hangar2 | no | 0 of 28 | 28 | 0 | killed by a gunner (27) |
+| lab | no | 28 of 28 | 0 | 0 |  |
+| command | no | 0 of 28 | 0 | 28 | standing still, with no plan (28) |
+| strike | no | 0 of 28 | 0 | 28 | standing still, with no plan (28) |
+| space | yes | 0 of 28 | 28 | 0 | killed: a trigger that hurts (28) |
+| city1 | yes | 0 of 28 | 28 | 0 | killed by a gladiator (13) |
+| city2 | no | 0 of 28 | 11 | 17 | standing still, with no plan (17) |
+| city3 | no | 0 of 28 | 27 | 1 | killed by a iron maiden (16) |
+| boss1 | yes | 0 of 28 | 0 | 28 | standing still, with no plan (28) |
+| boss2 | yes | 0 of 28 | 28 | 0 | killed by a jorg (28) |
 
 ## Tests
 
@@ -176,4 +298,8 @@ the commits since, which are not pushed yet as this is written.
 
 ## Disk
 
-DISK
+`~/q2pt-rl/`: 27 GB of the 500 GB allowed. 19 GB of datasets (three runs),
+2.7 GB of datasets from the run before the observation changed, 5.5 GB of
+Python environment, 157 MB of weights, 81 MB of navigation graphs, 1.2 MB
+of demos. The datasets of reports 4 and 5 are still there and no longer
+fit the observation.
