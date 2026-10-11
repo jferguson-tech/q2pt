@@ -279,11 +279,19 @@ no sense fails to reach an exit (above).
 | boss1 | yes | 0 of 28 | 0 | 28 | standing still, with no plan (28) |
 | boss2 | yes | 0 of 28 | 28 | 0 | killed by a jorg (28) |
 
-## Tests
+## Tests, the build, the rebase
 
-`rl/tests`: 7 tests pass. CI on pull request 64 (Linux, Windows x64 and
-x86, licences) passed on the commit it was opened with; it has not run on
-the commits since, which are not pushed yet as this is written.
+`rl/tests`: 7 tests pass. The Linux build of every target is clean with
+warnings as errors. `rl-agent` was rebased on main at 086f2dd (pull request
+63, sound) with no conflicts: main had changed `client/snd_mix.c` and the
+top `README.md`, which this branch does not touch. After the rebase the
+build and the tests were run again, and the teacher played 28 episodes of
+base1 (27) and base3 (25).
+
+Pull request 64 passed CI (Linux, Windows x64 and x86, licences) on the
+commits it was opened with. That was the first Windows build of the new
+files. Whether it still passes with the commits of this report is for the
+run that the push of them starts.
 
 ## Not done, not tested
 
@@ -294,7 +302,7 @@ the commits since, which are not pushed yet as this is written.
   written on.
 * PPO from random weights on these maps; the unguided student.
 * Skill 0, 2, 3. Playing a unit across its maps.
-* Windows was built by CI at the first push only.
+* Windows: built by CI only, never run.
 
 ## Disk
 
