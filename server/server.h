@@ -276,6 +276,12 @@ void SV_WriteFrameToClient (client_t *client, sizebuf_t *msg);
 void SV_RecordDemoMessage (void);
 void SV_BuildClientFrame (client_t *client);
 
+//
+// sv_rl.c
+//
+qboolean SV_RL_IsClient (client_t *c);
+void SV_RL_SendClient (client_t *c);
+
 
 void SV_Error (char *error, ...);
 

@@ -57,7 +57,7 @@ add_executable(quake2 WIN32
 	qcommon/cvar.c qcommon/files.c qcommon/md4.c qcommon/net_chan.c
 	qcommon/pmove.c
 	server/sv_ccmds.c server/sv_ents.c server/sv_game.c server/sv_init.c
-	server/sv_main.c server/sv_send.c server/sv_user.c server/sv_world.c
+	server/sv_main.c server/sv_rl.c server/sv_send.c server/sv_user.c server/sv_world.c
 	win32/cd_win.c win32/conproc.c win32/in_win.c win32/net_wins.c
 	win32/q_shwin.c win32/snd_win.c win32/sys_win.c win32/vid_dll.c
 	win32/vid_menu.c win32/q2.rc win32/quake2.manifest

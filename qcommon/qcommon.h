@@ -840,6 +840,11 @@ void SCR_BeginLoadingPlaque (void);
 
 void SV_Init (void);
 void SV_Shutdown (char *finalmsg, qboolean reconnect);
+
+// sv_rl.c: the server stepped by another program
+qboolean SV_RL_Active (void);
+int SV_RL_BeginFrame (int msec);
+void SV_RL_EndFrame (void);
 void SV_Frame (int msec);
 
 

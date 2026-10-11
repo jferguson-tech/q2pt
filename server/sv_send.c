@@ -533,6 +533,14 @@ void SV_SendClientMessages (void)
 	{
 		if (!c->state)
 			continue;
+
+		// the client driven from outside has no connection to send on
+		if (SV_RL_IsClient (c))
+		{
+			SV_RL_SendClient (c);
+			continue;
+		}
+
 		// if the reliable message overflowed,
 		// drop the client
 		if (c->netchan.message.overflowed)
