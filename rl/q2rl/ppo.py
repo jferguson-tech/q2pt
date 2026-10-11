@@ -123,13 +123,12 @@ if __name__ == "__main__":
     total, next_eval, update = 0, 0, 0
     began = time.time()
 
-    best = -1.0
+    best = [-1.0]           # the best validation rate so far
 
     def checkpoint():
         # Played with the likeliest action on seeds that neither training nor
         # the final evaluation uses. The weights kept under the run's name
         # are those that did best here; the last are kept beside them.
-        nonlocal best
         s = summary(evaluate(policy, 28 * len(args.maps), args.maps, device, sample=False, seed=VALID_SEED))
         won = [e == L.DONE_EXIT for e in recent[-200:]]
         entry = {"steps": total, "train_exit_rate": float(np.mean(won)) if won else 0.0,
@@ -139,11 +138,11 @@ if __name__ == "__main__":
         print(f"{total:>9} steps: training episodes to the exit {100 * entry['train_exit_rate']:.0f}% "
               f"(last {len(won)}); evaluated {s['exit']} of {s['episodes']} to the exit, {s['death']} died, "
               f"{s['time']} out of time; {entry['seconds'] / 60:.0f} min", flush=True)
-        entry["kept"] = s["rate"] > best
+        entry["kept"] = s["rate"] > best[0]
         (weights / f"{args.name}.json").write_text(json.dumps(curve, indent=1))
         save(policy, weights / f"{args.name}_last.pt", maps=args.maps, steps=total)
-        if s["rate"] > best:
-            best = s["rate"]
+        if s["rate"] > best[0]:
+            best[0] = s["rate"]
             save(policy, weights / f"{args.name}.pt", maps=args.maps, steps=total)
 
     while total < args.steps:
