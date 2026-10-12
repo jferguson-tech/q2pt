@@ -119,7 +119,110 @@ What it took, beyond the new start and end:
 One thing tried and dropped: walking on unfought past a gunner when there
 was no room to sidestep. It took the last leg from 56 to 35.
 
-@@STUDENTS@@
+## The students
+
+Trained on the three legs that follow base1, with base1 held out. Every
+episode starts from the teacher's carry. Each run is 900 teacher episodes
+cloned, 8 rounds of DAgger and 3.0 M steps of PPO from the DAgger student,
+as in report 7. Three whole runs from different seeds; 100 evaluation
+episodes a leg each, on seeds no training uses. Mean of the three runs ±
+the spread between them, **playing the likeliest action**; in brackets,
+drawing actions:
+
+| player | base2@base1 | base3@base2a | base2@base3b | base1, held out |
+| --- | --- | --- | --- | --- |
+| teacher | 95% | 86% | 84% | 100% |
+| cloned | 30% ± 15 (11% ± 4) | 0% ± 0 (0% ± 0) | 0% ± 1 (1% ± 1) | 19% ± 32 (17% ± 7) |
+| DAgger | 81% ± 9 (66% ± 7) | 20% ± 9 (1% ± 1) | 8% ± 2 (2% ± 2) | 77% ± 25 (55% ± 6) |
+| PPO from DAgger | 86% ± 4 (84% ± 6) | 30% ± 9 (5% ± 3) | 53% ± 2 (15% ± 6) | 0% ± 1 (71% ± 5) |
+
+On the legs trained on:
+
+* Each stage adds. For the DAgger and PPO students the likeliest action
+  does as well as drawing on the first leg and much better on the other
+  two.
+* The first leg is nearly the teacher's. **base3 and the last leg are far
+  from it**: 30% against 86%, and 53% against 84%. How the PPO students'
+  900 episodes ended:
+
+  | leg | exit | died | out of time | another exit |
+  | --- | --- | --- | --- | --- |
+  | base2@base1 | 258 | 17 | 17 | 8 |
+  | base3@base2a | 90 | 159 | 51 | 0 |
+  | base2@base3b | 159 | 95 | 46 | 0 |
+
+  In 56 episodes of one PPO student on base3 (seed 0 of the first run:
+  see below), the deaths were by gunners
+  (6), parasites (4), **lasers (4)**, and seven other things once or twice
+  each. The teacher is never killed by base3's lasers.
+* The wrong exit is not the trap for a trained student that it is for the
+  walker: 8 of 900.
+
+On base1, which no student saw:
+
+* **The three PPO students reach its exit in 0, 0 and 1 of 100 episodes
+  with the likeliest action**, and in 65, 73 and 74 when actions are drawn.
+  All three stop at one low passage near the start, where the teacher
+  crouches. There they give crouching a probability of 2 to 5 in 100:
+  drawn, it comes up soon enough; as the likeliest action, never.
+* The DAgger students they were made from reach the exit in 49, 86 and 97
+  of 100 with the likeliest action. **PPO on the other three legs made play
+  by the likeliest action on the unseen map worse, and play by drawn
+  actions better** (55% to 71%).
+
+The unit as one run (`tools/unit.py`, 50 runs each): no PPO student gets
+through with the likeliest action, since none leaves base1 (0 of 50, each of the three).
+
+### The likeliest action is all or nothing, and rounding can tip it
+
+The first time these runs were made, the PPO students of seeds 0 and 1
+scored 90 and 0 of 100 on base1 with the likeliest action. The second
+student's same weights, evaluated on the processor instead of the card,
+scored 98.
+
+The card was working the convolutions out in TF32, PyTorch's default on
+this hardware, which keeps ten bits of a number's fraction. Play by the
+likeliest action has nothing random in it: where two actions score nearly
+alike the rounding picks the other, and the player can then settle into a
+loop that it never leaves. With TF32 off the card and the processor agree:
+the same 28 episodes all reach the exit on both, in the same mean number
+of steps to the tenth.
+
+So:
+
+* TF32 is now off for everything (`rl/q2rl/model.py`).
+* PPO keeps the checkpoint that does best on its own validation, which is
+  play by the likeliest action; so the three PPO stages were run again in
+  full precision, and every figure by the likeliest action in the table
+  above is in full precision. The cloned and DAgger weights are the first
+  run's: their training does not depend on such play.
+* The first run's PPO students did not all stop on base1 (90 and 0, or 90
+  and 98 in full precision); the second run's all do. Whether a student
+  gets through that passage with the likeliest action is two-valued and
+  turns on very little. **Three seeds do not put a useful error bar on a
+  figure like that**, and "0% ± 1" above should be read with the first
+  run in mind.
+* Report 7's held-out figures were made in TF32. Its three PPO students,
+  evaluated again today in full precision, reach base1's exit in 0, 97 and
+  92 of 100 where the report had 0, 81 and 12. (The teacher and the graph
+  have changed since, which changes the guide the student is given, so
+  this is not a clean repeat.) That report's "a matter of the seed" was
+  partly this.
+
+Two of the first run's PPO students, which did pass base1, were played
+through the unit as one run before they were replaced: 2 and 6 of 50 got
+through. Both lost most at base3, 9 of 40 and 9 of 32, which is lower than
+the same students do from the teacher's carry (38% and 29%): they arrive
+with less than the teacher does.
+
+### A crash in the game
+
+During the second PPO run a server died: `monster_use` read through a null
+activator. A monster that dies with no enemy fires its targets with nobody
+as the activator, and when one of those targets is a monster the original
+code crashes. It is a fault of the game as released; one line now returns
+instead. Seen once in about 15 million steps of students' play.
+
 
 ## What is not comparable with earlier reports
 
@@ -136,13 +239,20 @@ was no room to sidestep. It took the last leg from 56 to 35.
 
 ## Housekeeping
 
-* GPU: training and evaluation took the card in turn; nothing ran on it
-  beside them.
-* Disk: `~/q2pt-rl/` is @@DISK@@ of the 500 GB allowed.
+* GPU: training and evaluation took the card in turn. The exception: the
+  three short checks that found the TF32 fault (28 episodes each) ran on
+  the card while seed 2 trained, with their memory capped at 6% of it.
+* Time: a seed now takes about 2 h 20 min (5 recording the teacher, 2
+  cloning, 40 DAgger, 38 PPO, 50 evaluating); these maps make longer
+  episodes than base1 did.
+* Disk: `~/q2pt-rl/` is 45 GB of the 500 GB allowed.
 * Docker: the two containers were not touched.
 * CI on the pull request (Linux, Windows x64, Windows x86, licences):
-  @@CI@@.
-* Rebase on main: @@REBASE@@.
+  passed on 97083e2, which has all of the game-side changes but the one
+  line in `monster_use`. The pushes after it are checked there.
+* Rebase on main: main has not moved since the last one (086f2dd), so there was nothing to rebase onto and no conflict.
 * Demos, in `~/q2pt-rl/demos/unit_base/`: one teacher run through the whole
-  unit, a file a leg@@DEMOS@@. All pass `dm2check.py`; nobody has watched
+  unit, a file a leg; and in `unit_base_student/` the seed 0 PPO student on
+  each of the three legs it trained on, by the likeliest action, from the
+  teacher's carry. All pass `dm2check.py`; nobody has watched
   them.

@@ -45,7 +45,34 @@ on. Leaving by any other exit is a failure. (`reports/08-unit.md`.)
 Played as one run, each leg from exactly what the run carried out of the
 last, it gets through the whole unit in 74 of 100 (`tools/unit.py`).
 
-@@STUDENTS@@
+**The students**, trained on the three legs after base1 and never shown
+base1. Each episode starts with what the teacher carried. Three whole runs
+from different seeds, 100 evaluation episodes a leg each, on seeds no
+training uses. Mean of the three runs ± the spread between them, playing
+the likeliest action; in brackets, drawing actions instead:
+
+| player | base2 from base1 | base3 | base2 from base3 | base1, held out |
+| --- | --- | --- | --- | --- |
+| teacher | 95% | 86% | 84% | 100% |
+| cloned from 900 teacher episodes | 30% ± 15 (11% ± 4) | 0% ± 0 (0% ± 0) | 0% ± 1 (1% ± 1) | 19% ± 32 (17% ± 7) |
+| DAgger, 8 rounds | 81% ± 9 (66% ± 7) | 20% ± 9 (1% ± 1) | 8% ± 2 (2% ± 2) | 77% ± 25 (55% ± 6) |
+| PPO from the DAgger student, 3.0 M steps | 86% ± 4 (84% ± 6) | 30% ± 9 (5% ± 3) | 53% ± 2 (15% ± 6) | 0% ± 1 (71% ± 5) |
+
+* On the legs trained on each stage adds, but base3 and the last leg stay
+  far below the teacher.
+* **On base1 the PPO students stop at one low passage** when they play the
+  likeliest action (0, 0 and 1 of 100) and get through when actions are
+  drawn. The DAgger students they came from get through more often than
+  not either way.
+* **Play by the likeliest action is all or nothing at such a place, and
+  very little tips it.** An earlier run of the same PPO stage gave 90 and 0
+  on base1, and that 0 was 98 on the processor: the card's default
+  reduced-precision convolutions (TF32) were enough to put the student in a
+  loop. TF32 is now off and the figures above are in full precision. A
+  spread over three seeds says little about a figure that is either 0 or
+  90.
+* No PPO student plays the unit through as one run: with the likeliest
+  action none leaves base1.
 
 The students are *guided*: at every step they are given the direction and
 distance of the next point on the scripted planner's route. What they learn
@@ -135,18 +162,18 @@ python tools/run_seed.py --seed 0 --tag u1 --maps base2@base1 base3@base2a base2
 python tools/table.py --tag u1                   # the runs so far as a table, mean ± spread over seeds
 
 # or a stage at a time
-python -m q2rl.bc --name bc --maps base3 mintro --episodes 900 --seed 0
-python -m q2rl.dagger --start bc --name dagger --maps base3 mintro --teacher-episodes 900 --seed 0
-python -m q2rl.ppo --name ppo --start dagger --maps base3 mintro
+python -m q2rl.bc --name bc --maps base2@base1 base3@base2a base2@base3b --episodes 900 --seed 0
+python -m q2rl.dagger --start bc --name dagger --maps base2@base1 base3@base2a base2@base3b --teacher-episodes 900 --seed 0
+python -m q2rl.ppo --name ppo --start dagger --maps base2@base1 base3@base2a base2@base3b
 python -m q2rl.evaluate ~/q2pt-rl/weights/ppo.pt --maps base1 --episodes 100          # likeliest action
 python -m q2rl.evaluate ~/q2pt-rl/weights/ppo.pt --maps base1 --episodes 100 --sample # actions drawn
-python tools/record.py ~/q2pt-rl/weights/ppo.pt out.dm2 --map base3 --seed 500000 --greedy
+python tools/record.py ~/q2pt-rl/weights/ppo.pt out.dm2 --map base3@base2a --seed 500000 --greedy
 python tools/dm2check.py out.dm2                 # is the demo well formed?
 ```
 
-On this machine one run of `run_seed.py` takes about 75 minutes: 4 to
-record 900 teacher episodes, 1.5 to clone, 25 for eight rounds of DAgger,
-30 for PPO, the rest evaluating. Its data is about 6 GB.
+On this machine one run of `run_seed.py` takes about 2 h 20 min: 5 to
+record 900 teacher episodes, 2 to clone, 40 for eight rounds of DAgger, 38
+for PPO, the rest evaluating. Its data is about 6 GB.
 
 In Python the environment follows the Gymnasium API:
 
@@ -164,7 +191,8 @@ A demo is written by the server as a recording client would have written
 it: one block per server frame, holding the player's own view of the frame.
 To play one, copy it into `baseq2/demos/` and type `demomap name.dm2`; to
 render it, `pt_render name`. In `~/q2pt-rl/demos/unit_base/`: one teacher
-run through the whole base unit, a file a leg@@DEMOS@@. Older demos of maps
+run through the whole base unit, a file a leg; in `unit_base_student/`, a
+PPO student on each of the three legs it trained on. Older demos of maps
 played alone are in `~/q2pt-rl/demos/`. The first base1 demos were rendered
 whole in the full client and came out at the length recorded; the newer
 ones have passed `dm2check.py` only.
@@ -186,7 +214,9 @@ ones have passed `dm2check.py` only.
   lift.
 * **The students start each leg with the teacher's inventory**, not with
   what they would have carried there themselves.
-@@STUDENT_FAILS@@
+* **The students are far from the teacher on base3 and the last leg**
+  (30% and 53% against 86% and 84%), dying to gunners, parasites and
+  base3's lasers, and **none gets out of base1 by the likeliest action**.
 * **No map with a laser across the way is finished.** Beams are handled
   (fact1 played alone: deaths by laser from 27 of 28 to about none), but
   fact1 is lost to its gunners.
