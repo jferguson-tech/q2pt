@@ -55,7 +55,10 @@ def play(start, seed, steps, random, cpu):
     forward = np.array(L.ACT_IDLE)
     forward[0] = 2
     with Engine(cpu=cpu) as e:
-        e.reset(start, seed, time_limit=steps, mode=L.MODE_PLAY, back="")
+        # the teacher is not asked anything here; in its exploring mode it
+        # does not plan a way out at every step, which on a large map with no
+        # way out for it is slow
+        e.reset(start, seed, time_limit=steps, mode=L.MODE_EXPLORE, back="")
         b = e.block
         while not b["done"]:
             e.step(np.array([rng.integers(n) for n in L.ACT_SIZES]) if random else forward)

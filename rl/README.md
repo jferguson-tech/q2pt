@@ -18,50 +18,47 @@ framework: behaviour cloning, DAgger and PPO are written here in PyTorch.
 
 ## What it does, in numbers
 
-Skill 1 (normal), single-player rules, each map played alone from a fresh
-start with the blaster, on one machine (Ryzen 9 7950X3D, one RTX 4090). An
-episode succeeds when the map's exit is reached.
+Skill 1 (normal), single-player rules, on one machine (Ryzen 9 7950X3D, one
+RTX 4090). The game's first unit is played a **leg** at a time: an episode
+starts at the spawn point the exit of the map before leads to, with what the
+teacher had when it left that map, and succeeds only at the exit that leads
+on. Leaving by any other exit is a failure. (`reports/08-unit.md`.)
 
-**The teacher** plays three maps through. 100 seeded episodes each:
+> **The tables below cannot be compared with those of reports 3 to 7**,
+> nor with earlier versions of this page. Those were for a map played alone
+> from its plain start with the blaster, with any exit counting; on most
+> maps that is no test, since the player starts beside the door it would
+> have come in by. The base1-only tables of reports 4 to 6 in particular
+> (a student that beat its teacher there, PPO from random weights, a
+> student not told the way) are for another task and another teacher, and
+> those students were not retrained.
 
-| map | reaches the exit | takes |
+**The teacher**, 200 seeded episodes a leg:
+
+| leg | reaches the exit that leads on | takes |
 | --- | --- | --- |
-| base1, the first map | 98 of 100 | 105 s |
-| base3: water, a key, parasites | 86 of 100 | 89 s |
-| mintro: lava, ledges, berserkers | 56 of 100 | 212 s |
+| base1, from a new game | 196 of 200 | 101 s |
+| base2, entered from base1 | 192 of 200 | 85 s |
+| base3, entered from base2 | 168 of 200 | 226 s |
+| base2, entered from base3 | 167 of 200 | 90 s |
 
-**The students**, trained on base3 and mintro and never shown base1. Three
-whole runs from different seeds, 100 evaluation episodes a map each, on
-seeds no training uses. Mean of the three runs ± the spread between them,
-playing the likeliest action; in brackets, drawing actions instead:
+Played as one run, each leg from exactly what the run carried out of the
+last, it gets through the whole unit in 74 of 100 (`tools/unit.py`).
 
-| player | base3 | mintro | base1, held out |
-| --- | --- | --- | --- |
-| teacher | 83% | 43% | 99% |
-| cloned from 900 teacher episodes | 26% ± 3 (12% ± 5) | 0% (0%) | 0% ± 0 (38% ± 20) |
-| DAgger, 8 rounds | 46% ± 8 (29% ± 6) | 0% (0%) | 19% ± 33 (55% ± 8) |
-| PPO from the DAgger student, 3.0 M steps | 72% ± 11 (54% ± 11) | 0% (0%) | 31% ± 44 (66% ± 18) |
-
-* On base3 each stage adds and PPO comes near the teacher.
-* **No student finishes mintro.** They die in lava at the first jump
-  between ledges, a move the teacher makes only after trying it out.
-* On base1, which they never saw, the three runs score 0, 81 and 12 of 100
-  with the likeliest action: two of them stop at one crawl-space. Drawing
-  actions gets through it.
+@@STUDENTS@@
 
 The students are *guided*: at every step they are given the direction and
 distance of the next point on the scripted planner's route. What they learn
 is moving, aiming, shooting, dodging and picking things up, not finding the
 way.
 
-**Three maps, not thirty-nine.** Of the game's 39 single-player maps only
-13 are a test when played alone: on the others a player that walks at
-random reaches an exit, because in a hub the player arrives beside the way
-back (`tools/walker.py`). The teacher finishes 3 of the 13. An earlier
-set of figures for base1 alone (a student that beat its teacher there,
-PPO from random weights learning nothing, a student not told the way) is in
-reports 4 to 6; the teacher and the observation have changed since and
-those students were not retrained.
+**The first unit of the game only.** A player that walks at random never
+reaches the exit that leads on from any of these four starts; from two of
+them it walks back out of the door behind it within 6 seconds
+(`tools/walker.py`, which now tries every map from every place the game
+brings the player into it). The legs of the later units have not been
+worked out. mintro, which the teacher plays alone (report 7), is left out
+of training for now: no student gets over its jumps.
 
 ## What is scripted and what is learned
 
@@ -126,14 +123,16 @@ which of ten weapons.
 uv venv ~/q2pt-rl/venv && uv pip install --python ~/q2pt-rl/venv/bin/python -r requirements.txt
 cd rl
 
-python tools/play.py base1 base3 mintro          # the teacher, 100 episodes a map, failures classed
-python tools/play.py --table --episodes 28       # every map, one line each
-python tools/walker.py                           # which maps a player with no sense also "finishes"
+# the teacher on the legs of the base unit, in order; --keep saves what it carries out of each
+python tools/play.py --episodes 200 --keep base1 base2@base1 base3@base2a base2@base3b
+python tools/unit.py                             # the unit as one run, 100 times
+python tools/play.py --table --episodes 28       # every map played alone, one line each
+python tools/walker.py                           # where a player with no sense ends up, from every way in
 python tools/explore.py                          # how much of each map the graph and explorer cover
 
 # one whole run for one training seed: clone, DAgger, PPO, and every evaluation
-python tools/run_seed.py --seed 0 --tag m2 --maps base3 mintro --held base1
-python tools/table.py --tag m2                   # the runs so far as a table, mean ± spread over seeds
+python tools/run_seed.py --seed 0 --tag u1 --maps base2@base1 base3@base2a base2@base3b --held base1
+python tools/table.py --tag u1                   # the runs so far as a table, mean ± spread over seeds
 
 # or a stage at a time
 python -m q2rl.bc --name bc --maps base3 mintro --episodes 900 --seed 0
@@ -164,29 +163,37 @@ info["teacher"]     # what the teacher would do from here
 A demo is written by the server as a recording client would have written
 it: one block per server frame, holding the player's own view of the frame.
 To play one, copy it into `baseq2/demos/` and type `demomap name.dm2`; to
-render it, `pt_render name`. In `~/q2pt-rl/demos/`: the teacher through
-base1, base3 and mintro, a PPO student through base3, and a PPO student
-through base1, which it never trained on. The first base1 demos were
-rendered whole in the full client and came out at the length recorded; the
-newer ones have passed `dm2check.py` only.
+render it, `pt_render name`. In `~/q2pt-rl/demos/unit_base/`: one teacher
+run through the whole base unit, a file a leg@@DEMOS@@. Older demos of maps
+played alone are in `~/q2pt-rl/demos/`. The first base1 demos were rendered
+whole in the full client and came out at the length recorded; the newer
+ones have passed `dm2check.py` only.
 
 ## What does not work
 
-* **36 of 39 maps.** Thirteen maps are a test when played alone, and the
-  teacher finishes three. On the other ten it has no plan (the way out
-  needs a train, a teleporter or a wall blown up, which the graph does not
-  have), or it meets gunners, tanks and bosses with the blaster.
+* **Everything after the first unit.** The legs of the other units have
+  not been worked out, and most need what the teacher lacks: a way out by
+  train, teleporter or a wall blown up, which the graph does not have, and
+  a fight plan for tanks and bosses.
+* **A map is not remembered between visits.** The game saves each map of a
+  unit and loads it when the player comes back. Here base2 entered from
+  base3 is base2 as new, its monsters alive again.
+* **Maps with one door** (train, ware1, jail5, fact2, fact3, lab, space,
+  mine4) are entered and left the same way, for something done inside.
+  Scoring by the exit cannot test them and no leg is made of them.
+* **The teacher runs out of time in 22 of 800 episodes** on the base unit,
+  mostly standing where the graph has no way out of: a pit, the top of a
+  lift.
+* **The students start each leg with the teacher's inventory**, not with
+  what they would have carried there themselves.
+@@STUDENT_FAILS@@
 * **No map with a laser across the way is finished.** Beams are handled
-  (fact1: deaths by laser from 27 of 28 to about none), but fact1 is lost
-  to its gunners.
-* **mintro is beyond every student**, and base1 unseen is a matter of the
-  seed with the likeliest action: see the table at the top.
-* **The teacher on mintro** finishes 56 of 100: knocked into lava while
-  fighting near an edge, or killed by three berserkers.
-* **Playing a unit across its maps**, inventory kept, which is what the
-  game's hubs need and what would make the other 26 maps tests: not done.
+  (fact1 played alone: deaths by laser from 27 of 28 to about none), but
+  fact1 is lost to its gunners.
+* **mintro** (report 7): the teacher finishes it alone in 56 of 100, and no
+  student gets over its first jump. Left out of training for now.
 * **Not redone with the present teacher**: PPO from random weights, and the
-  student that is not told the way (reports 5 and 6, base1 only).
+  student that is not told the way (reports 5 and 6, base1 alone).
 * **Narrow places at 100 ms steps.** Head-on into a wall `Pmove` does not
   slide; a corner overlapped by an eighth of a unit stops the player dead;
   a step cannot be climbed under a low roof. The teacher has a rule for

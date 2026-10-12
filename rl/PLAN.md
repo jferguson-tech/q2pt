@@ -151,55 +151,49 @@ Same map, seed and actions must give the same trajectory, bit for bit.
 
 ### How an episode ends
 
-* **exit**: `BeginIntermission` has run (`level.intermissiontime` set). In
-  stepping mode `ExitLevel` (`game/g_main.c`) does not issue `gamemap`, so the
-  map change is never followed.
+* **exit**: `BeginIntermission` has run (`level.intermissiontime` set) by
+  the exit the episode names, or by any exit when it names none. In stepping
+  mode `ExitLevel` (`game/g_main.c`) does not issue `gamemap`, so the map
+  change is never followed.
+* **wrong**: the map was left by another exit. A failure, like a death.
 * **death**: the player's health is zero or less.
 * **time**: a limit in steps, given at reset.
 
 A map starts with its clock a second ahead of the server's. A reset levels
 the two, so that the first step runs a game frame like every other.
 
-Playing on through a unit, inventory kept, is the stretch goal: it needs the
-level files in `save/current`, so each process would get a game folder of its
-own.
+### A unit, a leg at a time
 
-### Demos
+The game's maps come in units that the player goes back and forth through,
+and a map played alone from its plain start is mostly not what the game
+asks: the player is beside the door it would have come in by. An episode is
+therefore a **leg** of a unit (`q2env/maps.py`):
 
-`serverrecord` is not usable: `SV_RecordDemoMessage` writes every entity in
-the map and no player state, so there is no first-person view in it. Client
-`record` needs a real client.
+* it starts at the spawn point the exit of the map before names. The reset
+  is given the map as the game's own exits give it, `base2$base1`, and
+  `SV_Map` and `SelectSpawnPoint` do the rest;
+* it starts with what the player had on leaving that map. The game keeps
+  this in `client->pers`; `RL_Leave` reads it out at the exit (health, the
+  inventory, the weapon in hand, the ammunition limits, and
+  `game.serverflags`, which is how one map of a unit sets things off in
+  another) and `RL_Arrive` puts it back between `ClientConnect` and
+  `ClientBegin`, where a game played through has it. The teacher's are
+  kept, one row for each episode in which it got out, in
+  `~/q2pt-rl/carry/<leg>.npy` (`tools/play.py --keep`), and an episode on
+  the next leg takes the row its seed picks;
+* it succeeds only at the exit that leads on. The planner makes for that
+  one alone and treats the triggers of the others as it treats lava: links
+  through them are shut and steps into them refused.
 
-The route taken: the server writes what a recording client would have
-written. `server/sv_rl.c`, on `rl_demo <file>` in a reset request:
+What is not carried is the state of the map itself. The game saves each
+map of a unit on leaving and loads it on coming back, so a second visit
+finds the monsters dead and the doors open; here base2 entered from base3
+is the map as new, monsters and all. `tools/unit.py` plays the legs of a
+unit as one run, each from exactly what that run carried out of the last.
 
-1. the header `CL_Record_f` writes: `svc_serverdata` (protocol 34, attract
-   loop 1, player number 0, the map's name), every configstring, every
-   baseline from `sv.baselines`, then `stufftext "precache\n"`, split into
-   blocks under `MAX_MSGLEN`;
-2. each server frame, exactly one block: the client's reliable messages
-   (prints, configstring changes, the inventory), then `SV_BuildClientFrame`
-   and `SV_WriteFrameToClient`, delta compressed against the last frame
-   written, then the unreliable messages (sounds, muzzle flashes, temporary
-   entities). If the block would pass `MAX_MSGLEN` the unreliable part is
-   left out, as it is on a real connection; if the frame does not fit after
-   the reliable part it is skipped and the next one is a delta from the last
-   one written. One block per frame matters: a server playing a demo deals
-   out one block per frame of its own, so a block without a frame holds the
-   picture still for a tenth of a second;
-3. a length of -1 at the end.
-
-Demos are at the server's 10 frames a second, as every Quake 2 demo is; the
-client interpolates between frames on playback.
-
-Checks: `rl/tools/dm2check.py` parses a file block by block and command by
-command and reports any byte it cannot account for. On this machine the full
-`quake2` is built too, so each change to the writer is also played with
-`demomap` and rendered with `pt_render`.
-
-The other route (log the seed and usercmds, replay through a real client that
-records) is not taken: a real client's moves are not 100 ms long, so the
-replay would not be the same run.
+A map with one exit, entered and left by the same door (train, ware1,
+jail5, fact2, fact3, lab, space, mine4), cannot be scored by its exit at
+all: the visit is for something done inside. No leg is made of those.
 
 ## Teacher
 
@@ -207,7 +201,8 @@ All of it is in the game library (`game/g_rl_*.c`), written from the map
 format and the engine's own functions.
 
 * **Navigation graph** (`g_rl_nav.c`), built per map on first use and kept
-  in `~/q2pt-rl/nav/`. It is grown from where the player starts: a ghost of
+  in `~/q2pt-rl/nav/`. It is grown from every place the player can come
+  into the map (each `info_player_start`): a ghost of
   the player is put at a node at rest and moved through `gi.Pmove` in 100 ms
   steps, forward on each of 16 headings, and where that is stopped or falls,
   with a jump and crouched; in water, rising, level and sinking; at a ladder,
@@ -255,7 +250,11 @@ format and the engine's own functions.
   yet brought in by a trigger left out. The aim is taken on where the
   monster and the player will be a step on, led further for weapons that
   throw something, and the shot is fired when the view will be on it after
-  this step's turn. The weapon is the one that does most at the distance,
+  this step's turn. Where the player will be is where this step's feet put
+  it, not where its present speed would: on the ground it is at full speed
+  the way its feet go within a step, and a sidestep to and fro reverses
+  every step or two. The machinegun, which in a game for one climbs a
+  degree and a half a shot, is held down by as much. The weapon is the one that does most at the distance,
   kept unless another does half as much again. A monster that would take
   more than four seconds with what the player has is not stood before: the
   feet keep to the route. Otherwise a dodge to a neighbouring node from
@@ -264,7 +263,15 @@ format and the engine's own functions.
   turned aside for (`g_rl_teach.c`): a weapon it lacks is worth 45 seconds
   of walking, but nothing is worth much when the way out is a few steps
   off, nothing is dived for, and nothing is fetched from where the way out
-  cannot be taken up again.
+  cannot be taken up again. An item not had in three times the walk the
+  graph gives it, and ten seconds, is given up for the episode.
+* **Things the map changes for good.** A piece of wall that a trigger
+  takes away (a `func_wall` named by a `killtarget`) is in the graph as a
+  door is: links found with it gone are shut while it stands, and the
+  planner's job is whatever removes it. A trigger that hangs in a pit
+  whose floor opens has no node in it; the falls through it count as
+  touching it. The game hands a freed entity's number to the next thing
+  made, so each step the doors are checked to be themselves still.
 * **Statelessness**: the teacher's action is a function of the world as it is
   now (plus fixed per-map data), so it can label a state the student drove
   into. It is computed every step and returned with the observation whoever

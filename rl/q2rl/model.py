@@ -27,6 +27,16 @@ import torch.nn.functional as F
 
 from q2env import layout as L
 
+# On recent cards PyTorch by default works convolutions out in TF32, which
+# keeps ten bits of each number's fraction. For training that is nothing. For
+# play with the likeliest action it is not: where two choices score nearly
+# alike the rounding picks the other one, and the play that follows, having
+# nothing random in it, can settle into a loop it never leaves. The same
+# weights reached the exit of base1 in 98 of 100 episodes on the processor
+# and in none on the card. With TF32 off the two agree step for step.
+torch.backends.cudnn.allow_tf32 = False
+torch.backends.cuda.matmul.allow_tf32 = False
+
 ITEM_TYPES = 64         # room for the game's item list and the monster list
 
 

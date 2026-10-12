@@ -4,7 +4,9 @@
 map, the share of episodes that reached the exit, as the mean over the
 training seeds and the spread between them (the standard deviation of the
 seeds' own rates, n-1), taking the likeliest action and, beside it, drawing
-actions.
+actions. A row marked greedy_tf32 is the likeliest action again, worked out
+with the card's reduced-precision convolutions, where a run has those
+figures too: see q2rl/model.py.
 
     python rl/tools/table.py --tag m3
 """
@@ -49,7 +51,7 @@ if __name__ == "__main__":
         print("| teacher | " + " | ".join(f"{100 * t['maps'][m]['rate']:.0f}%" for m in maps)
               + f" | {100 * t['all']['rate']:.0f}% |")
         for stage in ("bc", "dagger", "ppo"):
-            for how in ("greedy", "sampled"):
+            for how in ("greedy", "sampled", "greedy_tf32"):
                 files = sorted(folder.glob(f"{args.tag}_{stage}_s*_{where}_{how}.json"))
                 runs = [json.loads(f.read_text()) for f in files]
                 if not runs:
