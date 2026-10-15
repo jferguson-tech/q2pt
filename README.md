@@ -146,7 +146,22 @@ infers the light from the cheap planes, see `neural/README.md`, which says
 the format. Each frame is traced twice, once for the inputs and once for the
 target, with no offset within the pixel, no filtering over space, exposure 1
 and no motion blur, so that the two line up to the pixel; a frame of
-`demo1` at 1280x720 and 64 paths takes about 0.7 seconds and 92 MB.
+`demo1` at 1280x720 and 64 paths takes about 0.7 seconds and 92 MB. The
+unshadowed plane counts every light of the map and of the frame, and the
+whole sky as it would light the surface were nothing in the way, from the
+sky's pictures as nine spherical harmonics.
+
+`pt_walk <map> [frames] [paths] [fps] [quit]` renders a map the same way
+with no demo: the map is loaded as a game of one and the camera is carried
+through it by itself, in bursts of eight frames, each from a place taken
+from the map's own entities (where the player starts, where things lie,
+where monsters stand) towards another in sight of it, looking some way that
+is not into a wall, with a field of view of its own. A burst may set the
+map's flickering lights to a moment of their own (`cl_lightstyle_offset`)
+and put a few lights of its own about the camera. The weapon in hand and the
+status bar are left out, and the same map gives the same walk every time.
+With `quit` the game leaves when it is done, as `pt_render` does with a
+sixth argument `quit`. `neural/render_dataset.py` runs it over every map.
 
 **Benchmark**
 
@@ -380,7 +395,10 @@ Some console commands and variables:
 | `lightball_max`, `lightball_brightness` | how many balls there may be at once before the oldest goes (6 unless set, at most 24), and how bright the next one thrown is (300; a rocket's light is 200) |
 | `screenshot`, `pt_screenshot [paths]` | the frame as shown, or rendered again at high quality |
 | `record <name>`, `stop` | record a demo (the game's own commands) |
-| `pt_render <demo> [fps] [paths] [start] [length]` | render a demo offline into `baseq2\render\<demo>\`; start and length, in seconds, pick a part of it |
+| `pt_render <demo> [fps] [paths] [start] [length] [quit]` | render a demo offline into `baseq2\render\<demo>\`; start and length, in seconds, pick a part of it; `quit` leaves the game when it is done |
+| `pt_walk <map> [frames] [paths] [fps] [quit]` | render a map offline from a camera carried through it by itself, into `baseq2\render\walk_<map>\`: see *Offline demo rendering* |
+| `pt_camera "x y z pitch yaw [fov]"` | a fixed camera, for looking at a place without walking there; empty for the player's own view |
+| `cl_lightstyle_offset` | milliseconds added to the clock the flickering lights run by, so that they can be seen at another moment; 0 unless set |
 | `pt_render_live 0`-`1` | with `1`, `pt_render` saves the frames the game itself would show, with the settings it is played with, instead of offline ones; the paths argument is not used. Given the frame rate a renderer reaches, that is a film of how it plays; off unless set, and not kept in the config |
 | `pt_render_blur 0`-`1` | motion blur for offline rendering: the share of each frame's time the shutter is open; 0.5 unless set, film's 180 degree shutter |
 | `pt_bench [demo] [seconds] [quit]` | time a demo: `demo1` and 20 seconds unless given, 0 for all of it; `quit` leaves the game afterwards, for scripts (`quake2 +pt_bench demo1 20 quit`) |

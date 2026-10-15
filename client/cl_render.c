@@ -68,6 +68,8 @@ static float	render_fixedtime;		// what fixedtime was before
 static qboolean	render_bench;			// the frames are timed, not kept
 static qboolean	render_thenquit;		// leave the game when the timing is done
 static int		render_quitframes;		// how many frames from now
+static qboolean	render_walk;			// a map walked by itself, not a demo: see cl_walk.c
+static char		render_map[MAX_QPATH];
 
 qboolean CL_RenderBusy (void)
 {
@@ -89,6 +91,8 @@ static void CL_RenderEnd (qboolean complete)
 	S_CaptureStop ();
 	VID_SetTitle (NULL);
 
+	if (render_walk)
+		CL_WalkEnd ();
 	if (render_bench)
 	{
 		if (render_state != RENDER_RUNNING)
@@ -98,6 +102,8 @@ static void CL_RenderEnd (qboolean complete)
 		if (render_state == RENDER_RUNNING && complete && render_thenquit)
 			render_quitframes = 3;		// after the renderer has had its say
 	}
+	else if (render_walk && render_state != RENDER_RUNNING)
+		Com_Printf ("Could not load %s to walk it.\n", render_map);
 	else if (render_state == RENDER_RUNNING)
 	{
 		seconds = (Sys_Milliseconds () - render_started) / 1000;
@@ -108,11 +114,14 @@ static void CL_RenderEnd (qboolean complete)
 			seconds / 3600, seconds / 60 % 60, seconds % 60);
 		Com_Printf ("They are in %s\n", render_dir);
 		Com_Printf ("Run render.bat there to make a video of them (needs ffmpeg).\n");
+		if (complete && render_thenquit)
+			render_quitframes = 3;
 	}
 	else
 		Com_Printf ("Could not play %s to render it.\n", render_name);
 
 	render_state = RENDER_IDLE;
+	render_walk = false;
 }
 
 /*
@@ -160,6 +169,8 @@ void CL_RenderFrame (void)
 			render_keeping = false;
 			render_started = Sys_Milliseconds ();
 			render_state = RENDER_RUNNING;
+			if (render_walk)
+				CL_WalkBegin (render_map);
 		}
 
 		if (render_state == RENDER_WAITING && Sys_Milliseconds () - render_started > 60000)
@@ -200,6 +211,9 @@ void CL_RenderFrame (void)
 		render_keeping = true;
 	}
 
+	// the camera for this frame, where it is carried by itself
+	if (render_walk)
+		CL_WalkFrame (render_frame, render_fps);
 	// The game's clock counts whole milliseconds, which do not divide into
 	// most frame rates: each frame is given however many take the total to
 	// where it should be by then, so that the error never adds up.
@@ -268,6 +282,38 @@ static void CL_RenderBatch (void)
 	fprintf (f, ":done\n");
 	fprintf (f, "pause\n");
 	fclose (f);
+}
+
+/*
+===============
+CL_RenderPrepare
+
+The folder the frames go in, emptied of any from before
+===============
+*/
+static void CL_RenderPrepare (void)
+{
+	char	name[MAX_OSPATH];
+	char	*s;
+
+	Com_sprintf (render_dir, sizeof(render_dir), "%s/render/%s", FS_Gamedir (), render_name);
+	FS_CreatePath (va("%s/x", render_dir));
+
+	// frames left from an earlier, longer render would end up in the video
+	Com_sprintf (name, sizeof(name), "%s/frame*.png", render_dir);
+	for (s = Sys_FindFirst (name, 0, 0) ; s ; s = Sys_FindNext (0, 0))
+		remove (s);
+	Sys_FindClose ();
+	Com_sprintf (name, sizeof(name), "%s/frame*.planes", render_dir);
+	for (s = Sys_FindFirst (name, 0, 0) ; s ; s = Sys_FindNext (0, 0))
+		remove (s);
+	Sys_FindClose ();
+	remove (va("%s/sound.wav", render_dir));
+
+	CL_RenderBatch ();
+
+	Com_Printf ("Rendering %s at %i frames a second, %i paths a pixel: about %i frames\n",
+		render_name, render_fps, render_paths, render_expected - render_first);
 }
 
 /*
@@ -352,22 +398,7 @@ static qboolean CL_RenderBegin (char *demo, int fps, int paths, float start, flo
 	if (bench)
 		Com_Printf ("Timing about %i frames of %s\n", render_expected - render_first, render_name);
 	else
-	{
-		Com_sprintf (render_dir, sizeof(render_dir), "%s/render/%s", FS_Gamedir (), render_name);
-		FS_CreatePath (va("%s/x", render_dir));
-
-		// frames left from an earlier, longer render would end up in the video
-		Com_sprintf (name, sizeof(name), "%s/frame*.png", render_dir);
-		for (s = Sys_FindFirst (name, 0, 0) ; s ; s = Sys_FindNext (0, 0))
-			remove (s);
-		Sys_FindClose ();
-		remove (va("%s/sound.wav", render_dir));
-
-		CL_RenderBatch ();
-
-		Com_Printf ("Rendering %s at %i frames a second, %i paths a pixel: about %i frames\n",
-			render_name, render_fps, render_paths, render_expected - render_first);
-	}
+		CL_RenderPrepare ();
 
 	render_fixedtime = Cvar_VariableValue ("fixedtime");
 	render_loading = false;
@@ -376,6 +407,55 @@ static qboolean CL_RenderBegin (char *demo, int fps, int paths, float start, flo
 
 	M_ForceMenuOff ();
 	Cbuf_AddText (va("demomap %s.dm2\n", render_name));
+	return true;
+}
+
+/*
+===============
+CL_WalkStart
+
+To make a film of a map walked by itself: see cl_walk.c
+===============
+*/
+static qboolean CL_WalkStart (char *map, int frames, int fps, int paths, qboolean thenquit)
+{
+	if (render_state != RENDER_IDLE)
+	{
+		Com_Printf ("Already %s %s. pt_render_stop or Esc stops it.\n", render_bench ? "timing" : "rendering", render_name);
+		return false;
+	}
+	if (Q_strncasecmp (Cvar_VariableString ("vid_ref"), "pt", 2))
+	{
+		Com_Printf ("Maps are walked with the path traced renderers: pick one in the video menu first.\n");
+		return false;
+	}
+	if (!map[0] || strlen (map) >= sizeof(render_map) || strlen (map) + 6 >= sizeof(render_name))
+	{
+		Com_Printf ("Bad map name\n");
+		return false;
+	}
+	strcpy (render_map, map);
+	Com_sprintf (render_name, sizeof(render_name), "walk_%s", map);
+	render_fps = fps < 1 ? 1 : (fps > 240 ? 240 : fps);
+	render_paths = paths < 4 ? 4 : (paths > 4096 ? 4096 : paths);
+	render_first = 0;
+	render_count = frames < 1 ? 1 : frames;
+	render_expected = render_count;
+	render_keeping = false;
+	render_kept_since = 0;
+	render_bench = false;
+	render_walk = true;
+	render_thenquit = thenquit;
+	render_quitframes = 0;
+	CL_RenderPrepare ();
+
+	render_fixedtime = Cvar_VariableValue ("fixedtime");
+	render_loading = false;
+	render_started = Sys_Milliseconds ();
+	render_state = RENDER_WAITING;
+
+	M_ForceMenuOff ();
+	Cbuf_AddText (va("map %s\n", map));
 	return true;
 }
 
@@ -397,20 +477,38 @@ static void CL_Render_f (void)
 {
 	if (Cmd_Argc () < 2)
 	{
-		Com_Printf ("pt_render <demo> [frames a second] [paths a pixel] [start] [length]\n"
+		Com_Printf ("pt_render <demo> [frames a second] [paths a pixel] [start] [length] [quit]\n"
 			"Renders a demo recorded with \"record\" as pictures and sound for a video.\n"
 			"60 frames a second and 64 paths a pixel unless given. start and length,\n"
-			"in seconds, pick a part of the demo; without them all of it is rendered.\n");
+			"in seconds, pick a part of the demo; without them all of it is rendered.\n"
+			"With quit, leaves the game when it is done.\n");
 		return;
 	}
-	CL_RenderStart (Cmd_Argv (1), Cmd_Argc () > 2 ? atoi (Cmd_Argv (2)) : 60,
+	if (CL_RenderStart (Cmd_Argv (1), Cmd_Argc () > 2 ? atoi (Cmd_Argv (2)) : 60,
 		Cmd_Argc () > 3 ? atoi (Cmd_Argv (3)) : 64,
-		Cmd_Argc () > 4 ? atof (Cmd_Argv (4)) : 0, Cmd_Argc () > 5 ? atof (Cmd_Argv (5)) : 0);
+		Cmd_Argc () > 4 ? atof (Cmd_Argv (4)) : 0, Cmd_Argc () > 5 ? atof (Cmd_Argv (5)) : 0))
+		render_thenquit = Cmd_Argc () > 6 && !Q_stricmp (Cmd_Argv (6), "quit");
+}
+
+static void CL_Walk_f (void)
+{
+	if (Cmd_Argc () < 2)
+	{
+		Com_Printf ("pt_walk <map> [frames] [paths a pixel] [frames a second] [quit]\n"
+			"Renders a map from a camera carried through it by itself, as pt_render\n"
+			"renders a demo: 240 frames, 64 paths and 30 frames a second unless given.\n"
+			"With quit, leaves the game when it is done.\n");
+		return;
+	}
+	CL_WalkStart (Cmd_Argv (1), Cmd_Argc () > 2 ? atoi (Cmd_Argv (2)) : 240,
+		Cmd_Argc () > 4 ? atoi (Cmd_Argv (4)) : 30, Cmd_Argc () > 3 ? atoi (Cmd_Argv (3)) : 64,
+		Cmd_Argc () > 5 && !Q_stricmp (Cmd_Argv (5), "quit"));
 }
 
 void CL_InitRender (void)
 {
 	Cmd_AddCommand ("pt_render", CL_Render_f);
+	Cmd_AddCommand ("pt_walk", CL_Walk_f);
 	Cmd_AddCommand ("pt_render_stop", CL_RenderStop);
 	Cmd_AddCommand ("pt_bench", CL_Bench_f);
 }

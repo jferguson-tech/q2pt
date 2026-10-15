@@ -139,6 +139,7 @@ layout(std140, set = 0, binding = 1) uniform Frame
 	vec4	painted;		// x: what a metal painted dark reflects, see pt_view_t's metal_colour; y: the most over white that adds to the glow, 0 = no limit; z: points along a view ray where the air's light is looked for; w: frames of it kept while things change
 	vec4	liquid;			// x: how far from level the waves of simulated liquids reach; y: how readily what was gathered is let go where the light has changed, see change.comp; z: how much liquids scatter the light in them; w: how wet their banks show
 	ivec4	table_at3;		// in indices: x: for each of the map's lights, the one taken in its stead when it is not kept; y: the cells' lists of lights again, in order of light
+	vec4	sky_sh[7];		// the sky's radiance as nine spherical harmonics, red, green and blue of each in turn, in the sky's own frame; [6].w: there is a sky. See SkyIrradiance
 } fr;
 
 // the map and what moves, each as three corners per triangle, what goes with
@@ -1788,15 +1789,38 @@ Lit DirectFrameAll(Surface s)
 	return sum;
 }
 
+// The light the whole sky would put on a surface facing n, in the sky's
+// own frame, with nothing in the way: the irradiance from the sky's
+// radiance as nine spherical harmonics (Ramamoorthi and Hanrahan, 2001).
+vec3 SkyIrradiance(vec3 n)
+{
+	if (fr.sky_sh[6].w == 0.0)
+		return vec3(0.0);
+	const float x = n.x, y = n.y, z = n.z;
+	const float basis[9] = float[9](
+		0.282095, 0.488603 * y, 0.488603 * z, 0.488603 * x,
+		1.092548 * x * y, 1.092548 * y * z, 0.315392 * (3.0 * z * z - 1.0),
+		1.092548 * x * z, 0.546274 * (x * x - y * y));
+	vec3 e = vec3(0.0);
+	for (int k = 0; k < 9; k++)
+	{
+		const float band = k == 0 ? PI : (k < 4 ? 2.0 * PI / 3.0 : 0.25 * PI);
+		const vec3 c = vec3(fr.sky_sh[(k * 3) >> 2][(k * 3) & 3], fr.sky_sh[(k * 3 + 1) >> 2][(k * 3 + 1) & 3],
+			fr.sky_sh[(k * 3 + 2) >> 2][(k * 3 + 2) & 3]);
+		e += c * (basis[k] * band);
+	}
+	return max(e, vec3(0.0));
+}
+
 // What every light, the map's and the frame's, would put on the surface
 // were nothing in the way, as the irradiance on the matte part and the
 // radiance off the shine: for export, see img_export. The map's triangle
 // lights are taken as points at their middle, facing as they do, and the
-// frame's balls as points. The sky is not counted. A loop over every light
-// for every pixel: not for play.
+// frame's balls as points; the sky counts as a whole, on the matte part
+// only. A loop over every light for every pixel: not for play.
 void DirectEveryLight(Surface s, out vec3 diffuse, out vec3 specular)
 {
-	diffuse = vec3(0.0);
+	diffuse = SkyIrradiance(Turn(s.n, -fr.sky_turn.w));
 	specular = vec3(0.0);
 	const int of_map = fr.counts.x;
 	for (int i = 0; i < of_map + fr.counts.y; i++)

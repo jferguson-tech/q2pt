@@ -69,7 +69,15 @@ void CL_RunLightStyles (void)
 	int		i;
 	clightstyle_t	*ls;
 
-	ofs = cl.time / 100;
+	// cl_lightstyle_offset, in milliseconds, puts them at another moment:
+	// for training data, see cl_walk.c
+	{
+		static cvar_t	*offset;
+
+		if (!offset)
+			offset = Cvar_Get ("cl_lightstyle_offset", "0", 0);
+		ofs = (cl.time + (int)offset->value) / 100;
+	}
 	if (ofs == lastofs)
 		return;
 	lastofs = ofs;
