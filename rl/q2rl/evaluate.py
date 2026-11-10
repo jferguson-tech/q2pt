@@ -2,12 +2,16 @@
 # Copyright (c) 2026 Jonathan Ferguson
 """How often a policy, or the teacher, reaches the exit.
 
-    python -m q2rl.evaluate <weights.pt | teacher> [--episodes 100] [--maps base1] [--sample]
+    python -m q2rl.evaluate <weights.pt | teacher> [--episodes 100] [--maps base1] [--sample | --cool 0.5]
 
 Seeds are 500000 and up, which no training run uses. Each environment plays
 its own run of seeds, so two things evaluated with the same settings meet
 the same episodes. By default the policy plays its most likely choice in
-each branch; --sample draws from its distribution instead.
+each branch; --sample draws from its distribution instead, and --cool T
+draws from it sharpened by a temperature T below 1. Play by the likeliest
+action has nothing random in it, so one place where the player stops can
+end every episode that passes it; cooled play is nearly the same player
+without that.
 """
 
 import argparse
@@ -35,9 +39,12 @@ def load(path, device):
 
 
 def evaluate(policy, episodes=100, maps=("base1",), device="cuda", sample=False, envs=28,
-             time_limit=6000, skill=1, seed=EVAL_SEED):
+             time_limit=6000, skill=1, seed=EVAL_SEED, temperature=1.0):
     """policy: a Policy, or None for the teacher. Returns the list of what
     the game reported at the end of each episode."""
+    if sample:
+        # the draws are the same from one evaluation to the next
+        torch.manual_seed(seed)
     env = Q2VecEnv(envs, maps=maps, skill=skill, time_limit=time_limit, cpus=CPUS, seed=seed,
                    mode=L.MODE_PLAY, guided=policy.guided if policy else True)
     obs = env.reset()
@@ -54,7 +61,7 @@ def evaluate(policy, episodes=100, maps=("base1",), device="cuda", sample=False,
         if policy is None:
             obs, _, done = env.step(None)
         else:
-            actions, _, _, state = policy.act(to_torch(obs, device), last, state, starts, sample)
+            actions, _, _, state = policy.act(to_torch(obs, device), last, state, starts, sample, temperature)
             obs, _, done = env.step(actions.cpu().numpy())
             ended = torch.from_numpy(done != L.DONE_NO).to(device)
             starts = ended.float()
@@ -88,14 +95,17 @@ if __name__ == "__main__":
     ap.add_argument("--episodes", type=int, default=100, help="in all, shared among the maps")
     ap.add_argument("--maps", nargs="+", default=["base1"])
     ap.add_argument("--sample", action="store_true", help="draw actions; otherwise the likeliest is taken")
+    ap.add_argument("--cool", type=float, default=0.0, help="draw actions at this temperature, below 1")
     ap.add_argument("--seed", type=int, default=EVAL_SEED)
     ap.add_argument("--json", default="", help="a file to write the figures to")
     args = ap.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     policy = None if args.policy == "teacher" else load(args.policy, device)
-    results = evaluate(policy, args.episodes, args.maps, device, args.sample, seed=args.seed)
+    results = evaluate(policy, args.episodes, args.maps, device, args.sample or args.cool > 0, seed=args.seed,
+                       temperature=args.cool or 1.0)
     s = summary(results)
-    how = "teacher" if policy is None else "sampled" if args.sample else "greedy"
+    how = ("teacher" if policy is None else f"cooled to {args.cool:g}" if args.cool
+           else "sampled" if args.sample else "greedy")
     print(f"{args.policy} ({how}): {s['exit']} of {s['episodes']} reached the exit ({100 * s['rate']:.0f}%), "
           f"{s['death']} died, {s['time']} ran out of time, {s['wrong']} left by another exit; "
           f"{s['kills']:.1f} kills and "

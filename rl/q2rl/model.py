@@ -143,16 +143,24 @@ class Policy(nn.Module):
         return [h(out) for h in self.heads], self.value(out).squeeze(-1), state
 
     @torch.no_grad()
-    def act(self, obs, last_action, state, starts, sample=True):
+    def act(self, obs, last_action, state, starts, sample=True, temperature=1.0):
         """One step for a batch of environments. obs and last_action have a
         leading dimension (batch,). Returns actions (batch, branches), their
-        log probability, the value and the new state."""
+        log probability, the value and the new state. With sample, actions
+        are drawn; a temperature below 1 sharpens what they are drawn from
+        toward the likeliest. The log probability is always the policy's
+        own, at temperature 1."""
         obs = {k: v.unsqueeze(1) for k, v in obs.items()}
         logits, value, state = self(obs, last_action.unsqueeze(1), state, starts.unsqueeze(1))
         actions, logp = [], 0
         for lg in logits:
             dist = torch.distributions.Categorical(logits=lg[:, 0])
-            a = dist.sample() if sample else lg[:, 0].argmax(-1)
+            if not sample:
+                a = lg[:, 0].argmax(-1)
+            elif temperature == 1.0:
+                a = dist.sample()
+            else:
+                a = torch.distributions.Categorical(logits=lg[:, 0] / temperature).sample()
             actions.append(a)
             logp = logp + dist.log_prob(a)
         return torch.stack(actions, -1), logp, value[:, 0], state

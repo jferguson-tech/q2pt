@@ -183,7 +183,8 @@ class Q2VecEnv:
                 self.info[i] = {"map": self.current_map[i], "seed": int(self.current_seed[i]),
                                 "done": int(b["done"]), "steps": int(b["step"]),
                                 "kills": int(b["monsters_killed"]), "health": float(b["self"][0]),
-                                "death_by": int(b["death_by"]), "death_means": int(b["death_means"])}
+                                "death_by": int(b["death_by"]), "death_means": int(b["death_means"]),
+                                "origin": [float(x) for x in b["origin"]]}
                 self._ask_reset(i)
             else:
                 self._read(i)

@@ -2,7 +2,8 @@
 # Copyright (c) 2026 Jonathan Ferguson
 """One whole run for one training seed: clone the teacher, DAgger, PPO from
 the DAgger student, and an evaluation of each on the maps trained on and on
-the maps held out, taking the likeliest action and drawing actions.
+the maps held out, three ways: taking the likeliest action, drawing actions
+cooled to COOL, and drawing them as they come.
 
     python rl/tools/run_seed.py --seed 0 --tag m3 --maps base3 mintro fact3 --held base1
 
@@ -21,6 +22,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from q2env.engine import data_dir  # noqa: E402
 
 RL = Path(__file__).resolve().parents[1]
+# The temperature of the cooled evaluation. At 0.25 the players of report 8
+# reach the exit on the maps they trained on as often as with the likeliest
+# action, and no longer stop for good at one place; warmer costs them fights.
+COOL = 0.25
 
 
 def run(*words):
@@ -65,9 +70,9 @@ if __name__ == "__main__":
         if not out.exists():
             run("q2rl.evaluate", "teacher", "--maps", *maps, "--episodes", episodes, "--json", out)
         for name in (bc, dagger, ppo):
-            for how in ("greedy", "sampled"):
+            for how in ("greedy", "cool", "sampled"):
                 out = results / f"{name}_{where}_{how}.json"
                 if out.exists():
                     continue
                 run("q2rl.evaluate", weights / f"{name}.pt", "--maps", *maps, "--episodes", episodes,
-                    "--json", out, *(["--sample"] if how == "sampled" else []))
+                    "--json", out, *{"greedy": [], "cool": ["--cool", COOL], "sampled": ["--sample"]}[how])
