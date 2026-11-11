@@ -22,7 +22,8 @@ Skill 1 (normal), single-player rules, on one machine (Ryzen 9 7950X3D, one
 RTX 4090). The game's first unit is played a **leg** at a time: an episode
 starts at the spawn point the exit of the map before leads to, with what the
 teacher had when it left that map, and succeeds only at the exit that leads
-on. Leaving by any other exit is a failure. (`reports/08-unit.md`.)
+on. Leaving by any other exit is a failure. (`reports/08-unit.md`,
+`reports/09-longer-ppo.md`.)
 
 > **The tables below cannot be compared with those of reports 3 to 7**,
 > nor with earlier versions of this page. Those were for a map played alone
@@ -57,22 +58,34 @@ the likeliest action; in brackets, drawing actions instead:
 | cloned from 900 teacher episodes | 30% ± 15 (11% ± 4) | 0% ± 0 (0% ± 0) | 0% ± 1 (1% ± 1) | 19% ± 32 (17% ± 7) |
 | DAgger, 8 rounds | 81% ± 9 (66% ± 7) | 20% ± 9 (1% ± 1) | 8% ± 2 (2% ± 2) | 77% ± 25 (55% ± 6) |
 | PPO from the DAgger student, 3.0 M steps | 86% ± 4 (84% ± 6) | 30% ± 9 (5% ± 3) | 53% ± 2 (15% ± 6) | 0% ± 1 (71% ± 5) |
+| the same, 8.0 M steps | 87% ± 2 (90% ± 5) | 40% ± 8 (12% ± 6) | 59% ± 4 (27% ± 9) | 88% ± 6 (73% ± 2) |
 
-* On the legs trained on each stage adds, but base3 and the last leg stay
-  far below the teacher.
-* **On base1 the PPO students stop at one low passage** when they play the
-  likeliest action (0, 0 and 1 of 100) and get through when actions are
-  drawn. The DAgger students they came from get through more often than
-  not either way.
+* On the legs trained on each stage adds, and more PPO steps add a little
+  more, but base3 and the last leg stay far below the teacher.
+* **The held-out figure by the likeliest action cannot be trusted in
+  either direction.** base1 has a low passage where the teacher crouches,
+  and the training legs have almost none. The 3.0 M students stop there
+  (0, 0 and 1 of 100) and the 8.0 M students get through (93, 88, 82), but
+  the 8.0 M students with a little randomness in their actions stop there
+  again (5, 59 and 9 of 100 at a temperature of 0.25). None has learned to
+  crouch at a low opening; whether one gets through turns on how it
+  happens to come at it. Drawn play is the steadier reading: 55%, 71%,
+  73% for the three stages.
 * **Play by the likeliest action is all or nothing at such a place, and
-  very little tips it.** An earlier run of the same PPO stage gave 90 and 0
+  very little tips it.** An earlier run of the 3.0 M stage gave 90 and 0
   on base1, and that 0 was 98 on the processor: the card's default
   reduced-precision convolutions (TF32) were enough to put the student in a
-  loop. TF32 is now off and the figures above are in full precision. A
-  spread over three seeds says little about a figure that is either 0 or
-  90.
-* No PPO student plays the unit through as one run: with the likeliest
-  action none leaves base1.
+  loop. TF32 is now off and the figures above are in full precision; the
+  processor and the card now give the same counts.
+* Every player is also evaluated *cooled* (`evaluate.py --cool 0.25`),
+  which on the trained legs is as good as the likeliest action or better
+  (8.0 M: 95%, 49%, 57%). The figures are in report 9.
+* **Why the students fail** (report 9): gunners most of all; standing
+  still until time runs out, which is one in six episodes on base3;
+  and base3's lasers, which the student is not shown until one step
+  before they kill it.
+* Played through the unit as one run, each leg from what the student
+  itself carried, the 8.0 M students finish it in 10, 3 and 4 of 50.
 
 The students are *guided*: at every step they are given the direction and
 distance of the next point on the scripted planner's route. What they learn
@@ -215,8 +228,15 @@ ones have passed `dm2check.py` only.
 * **The students start each leg with the teacher's inventory**, not with
   what they would have carried there themselves.
 * **The students are far from the teacher on base3 and the last leg**
-  (30% and 53% against 86% and 84%), dying to gunners, parasites and
-  base3's lasers, and **none gets out of base1 by the likeliest action**.
+  (40% and 59% against 86% and 84%), dying to gunners, parasites and
+  base3's lasers.
+* **The student cannot see a laser beam** until it is a stride away, which
+  at a run is one step. The teacher keeps clear of beams by its map.
+* **The students have not learned to crouch at a low opening**, only where
+  the training legs have one; held-out base1 turns on it.
+* **Each leg is trained from the teacher's carry.** Starting with what they
+  carried themselves, the students do worse: base2 from base1 falls from
+  87% to 53%.
 * **No map with a laser across the way is finished.** Beams are handled
   (fact1 played alone: deaths by laser from 27 of 28 to about none), but
   fact1 is lost to its gunners.

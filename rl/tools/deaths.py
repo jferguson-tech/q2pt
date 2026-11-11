@@ -3,7 +3,7 @@
 """How and where a policy's episodes end, with the last steps of each one
 that did not reach the exit.
 
-    python rl/tools/deaths.py <weights.pt | teacher> --maps base3@base2a --episodes 100 --json out.json
+    python rl/tools/deaths.py <weights.pt | teacher> --maps base3@base2a --episodes 100 [--sample | --cool 0.25] --json out.json
     python rl/tools/deaths.py --read out.json [more.json ...]
 
 The episodes are the ones q2rl.evaluate plays with the same settings. For
@@ -50,7 +50,9 @@ def cause(r):
     return MEANS.get(r["death_means"], f"means {r['death_means']}")
 
 
-def play(policy, maps, episodes, device, sample, envs=28, time_limit=6000, seed=EVAL_SEED):
+def play(policy, maps, episodes, device, sample, envs=28, time_limit=6000, seed=EVAL_SEED, temperature=1.0):
+    if sample:
+        torch.manual_seed(seed)     # as q2rl.evaluate does, so that the draws are the same
     env = Q2VecEnv(envs, maps=maps, time_limit=time_limit, cpus=CPUS, seed=seed, mode=L.MODE_PLAY,
                    guided=policy.guided if policy else True)
     obs = env.reset()
@@ -70,7 +72,7 @@ def play(policy, maps, episodes, device, sample, envs=28, time_limit=6000, seed=
             acted = env.teacher.copy()
             obs, _, done = env.step(None)
         else:
-            actions, _, _, state = policy.act(to_torch(obs, device), last, state, starts, sample)
+            actions, _, _, state = policy.act(to_torch(obs, device), last, state, starts, sample, temperature)
             acted = actions.cpu().numpy()
             obs, _, done = env.step(acted)
             ended = torch.from_numpy(done != L.DONE_NO).to(device)
@@ -120,6 +122,7 @@ if __name__ == "__main__":
     ap.add_argument("--maps", nargs="+", default=["base1"])
     ap.add_argument("--episodes", type=int, default=100, help="in all, shared among the maps")
     ap.add_argument("--sample", action="store_true")
+    ap.add_argument("--cool", type=float, default=0.0, help="draw actions at this temperature")
     ap.add_argument("--json", default="")
     ap.add_argument("--read", nargs="+", help="report on files written before instead of playing")
     args = ap.parse_args()
@@ -128,7 +131,8 @@ if __name__ == "__main__":
     else:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         policy = None if args.policy == "teacher" else load(args.policy, device)
-        results = play(policy, args.maps, args.episodes, device, args.sample)
+        results = play(policy, args.maps, args.episodes, device, args.sample or args.cool > 0,
+                       temperature=args.cool or 1.0)
         if args.json:
             Path(args.json).write_text(json.dumps(results))
     report(results)

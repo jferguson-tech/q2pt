@@ -364,6 +364,10 @@ Found on 2026-10-10:
 | game data | `run/baseq2/pak0.pak`, `pak1.pak`, `pak2.pak`: 39 single-player maps and 8 deathmatch maps |
 | Docker | two containers running, not ours. They are not restricted to any cores and were using 264 MiB and 6 MiB of memory. The Docker socket cannot be read by this user, so their names are not known |
 
+Since 2026-11-10: Linux 7.0.0-42 and driver 595.99.02 (an interrupted
+install of the driver's module for the new kernel was finished, with the
+owner's leave), and one of Docker's two containers running.
+
 Lacking:
 
 * **uv**. Python 3.12.3 is installed but without `venv` or `pip`, so the
