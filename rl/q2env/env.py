@@ -106,15 +106,18 @@ class Q2VecEnv:
     """
 
     def __init__(self, n, maps=("base1",), skill=1, time_limit=3000, guided=True,
-                 cpus=None, seed=0, mode=L.MODE_EXPLORE, flags=0, back=None):
+                 cpus=None, seed=0, mode=L.MODE_EXPLORE, flags=0, back=None, lean=0.0):
         """maps: maps or legs of a unit (maps.LEGS). mode, flags: as
         Engine.reset takes them. back: for each map, the maps whose exits are
-        not the way on; None for those that come before it in the game."""
+        not the way on; None for those that come before it in the game. lean:
+        the share of episodes that start a leg with less than the teacher
+        carried into it (carry.draw); for training, never for evaluation."""
         self.n = n
         self.maps = tuple(maps)
         self.skill, self.time_limit, self.guided = skill, time_limit, guided
         self.mode, self.flags = mode, flags
         self.back = back
+        self.lean = lean
         self.current_map = [""] * n
         self.current_seed = np.zeros(n, np.int64)
         self.single_observation_space = observation_space()
@@ -123,6 +126,7 @@ class Q2VecEnv:
         self._seed = seed
         self._episodes = np.zeros(n, np.int64)
         self.info = [None] * n
+        self.carried = [None] * n       # what each environment's last episode to reach the exit left with
         self.obs = {k: np.zeros((n,) + L.SHARED[k].shape, L.SHARED[k].base) for k in L.OBS_FIELDS}
         self.teacher = np.zeros((n, L.ACT_BRANCHES), np.int32)
         self.gain = np.zeros((n, L.GAIN_FLOATS), np.float32)
@@ -135,7 +139,8 @@ class Q2VecEnv:
         map = self.maps[(i + k) % len(self.maps)]
         seed = (self._seed + i * 1000003 + k) & 0x7FFFFFFF
         self.engines[i].ask_reset(map, seed, self.skill, self.time_limit, flags=self.flags,
-                                  mode=self.mode, back=self.back.get(map, "") if self.back else None)
+                                  mode=self.mode, back=self.back.get(map, "") if self.back else None,
+                                  lean=self.lean)
         self.current_map[i] = map
         self.current_seed[i] = seed
         self._episodes[i] += 1
@@ -185,6 +190,10 @@ class Q2VecEnv:
                                 "kills": int(b["monsters_killed"]), "health": float(b["self"][0]),
                                 "death_by": int(b["death_by"]), "death_means": int(b["death_means"]),
                                 "origin": [float(x) for x in b["origin"]]}
+                if b["done"] == L.DONE_EXIT:
+                    # what it left with: see carry.py. Not a list, so that it
+                    # is left out where the rest is written as JSON
+                    self.carried[i] = np.array(b["carry"])
                 self._ask_reset(i)
             else:
                 self._read(i)

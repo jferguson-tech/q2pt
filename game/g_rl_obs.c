@@ -144,7 +144,7 @@ as through the pixels of a small picture of it, top row first, left to right.
 static void RL_Rays (edict_t *ent, vec3_t eye, vec3_t forward, vec3_t left, vec3_t up)
 {
 	int			x, y, n, mask, kind;
-	float		sx, sy;
+	float		sx, sy, beam;
 	vec3_t		dir, end;
 	trace_t		tr;
 	edict_t		*hit;
@@ -192,6 +192,15 @@ static void RL_Rays (edict_t *ent, vec3_t eye, vec3_t forward, vec3_t left, vec3
 			rl_block->ray_dist[n] = tr.fraction * RL_RAY_RANGE;
 			rl_block->ray_slope[n] = tr.fraction < 1 ? tr.plane.normal[2] : 0;
 			rl_block->ray_kind[n] = kind;
+
+			// a beam in front of whatever the ray reached
+			beam = Haz_RayBeam (eye, dir, tr.fraction * RL_RAY_RANGE);
+			if (beam >= 0)
+			{
+				rl_block->ray_dist[n] = beam;
+				rl_block->ray_slope[n] = 0;
+				rl_block->ray_kind[n] = RL_HIT_BEAM;
+			}
 		}
 	}
 }

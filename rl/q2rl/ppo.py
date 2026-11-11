@@ -96,6 +96,7 @@ if __name__ == "__main__":
     ap.add_argument("--eval-every", type=int, default=500_000)
     ap.add_argument("--unguided", action="store_true")
     ap.add_argument("--seed", type=int, default=1, help="of the actions drawn, the batches and the episodes played")
+    ap.add_argument("--lean", type=float, default=0.0, help="the share of training episodes that start with less")
     args = ap.parse_args()
 
     device = "cuda"
@@ -111,7 +112,7 @@ if __name__ == "__main__":
     writer = SummaryWriter(data_dir() / "runs" / args.name)
 
     env = Q2VecEnv(ENVS, maps=args.maps, time_limit=4500, cpus=CPUS, seed=7_000_000 + 100_000 * args.seed,
-                   mode=L.MODE_PLAY, guided=policy.guided)
+                   mode=L.MODE_PLAY, guided=policy.guided, lean=args.lean)
     obs = env.reset()
     idle = torch.tensor(L.ACT_IDLE, device=device)
     last = idle.repeat(ENVS, 1)

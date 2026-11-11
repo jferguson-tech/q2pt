@@ -135,6 +135,7 @@ void Haz_Find (void);
 edict_t *Haz_LinkLaser (nav_link_t *l);
 qboolean Haz_LinkExit (nav_link_t *l);
 qboolean Haz_At (vec3_t origin, qboolean ducked);
+float Haz_RayBeam (vec3_t eye, vec3_t dir, float max);
 
 // g_rl_plan.c: what the scripted player should do next to get out
 #define	PLAN_EXIT	1		// walk into the trigger that ends the map

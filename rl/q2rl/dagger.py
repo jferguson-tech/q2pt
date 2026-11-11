@@ -71,13 +71,14 @@ if __name__ == "__main__":
     ap.add_argument("--epochs", type=int, default=6)
     ap.add_argument("--eval", type=int, default=100)
     ap.add_argument("--seed", type=int, default=0, help="of the batches, the mixing and the episodes played")
+    ap.add_argument("--lean", type=float, default=0.0, help="the share of training episodes that start with less")
     args = ap.parse_args()
 
     device = "cuda"
     torch.manual_seed(args.seed)
     weights = data_dir() / "weights"
     policy = load(weights / f"{args.start}.pt", device)
-    folders = [teacher_data(args.maps, args.teacher_episodes, seed=args.seed)]
+    folders = [teacher_data(args.maps, args.teacher_episodes, seed=args.seed, lean=args.lean)]
     writer = SummaryWriter(data_dir() / "runs" / args.name)
     log, step = [], 0
 
@@ -90,7 +91,7 @@ if __name__ == "__main__":
         # the policy is given the action that was played as its last action,
         # the teacher's where the teacher took the step: collect tells the driver
         results = collect(driver, args.episodes, args.maps, out, seed=1000 * (r + 1) + 100_000 * args.seed,
-                          time_limit=4500, on_taken=driver.took)
+                          time_limit=4500, on_taken=driver.took, lean=args.lean)
         folders.append(out)
         played = time.time() - start
 

@@ -95,23 +95,25 @@ class Engine:
         if self.block["error"]:
             raise EngineError(self.block["error_text"].decode(errors="replace"))
 
-    def reset(self, map, seed, skill=1, time_limit=0, demo="", flags=0, mode=0, back=None):
-        self.ask_reset(map, seed, skill, time_limit, demo, flags, mode, back)
+    def reset(self, map, seed, skill=1, time_limit=0, demo="", flags=0, mode=0, back=None, lean=0.0):
+        self.ask_reset(map, seed, skill, time_limit, demo, flags, mode, back, lean)
         self.wait()
 
-    def ask_reset(self, map, seed, skill=1, time_limit=0, demo="", flags=0, mode=0, back=None):
+    def ask_reset(self, map, seed, skill=1, time_limit=0, demo="", flags=0, mode=0, back=None, lean=0.0):
         """map: a map, or a leg of a unit (maps.LEGS), which starts where and
         with what the leg before it ended: see carry.py. mode: what the
         teacher is out to do (layout.MODE_). back: the maps, with spaces
         between, whose exits are not the way on; None for those that come
-        before it in the game. Not used for a leg, which names its exit."""
+        before it in the game. Not used for a leg, which names its exit.
+        lean: the share of a leg's episodes that start with less than the
+        teacher left the leg before with (carry.draw)."""
         start, onward, before, prior = leg(map)
         if back is None:
             back = before
         b = self.block
         b["map"] = start.encode()
         b["onward"] = onward.encode()
-        b["start"] = draw(prior, seed) if prior else 0
+        b["start"] = draw(prior, seed, lean) if prior else 0
         b["seed"] = seed
         b["skill"] = skill
         b["time_limit"] = time_limit

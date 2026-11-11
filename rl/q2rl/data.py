@@ -60,7 +60,7 @@ def to_torch(obs, device):
 
 
 def collect(policy_step, episodes, maps, out_dir, seed, time_limit=6000, skill=1, envs=28,
-            shard_episodes=64, mode=L.MODE_PLAY, back=None, on_taken=None):
+            shard_episodes=64, mode=L.MODE_PLAY, back=None, on_taken=None, lean=0.0):
     """Plays whole episodes and writes them as shards.
 
     policy_step(obs, starts) is called once per step with the batch of
@@ -68,13 +68,14 @@ def collect(policy_step, episodes, maps, out_dir, seed, time_limit=6000, skill=1
     returns (actions, use_teacher): the actions to take, and a mask of the
     environments in which the teacher's own action is played instead.
     actions may be None when the teacher plays everywhere. on_taken, if
-    given, is called with the actions that were played.
+    given, is called with the actions that were played. lean: the share of
+    episodes that start a leg with less than the teacher carried into it.
 
     Returns what the game reported at the end of every episode."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     env = Q2VecEnv(envs, maps=maps, skill=skill, time_limit=time_limit, cpus=CPUS,
-                   seed=seed, mode=mode, back=back)
+                   seed=seed, mode=mode, back=back, lean=lean)
     obs = env.reset()
     starts = np.ones(envs, bool)
     live = [[] for _ in range(envs)]        # the steps of each environment's episode so far

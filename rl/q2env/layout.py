@@ -9,7 +9,7 @@ header and compares every offset and constant with what is here.
 import numpy as np
 
 MAGIC = 0x314C5251
-VERSION = 7
+VERSION = 8
 STEP_MSEC = 100
 
 REQ_RESET, REQ_STEP, REQ_QUIT = 1, 2, 3
@@ -20,7 +20,7 @@ FLAG_NOMONSTERS = 2     # the map's monsters are taken out
 DONE_NO, DONE_EXIT, DONE_DEATH, DONE_TIME, DONE_WRONG = 0, 1, 2, 3, 4
 DONE_NAMES = ("running", "exit", "death", "time", "wrong")
 # what is carried from one map of a unit into the next: see g_rl.h
-CARRY_VALID, CARRY_HEALTH, CARRY_INVENTORY, CARRY_INTS = 0, 1, 16, 272
+CARRY_VALID, CARRY_HEALTH, CARRY_WEAPON, CARRY_LAST, CARRY_INVENTORY, CARRY_INTS = 0, 1, 5, 6, 16, 272
 
 # the action: one choice in each branch
 ACT_FORWARD, ACT_STRAFE, ACT_UP, ACT_YAW, ACT_PITCH, ACT_FIRE, ACT_WEAPON = range(7)
@@ -36,7 +36,7 @@ RAYS_X, RAYS_Y = 24, 9
 RAYS = RAYS_X * RAYS_Y
 FOV_X, FOV_Y = 90.0, 60.0
 RAY_RANGE = 2048.0
-HIT_KINDS = 10
+HIT_KINDS = 11
 
 ENTS = 16
 ENT_FLOATS = 12

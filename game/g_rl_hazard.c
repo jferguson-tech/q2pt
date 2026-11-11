@@ -329,6 +329,66 @@ edict_t *Haz_LinkLaser (nav_link_t *l)
 
 /*
 ================
+Haz_RayBeam
+
+How far along a ray from the eye the nearest beam that is on is met, or -1
+if none is within max. A beam has no width to hit, so a ray that passes
+close by one counts: within 8 units, and 6 more for every 100 of distance,
+which is half of what lies between one ray of the view and the next. A
+beam across the view is then met by some ray however far off it is, as a
+thin bright line is seen.
+================
+*/
+float Haz_RayBeam (vec3_t eye, vec3_t dir, float max)
+{
+	haz_laser_t	*z;
+	vec3_t		v, w, p, q;
+	float		vv, dv, dw, vw, den, t, u, best = -1;
+	int			i;
+
+	for (i=0, z=haz_lasers ; i<haz_num_lasers ; i++, z++)
+	{
+		if (!Haz_LaserOn (z))
+			continue;
+		// the nearest points of the ray eye + t dir and the beam from + u v
+		VectorSubtract (z->to, z->from, v);
+		VectorSubtract (eye, z->from, w);
+		vv = DotProduct (v, v);
+		if (vv < 1)
+			continue;
+		dv = DotProduct (dir, v);
+		dw = DotProduct (dir, w);
+		vw = DotProduct (v, w);
+		den = vv - dv * dv;
+		t = den > 0.001f * vv ? (dv * vw - vv * dw) / den : 0;
+		if (t < 0)
+			t = 0;
+		if (t > max)
+			t = max;
+		u = (vw + t * dv) / vv;
+		if (u < 0)
+			u = 0;
+		if (u > 1)
+			u = 1;
+		// and the ray's nearest to that point of the beam
+		t = u * dv - dw;
+		if (t < 0)
+			t = 0;
+		if (t > max)
+			continue;
+		VectorMA (eye, t, dir, p);
+		VectorMA (z->from, u, v, q);
+		VectorSubtract (p, q, p);
+		if (VectorLength (p) > 8 + 0.06f * t)
+			continue;
+		if (best < 0 || t < best)
+			best = t;
+	}
+	return best;
+}
+
+/*
+================
 Haz_At
 
 True when the player standing at origin would be hurt by what is there: a

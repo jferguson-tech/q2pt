@@ -31,7 +31,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define G_RL_H
 
 #define	RL_MAGIC		0x314c5251		// "QRL1"
-#define	RL_VERSION		7
+#define	RL_VERSION		8
 
 // The player is moved by one command of this length in each server frame.
 #define	RL_STEP_MSEC	100
@@ -112,7 +112,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	RL_HIT_MONSTER	7
 #define	RL_HIT_CORPSE	8
 #define	RL_HIT_OTHER	9		// a barrel or anything else solid
-#define	RL_HIT_KINDS	10
+#define	RL_HIT_BEAM		10		// a laser's beam, which is not solid: the ray's distance is to the beam
+#define	RL_HIT_KINDS	11
 
 // The things in the field of view with nothing between them and the eye,
 // nearest first.

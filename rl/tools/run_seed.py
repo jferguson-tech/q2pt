@@ -44,6 +44,8 @@ if __name__ == "__main__":
     ap.add_argument("--round-episodes", type=int, default=300)
     ap.add_argument("--ppo-steps", type=int, default=3_000_000)
     ap.add_argument("--eval", type=int, default=100, help="evaluation episodes per map")
+    ap.add_argument("--lean", type=float, default=0.0,
+                    help="the share of training episodes that start a leg with less than the teacher carried")
     args = ap.parse_args()
 
     weights = data_dir() / "weights"
@@ -54,14 +56,14 @@ if __name__ == "__main__":
 
     if not (weights / f"{bc}.pt").exists():
         run("q2rl.bc", "--name", bc, "--maps", *args.maps, "--episodes", args.teacher_episodes,
-            "--seed", s, "--eval", 28)
+            "--seed", s, "--eval", 28, "--lean", args.lean)
     if not (weights / f"{dagger}.pt").exists():
         run("q2rl.dagger", "--start", bc, "--name", dagger, "--maps", *args.maps,
             "--teacher-episodes", args.teacher_episodes, "--rounds", args.rounds,
-            "--episodes", args.round_episodes, "--seed", s, "--eval", 56)
+            "--episodes", args.round_episodes, "--seed", s, "--eval", 56, "--lean", args.lean)
     if not (weights / f"{ppo}.json").exists() or not (weights / f"{ppo}.pt").exists():
         run("q2rl.ppo", "--start", dagger, "--name", ppo, "--maps", *args.maps, "--steps", args.ppo_steps,
-            "--seed", s + 1)
+            "--seed", s + 1, "--lean", args.lean)
 
     sets = [("train", args.maps)] + ([("held", args.held)] if args.held else [])
     for where, maps in sets:
