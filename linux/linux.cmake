@@ -9,6 +9,13 @@ if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
 	message(FATAL_ERROR "The Linux build is 64-bit only")
 endif()
 
+# The C sources are the original game's, which declares false and true as
+# an enum (game/q_shared.h). From C23 those are keywords, and GCC 15 takes
+# C23 unless told otherwise, so the standard is named: gnu17, which is what
+# older compilers took by default.
+set(CMAKE_C_STANDARD 17)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
 set(Q2_OUT ${CMAKE_SOURCE_DIR}/run)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${Q2_OUT})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${Q2_OUT})
