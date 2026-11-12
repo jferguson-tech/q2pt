@@ -23,7 +23,8 @@ RTX 4090). The game's first unit is played a **leg** at a time: an episode
 starts at the spawn point the exit of the map before leads to, with what the
 teacher had when it left that map, and succeeds only at the exit that leads
 on. Leaving by any other exit is a failure. (`reports/08-unit.md`,
-`reports/09-longer-ppo.md`.)
+`reports/09-longer-ppo.md`,
+`reports/10-beams-lean.md`.)
 
 > **The tables below cannot be compared with those of reports 3 to 7**,
 > nor with earlier versions of this page. Those were for a map played alone
@@ -59,6 +60,7 @@ the likeliest action; in brackets, drawing actions instead:
 | DAgger, 8 rounds | 81% ± 9 (66% ± 7) | 20% ± 9 (1% ± 1) | 8% ± 2 (2% ± 2) | 77% ± 25 (55% ± 6) |
 | PPO from the DAgger student, 3.0 M steps | 86% ± 4 (84% ± 6) | 30% ± 9 (5% ± 3) | 53% ± 2 (15% ± 6) | 0% ± 1 (71% ± 5) |
 | the same, 8.0 M steps | 87% ± 2 (90% ± 5) | 40% ± 8 (12% ± 6) | 59% ± 4 (27% ± 9) | 88% ± 6 (73% ± 2) |
+| all stages again with beams in the rays and lean starts, PPO 8.0 M steps | 89% ± 4 (81% ± 2) | 40% ± 11 (6% ± 4) | 61% ± 8 (16% ± 15) | 30% ± 52 (68% ± 5) |
 
 * On the legs trained on each stage adds, and more PPO steps add a little
   more, but base3 and the last leg stay far below the teacher.
@@ -80,12 +82,21 @@ the likeliest action; in brackets, drawing actions instead:
 * Every player is also evaluated *cooled* (`evaluate.py --cool 0.25`),
   which on the trained legs is as good as the likeliest action or better
   (8.0 M: 95%, 49%, 57%). The figures are in report 9.
-* **Why the students fail** (report 9): gunners most of all; standing
-  still until time runs out, which is one in six episodes on base3;
-  and base3's lasers, which the student is not shown until one step
-  before they kill it.
+* **Why the students fail** (reports 9 and 10): gunners most of all;
+  standing still until time runs out; and base3's lasers, which the
+  student backs into while fighting. The rays now show beams, but only
+  ahead, and the students of the last row die to them as often as before.
+* **The last row** (report 10) is three students trained from nothing on
+  the present observation, half of whose training episodes started a leg
+  with less than the teacher carried. On the legs one at a time they are
+  where the row above is. On base1 two of the three stand at the low
+  passage (0, 0 and 90 of 100).
 * Played through the unit as one run, each leg from what the student
-  itself carried, the 8.0 M students finish it in 10, 3 and 4 of 50.
+  itself carried, the 8.0 M students of report 9 finish it in 10, 3 and 4
+  of 50 and those of report 10 in 0, 0 and 7. The second leg from the
+  student's own carry went from 53% to 89% (one seed) with the lean
+  starts; base3 did not improve, and base1's passage stops the other two.
+* Weights from before report 10 do not load: the shared block is version 8.
 
 The students are *guided*: at every step they are given the direction and
 distance of the next point on the scripted planner's route. What they learn

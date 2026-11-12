@@ -4,7 +4,7 @@
 same run carried out of the leg before.
 
     python rl/tools/unit.py [--unit base] [--runs 100] [--first 0] [--steps 6000] [--demos folder]
-    python rl/tools/unit.py --policy ~/q2pt-rl/weights/ppo.pt [--sample]
+    python rl/tools/unit.py --policy ~/q2pt-rl/weights/ppo.pt [--sample | --cool 0.25]
 
 The teacher plays unless a policy is named. A run goes on to the next leg
 only when it reaches the exit that leads on; the table says how many runs
@@ -31,10 +31,12 @@ from q2env.maps import UNITS  # noqa: E402
 CPUS = list(range(8, 16)) + list(range(24, 32)) + list(range(2, 8)) + list(range(18, 24))
 
 
-def run(legs, seed, steps, cpu, policy, sample, demos):
+def run(legs, seed, steps, cpu, policy, sample, demos, temperature=1.0):
     """How many legs the run got through, and how it ended."""
     import torch
     carry = np.zeros(L.CARRY_INTS, np.int32)
+    if sample:
+        torch.manual_seed(seed)     # the same draws each time the run is played
     with Engine(cpu=cpu) as e:
         b = e.block
         for n, (name, start, onward) in enumerate(legs):
@@ -58,7 +60,8 @@ def run(legs, seed, steps, cpu, policy, sample, demos):
                 obs = {k: b[k][None].copy() for k in L.OBS_FIELDS}
                 if not policy.guided:
                     obs["guide"][:] = 0
-                action, _, _, state = policy.act(to_torch(obs, device), last, state, first, sample=sample)
+                action, _, _, state = policy.act(to_torch(obs, device), last, state, first, sample=sample,
+                                                    temperature=temperature)
                 e.step(action[0].cpu().numpy())
                 last, first = action, torch.zeros(1, device=device)
             if b["done"] != L.DONE_EXIT:
@@ -75,6 +78,7 @@ if __name__ == "__main__":
     ap.add_argument("--steps", type=int, default=6000)
     ap.add_argument("--policy", default="")
     ap.add_argument("--sample", action="store_true")
+    ap.add_argument("--cool", type=float, default=0.0, help="draw actions at this temperature")
     ap.add_argument("--demos", default="")
     args = ap.parse_args()
 
@@ -85,8 +89,8 @@ if __name__ == "__main__":
         policy = load(args.policy, "cpu")
     demos = Path(args.demos).expanduser().resolve() if args.demos else None
     with ThreadPoolExecutor(1 if policy is not None else len(CPUS)) as pool:
-        jobs = [pool.submit(run, legs, seed, args.steps, CPUS[seed % len(CPUS)], policy, args.sample,
-                            demos if seed == args.first else None)
+        jobs = [pool.submit(run, legs, seed, args.steps, CPUS[seed % len(CPUS)], policy,
+                            args.sample or args.cool > 0, demos if seed == args.first else None, args.cool or 1.0)
                 for seed in range(args.first, args.first + args.runs)]
         ends = [j.result() for j in jobs]
 
