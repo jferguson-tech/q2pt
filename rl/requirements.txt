@@ -1,0 +1,6 @@
+numpy==2.5.3
+gymnasium
+torch
+tensorboard
+matplotlib
+zstandard==0.25.0

@@ -317,7 +317,8 @@ void SV_InitGame (void)
 
 	// dedicated servers are can't be single player and are usually DM
 	// so unless they explicity set coop, force it to deathmatch
-	if (dedicated->value)
+	// sv_singleplayer leaves it a one player game with single-player rules
+	if (dedicated->value && !Cvar_VariableValue ("sv_singleplayer"))
 	{
 		if (!Cvar_VariableValue ("coop"))
 			Cvar_FullSet ("deathmatch", "1",  CVAR_SERVERINFO | CVAR_LATCH);
